@@ -221,9 +221,16 @@ curl -s http://10.0.0.11:8099/api/access | python3 -m json.tool | tail -40
 
 ## 七、已知边界
 
-- **包内 14 个 `lib/*` 文件上游发行版本身就没有**（`tokenm.json`、`hdhaven.txt`、
-  `panta.txt` …）。这不是本仓库造成的；`tokenm.json` 按官方说明由使用者从
-  `tokentemplate.json` 复制。缺失的资源 404 后由播放器自行降级，与原版行为一致。
+- 上游 pg 发行版**故意把 14 个 `lib/*` 做成「使用者自备」**（`tokenm.json`、`hdhaven.txt`、
+  `panta.txt` …）。作者 README 的原话是「複製 `lib/tokentemplate.json` 成爲 `lib/tokenm.json`」。
+  **本仓库由中枢自动补全**（`core/libfill.py`，启动与每次修复时执行，只补缺失、绝不覆盖）：
+  - 有官方模板的从模板派生：`tokenm.json`←`tokentemplate.json`、`sambashare.txt`、
+    `webdav.json`、`alistjar.json`
+  - 纯清单类的落空文件占位（语义 = 本地没有清单，由 jar 自行去站点拉）
+
+  实测不补的后果：**播放器会在 2 秒内对 `/hai/lib/tokenm.json` 重试 16 次**，
+  既拖慢配置加载，也容易让部分播放器直接判「配置获取失败」。
+  补全后 `lib` 71 个 + `js` 29 个文件全部 200，无 404。
 - 部分站点（土豆、盘链、盘Ta、至臻、栖影、大盘搜、88网盘、校长影视、聚影、观影）
   **从国内家宽已不可达**：DNS 废弃、502、Cloudflare 403 或跳转密码页。
   这类站点没有「正确域名」可换，接口会被标注 `⚠️失效`，等上游复活后自动恢复。

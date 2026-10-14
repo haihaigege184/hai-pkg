@@ -24,7 +24,7 @@ from flask import Blueprint, Flask, Response, jsonify, request, send_from_direct
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import config as C          # noqa: E402
-from core import gateway, health, notify, patch, sources as S, store, sync  # noqa: E402
+from core import gateway, health, libfill, notify, patch, sources as S, store, sync  # noqa: E402
 
 app = Flask(__name__, static_folder=None)
 bp = Blueprint("oktv", __name__)
@@ -91,6 +91,8 @@ def bootstrap():
     _flush()
     store.log_event("boot", f"中枢启动，登记接口源 {len(REGISTRY)} 个，域名池 {len(POOL)} 组"
                             + (f"，清理私有/占位地址 {dropped} 条" if dropped else ""))
+    # 补全 lib 资源（缺失时播放器会对 404 疯狂重试）
+    libfill.fill()
 
 
 def _prune_pool():
@@ -187,6 +189,7 @@ def do_repair(reason="manual"):
 
     fixed = [t for t, n in after.items() if n > 0 and before.get(t, 0) == 0]
     still = sorted(t for t, n in after.items() if n == 0)
+    libfill.fill()          # 新接入的站点可能引用新的 lib 文件
     stat = {
         "ok": True,
         "reason": reason,
@@ -551,6 +554,19 @@ def api_domains():
 @bp.route("/api/logs")
 def api_logs():
     return jsonify(store.tail_events(int(request.args.get("n", 200))))
+
+
+@bp.route("/api/libcheck")
+def api_libcheck():
+    """hai 包 lib 资源体检：还缺哪些被配置引用却没落地的文件"""
+    return jsonify({"missing": libfill.missing(),
+                    "needed": sorted(libfill.needed_files()),
+                    "pkg_dir": C.PKG_DIR})
+
+
+@bp.route("/api/libfill", methods=["POST"])
+def api_libfill():
+    return jsonify(libfill.fill())
 
 
 @bp.route("/api/access")
