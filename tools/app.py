@@ -29,6 +29,42 @@ from core import gateway, health, notify, patch, sources as S, store, sync  # no
 app = Flask(__name__, static_folder=None)
 bp = Blueprint("oktv", __name__)
 
+F_ACCESS = os.path.join(C.LOG_DIR, "access.jsonl")
+
+
+@app.after_request
+def _access_log(resp):
+    """把每个请求的「来源 IP / UA / 关键头」记下来。
+
+    电视机「配置获取失败」这类问题，光看服务端 200 是分不清
+    「客户端没连上」和「客户端拿到但解析失败」的——这条日志能直接分辨。
+    """
+    try:
+        os.makedirs(C.LOG_DIR, exist_ok=True)
+        # 注意：不能直接用 os.path.getsize —— 文件不存在时它会抛异常，
+        # 结果就是第一条日志永远写不出来（曾被这个坑掉整整一轮排查）。
+        if os.path.exists(F_ACCESS) and os.path.getsize(F_ACCESS) > 8 * 1024 * 1024:
+            os.replace(F_ACCESS, F_ACCESS + ".1")
+        try:
+            nbytes = -1 if resp.direct_passthrough else len(resp.get_data())
+        except Exception:
+            nbytes = -1
+        rec = {
+            "t": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "ip": request.headers.get("X-Forwarded-For") or request.remote_addr,
+            "m": request.method, "p": request.path, "s": resp.status_code,
+            "ua": (request.headers.get("User-Agent") or "")[:160],
+            "ae": request.headers.get("Accept-Encoding") or "",
+            "range": request.headers.get("Range") or "",
+            "conn": request.headers.get("Connection") or "",
+            "len": nbytes,
+        }
+        with open(F_ACCESS, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:
+        store.log_event("error", f"访问日志写入失败: {type(e).__name__}: {e}")
+    return resp
+
 POOL = {}                 # { TAG: {tag, api, proxy, rules, name, domains:[...]} }
 REGISTRY = {}
 _last_render = {"ts": 0, "jsm": None}
@@ -517,6 +553,28 @@ def api_logs():
     return jsonify(store.tail_events(int(request.args.get("n", 200))))
 
 
+@bp.route("/api/access")
+def api_access():
+    """最近的 HTTP 访问明细（含 UA），用于排查播放器取配置失败"""
+    n = int(request.args.get("n", 100))
+    only = request.args.get("path")
+    out = []
+    try:
+        with open(F_ACCESS, encoding="utf-8") as f:
+            lines = f.readlines()[-2000:]
+        for ln in lines:
+            try:
+                r = json.loads(ln)
+            except Exception:
+                continue
+            if only and only not in r.get("p", ""):
+                continue
+            out.append(r)
+    except FileNotFoundError:
+        pass
+    return jsonify(out[-n:])
+
+
 @bp.route("/api/preview")
 def api_preview():
     jsm = get_config()
@@ -559,6 +617,23 @@ def main():
         t = threading.Thread(target=scheduler, daemon=True)
         t.start()
         store.log_event("boot", f"HTTP 服务监听 {C.HOST}:{C.PORT}")
+        _serve()
+
+
+def _serve():
+    """优先用 waitress 提供符合 HTTP/1.1 的服务。
+
+    Flask 自带的 dev server 每个响应都回 `Connection: close`，
+    部分电视机播放器/老版 HttpClient 在这种连接上会读不到响应体，
+    表现出来就是「配置获取失败」。waitress 支持 keep-alive，兼容性稳得多。
+    """
+    try:
+        from waitress import serve
+        store.log_event("boot", "使用 waitress 生产级 WSGI（HTTP/1.1 keep-alive）")
+        serve(app, host=C.HOST, port=C.PORT, threads=32,
+              channel_timeout=180, ident="oktv-hub", clear_untrusted_proxy_headers=False)
+    except ImportError:
+        store.log_event("boot", "waitress 未安装，回落 Flask dev server")
         app.run(host=C.HOST, port=C.PORT, threaded=True, debug=False)
 
 
