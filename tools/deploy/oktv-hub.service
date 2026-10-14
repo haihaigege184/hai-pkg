@@ -25,6 +25,14 @@ Environment=OKTV_DAILY_MINUTE=0
 Environment=OKTV_NOTIFY_ON_FAIL=1
 Environment=OKTV_NOTIFY_ON_FIX=1
 Environment=OKTV_NOTIFY_DAILY=1
+# 网盘 CK：一处保存、局域网多端自动生效
+#   AUTOSNIFF=1 任何带 CK 的请求经中枢且成功 -> 自动入库并计一次播放命中
+#   PUBLIC=0    真实 CK 只回局域网来源（公网只拿空模板，防泄露）
+#   VALIDATE=1  入库时调用网盘接口做真实登录态校验
+Environment=OKTV_CK_AUTOSNIFF=1
+Environment=OKTV_CK_PUBLIC=0
+Environment=OKTV_CK_VALIDATE=1
+Environment=OKTV_CK_ALLOW=
 # SEA 机器人通知（默认读取 /root/sea2/config.json 的 napcat_* 与 superAdmin）
 Environment=OKTV_SEA_CONFIG=/root/sea2/config.json
 ExecStart=/opt/oktv-hub/.venv/bin/python /opt/oktv-hub/app.py run

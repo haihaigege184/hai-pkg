@@ -21,6 +21,7 @@ F_SOURCES = os.path.join(DATA_DIR, "sources.json")    # 接口源注册表（TAG
 F_STATE = os.path.join(DATA_DIR, "state.json")        # 运行状态（上次同步/巡检时间等）
 F_LOG = os.path.join(DATA_DIR, "events.jsonl")        # 事件日志（追加）
 F_OVERRIDES = os.path.join(DATA_DIR, "overrides.json")  # 人工修正：手工加域名/禁用域名/模式
+F_CK = os.path.join(DATA_DIR, "ck.json")              # 网盘 CK 保险库（一处保存/多端同步）
 
 # 服务参数
 HOST = os.environ.get("OKTV_HOST", "0.0.0.0")
@@ -43,6 +44,17 @@ NOTIFY_DAILY = os.environ.get("OKTV_NOTIFY_DAILY", "1") == "1"
 
 HEALTH_TIMEOUT = int(os.environ.get("OKTV_HEALTH_TIMEOUT", "12"))
 HEALTH_WORKERS = int(os.environ.get("OKTV_HEALTH_WORKERS", "16"))
+
+# 网盘 CK 相关
+# 请求级自动嗅探：任何带 CK 的请求经中枢且 2xx 时，自动入库并计一次播放成功
+CK_AUTOSNIFF = os.environ.get("OKTV_CK_AUTOSNIFF", "1") == "1"
+# 是否允许把真实 CK 下发给**公网**来源（默认关闭：公网只拿到空模板）
+CK_PUBLIC = os.environ.get("OKTV_CK_PUBLIC", "0") == "1"
+# 入库时是否自动做网盘登录态校验
+CK_VALIDATE = os.environ.get("OKTV_CK_VALIDATE", "1") == "1"
+# 接受 CK 上报的来源网段（逗号分隔前缀；空 = 允许所有来源）
+CK_ALLOW_PREFIX = [x.strip() for x in
+                   os.environ.get("OKTV_CK_ALLOW", "").split(",") if x.strip()]
 HEALTH_MIN_BYTES = 800          # 响应体小于该值视为无效页（机房停放页/空页）
 
 UA = ("Mozilla/5.0 (Linux; Android 12; SM-G981B) AppleWebKit/537.36 "

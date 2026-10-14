@@ -13,6 +13,7 @@
     python app.py sync      # 只跑一次上游同步
     python app.py render    # 只重新生成一次配置
 """
+import hashlib
 import json
 import os
 import sys
@@ -24,12 +25,51 @@ from flask import Blueprint, Flask, Response, jsonify, request, send_from_direct
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import config as C          # noqa: E402
-from core import gateway, health, libfill, notify, patch, sources as S, store, sync, verify  # noqa: E402
+from core import (ckvault, gateway, health, libfill, notify, patch,  # noqa: E402
+                  sources as S, store, sync, verify)
 
 app = Flask(__name__, static_folder=None)
 bp = Blueprint("oktv", __name__)
 
 F_ACCESS = os.path.join(C.LOG_DIR, "access.jsonl")
+
+# 嗅探豁免：这些路径上出现的 CK 要么是我们自己下发的，要么是查询/管理用的，
+# 若也计入会把自己下发的值当成「播放成功」反复刷新 hits。
+_SKIP_SNIFF = ("/api/ck", "/hai/lib/tokenm.json", "/lib/tokenm.json", "/ck/report")
+
+
+def _skip_sniff(path):
+    p = path or ""
+    return any(s in p for s in _SKIP_SNIFF)
+
+
+def _client_ip():
+    """取真实客户端 IP。
+
+    公网走 CF 隧道时 remote_addr 是 127.0.0.1，真实 IP 在 CF-Connecting-IP / XFF 里；
+    局域网直连时就是 remote_addr 本身（10.0.0.x）。
+    """
+    for k in ("CF-Connecting-IP", "X-Real-IP"):
+        v = request.headers.get(k)
+        if v:
+            return v.strip()
+    xff = request.headers.get("X-Forwarded-For") or ""
+    if xff:
+        return xff.split(",")[0].strip()
+    return (request.remote_addr or "").strip()
+
+
+_LAN_PREFIX = ("127.", "10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.",
+               "172.2", "172.30.", "172.31.", "::1", "169.254.")
+
+
+def _is_lan(ip=None):
+    ip = ip if ip is not None else _client_ip()
+    if not ip:
+        return True                      # 取不到就当内网（本机/云隧道场景）
+    if ip in ("localhost", ""):
+        return True
+    return ip.startswith(_LAN_PREFIX)
 
 
 @app.after_request
@@ -63,6 +103,15 @@ def _access_log(resp):
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception as e:
         store.log_event("error", f"访问日志写入失败: {type(e).__name__}: {e}")
+
+    # 网盘 CK 自动嗅探：客户端把带 CK 的请求送到中枢（且成功）就算「播放成功」，
+    # 该渠道 CK 入库并 hits+1 —— 这是「播放成功即保存」的自动路径。
+    if not _skip_sniff(request.path):
+        try:
+            ckvault.sniff_request(request.path, request.query_string.decode("utf-8", "ignore"),
+                                  dict(request.headers), resp.status_code)
+        except Exception as e:
+            store.log_event("error", f"CK 嗅探失败: {type(e).__name__}: {e}")
     return resp
 
 POOL = {}                 # { TAG: {tag, api, proxy, rules, name, domains:[...]} }
@@ -93,6 +142,12 @@ def bootstrap():
                             + (f"，清理私有/占位地址 {dropped} 条" if dropped else ""))
     # 补全 lib 资源（缺失时播放器会对 404 疯狂重试）
     libfill.fill()
+    # 把保险库里的网盘 CK 渲染进 lib/tokenm.json（动态路由始终以保险库为准，这里落盘一份做备份）
+    ckvault.write_tokenm()
+    _cks = ckvault.summary()
+    if _cks["configured"]:
+        store.log_event("ck", f"网盘 CK 保险库：已配置 {_cks['configured']} 个渠道"
+                              f"（有效 {_cks['valid']}），注入字段 {_cks['injected_fields']} 个")
 
 
 def _prune_pool():
@@ -350,10 +405,87 @@ def hai_version():
     return version_json()
 
 
-@bp.route("/hai/lib/<path:p>")
+@bp.route("/hai/lib/<path:p>", methods=["GET", "POST", "PUT"])
 def hai_lib(p):
+    if p.replace("\\", "/").lower() == "tokenm.json":
+        return _tokenm(p)
     d = os.path.join(_pkg_dir(), "lib")
     return _safe_send(d, p)
+
+
+# ----------------------------------------------------------------------------
+# 网盘 CK：动态 tokenm.json（一处保存，多端自动生效）
+# ----------------------------------------------------------------------------
+
+
+def _apply_ck_payload(data, source):
+    """接受三种载荷：
+       {channel, value} / {channel, fields{}} / 一整份 tokenm.json
+    """
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "需要 JSON 对象"}
+    if data.get("channel"):
+        return ckvault.report(data["channel"],
+                              data.get("fields") or data.get("value") or data.get("ck") or "",
+                              source=source,
+                              state=data.get("state"),
+                              force=bool(data.get("force")),
+                              validate=C.CK_VALIDATE)
+    res = ckvault.report_fields(data, source=source, validate=C.CK_VALIDATE)
+    if not res:
+        return {"ok": False, "error": "未识别到网盘 CK 字段"}
+    return {"ok": True, "results": res}
+
+
+def _tokenm(p):
+    if request.method in ("POST", "PUT"):
+        raw = request.get_data(as_text=True) or ""
+        if not _check_ck_source():
+            return jsonify({"ok": False, "error": "该来源不允许上报 CK"}), 403
+        ck_hdr = request.headers.get("X-CK") or ""
+        if ck_hdr:
+            raw = ck_hdr + "\n" + raw
+        hits = ckvault.extract(raw, source=f"tokenm PUT {_client_ip()}")
+        if not hits:
+            try:
+                obj = json.loads(raw)
+                res = _apply_ck_payload(obj, f"tokenm PUT {_client_ip()}")
+                return (jsonify(res), 200) if res.get("ok") else (jsonify(res), 400)
+            except Exception:
+                return jsonify({"ok": False, "error": "未识别到网盘 CK"}), 400
+        out = [ckvault.report(ch, f, source=src, validate=C.CK_VALIDATE)
+               for ch, f, src in hits]
+        ckvault.write_tokenm()
+        return jsonify({"ok": True, "results": out,
+                        "version": ckvault.version()})
+
+    lan = C.CK_PUBLIC or _is_lan()
+    body = ckvault.render_text(lan=lan)
+    etag = '"ck-%d-%s"' % (ckvault.version(), hashlib.md5(body.encode()).hexdigest()[:10])
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status=304, headers={"ETag": etag,
+                                             "X-CK-Version": str(ckvault.version())})
+    return Response(body, mimetype="application/json; charset=utf-8", headers={
+        "Cache-Control": "no-cache, must-revalidate",
+        "ETag": etag,
+        "X-CK-Version": str(ckvault.version()),
+        "X-CK-Scope": "lan" if lan else "public-masked",
+        "Access-Control-Allow-Origin": "*",
+    })
+
+
+def _check_ck_source():
+    if not C.CK_ALLOW_PREFIX:
+        return True
+    ip = _client_ip()
+    return any(ip.startswith(p) for p in C.CK_ALLOW_PREFIX) or ip in ("127.0.0.1", "::1")
+
+
+@bp.route("/hai/lib/tokenm.json", methods=["GET", "POST", "PUT"])
+@bp.route("/lib/tokenm.json", methods=["GET", "POST", "PUT"])
+def tokenm_dynamic():
+    """兼容两种配置挂载方式：/hai/lib/... 与根路径 /lib/..."""
+    return _tokenm("tokenm.json")
 
 
 @bp.route("/hai/js/<path:p>")
@@ -380,6 +512,8 @@ def _safe_send(d, p):
 
 @bp.route("/lib/<path:p>")
 def lib_assets(p):
+    if p.replace("\\", "/").lower() == "tokenm.json":
+        return _tokenm(p)
     d = os.path.join(C.BASE_DIR, "assets", "lib")
     full = os.path.normpath(os.path.join(d, p))
     if not full.startswith(os.path.normpath(d)):
@@ -436,6 +570,10 @@ def api_status():
         "notify_enabled": notify.enabled(),
         "notify_target": notify.resolve_target()[3],
         "sites": len(get_config().get("sites", [])),
+        "ck": {"version": ckvault.version(),
+               "configured": ckvault.summary()["configured"],
+               "valid": ckvault.summary()["valid"],
+               "autosniff": C.CK_AUTOSNIFF},
     })
 
 
@@ -554,6 +692,94 @@ def api_domains():
 @bp.route("/api/logs")
 def api_logs():
     return jsonify(store.tail_events(int(request.args.get("n", 200))))
+
+
+# ----------------------------------------------------------------------------
+# 路由：网盘 CK
+# ----------------------------------------------------------------------------
+
+
+@bp.route("/api/ck")
+def api_ck():
+    """CK 总览。默认掩码显示；?full=1 返回明文（仅供局域网自查）。"""
+    d = ckvault.load()
+    s = ckvault.summary()
+    if request.args.get("full") == "1" and _is_lan():
+        for r in s["rows"]:
+            it = d["items"].get(r["channel"])
+            if it:
+                r["full"] = it.get("fields")
+                r["history"] = (it.get("history") or [])[:3]
+    ch = request.args.get("ch")
+    if ch:
+        it = d["items"].get(ch.lower())
+        s["item"] = it
+    s["autosniff"] = C.CK_AUTOSNIFF
+    s["public_ck"] = C.CK_PUBLIC
+    s["client_ip"] = _client_ip()
+    s["is_lan"] = _is_lan()
+    return jsonify(s)
+
+
+@bp.route("/api/ck/report", methods=["POST"])
+def api_ck_report():
+    """CK 上报入口（插件 / 脚本 / 捕获台 / 客户端都可调）
+
+    接受：
+      {"channel":"quark","value":"__pus=..."}        指定渠道
+      {"quark_cookie":"..."}                          整份字段
+      {"raw":"<任意文本/URL/Cookie>"}                 自动识别
+    """
+    if not _check_ck_source():
+        return jsonify({"ok": False, "error": "该来源不允许上报 CK"}), 403
+    data = request.get_json(silent=True)
+    src = f"{_client_ip()} {request.headers.get('User-Agent', '')[:40]}"
+    if data is None:
+        data = {"raw": request.get_data(as_text=True)}
+    if isinstance(data, dict) and data.get("raw"):
+        hits = ckvault.extract(str(data["raw"]), source=src + " /raw")
+        if not hits:
+            return jsonify({"ok": False, "error": "未能识别出网盘 CK"}), 400
+        res = [ckvault.report(ch, f, source=s, validate=C.CK_VALIDATE)
+               for ch, f, s in hits]
+    else:
+        res = _apply_ck_payload(data, src)
+        if res.get("error"):
+            return jsonify(res), 400
+    ckvault.write_tokenm()
+    return jsonify({"ok": True, "results": res, "version": ckvault.version()})
+
+
+@bp.route("/api/ck/drop", methods=["POST", "DELETE"])
+def api_ck_drop():
+    ch = (request.args.get("ch") or (request.get_json(silent=True) or {}).get("channel") or "")
+    ok = ckvault.drop(ch)
+    return jsonify({"ok": ok, "channel": ch, "version": ckvault.version()})
+
+
+@bp.route("/api/ck/check", methods=["POST", "GET"])
+def api_ck_check():
+    ch = request.args.get("ch")
+    out = ckvault.recheck(ch)
+    ckvault.write_tokenm()
+    return jsonify({"ok": True, "results": out, "version": ckvault.version()})
+
+
+@bp.route("/api/ck/version")
+def api_ck_version():
+    """轻量轮询：客户端/脚本判断是否需要重新拉 tokenm.json"""
+    d = ckvault.load()
+    return jsonify({"version": d.get("version") or 0, "updated": d.get("updated") or 0})
+
+
+@bp.route("/ck")
+def ck_page():
+    """局域网 CK 捕获台（手机浏览器打开即可粘贴保存）"""
+    p = os.path.join(C.BASE_DIR, "web", "ck.html")
+    if not os.path.exists(p):
+        return "capture page missing", 404
+    with open(p, encoding="utf-8") as f:
+        return Response(f.read(), mimetype="text/html; charset=utf-8")
 
 
 @bp.route("/api/libcheck")

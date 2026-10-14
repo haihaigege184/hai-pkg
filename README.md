@@ -26,16 +26,55 @@
 > 相对路径（`./pg.jar`、`./lib/*.json`）会按配置地址自动解析，
 > 所以用哪条地址都行，包内资源会自动从同一台服务器加载。
 
-### 网盘扫码（首次用要做的唯一一件事）
+### 网盘 CK：一处保存，局域网多端自动生效（推荐）
 
-包里的 `lib/tokenm.json` 默认是空的，第一次播放阿里云盘 / 夸克 / UC 等网盘内容时，
-播放器会弹二维码，用对应网盘 App 扫一下就行。也可以自己填：
+整包 79 个站点里 **59 个**的 `ext` 第一段都是 `./lib/tokenm.json` ——
+夸克 / UC / 百度 / 115 / 迅雷 / 移动 / PikPak / 123 / 189 / 阿里 的 CK
+全部由这**一个文件**承载。而 `./lib/...` 是相对「配置地址」解析的，
+每台设备都会自己来中枢取这个文件。
 
-```bash
-# 在部署机 /root/hai/lib/ 下
-cp tokentemplate.json tokenm.json
-# 按 README.txt 里的字段说明填 token / cookie
+所以中枢把 `tokenm.json` 做成了**动态渲染**：
+
 ```
+GET /hai/lib/tokenm.json  →  模板（字段全集/默认值） + 保险库里的当前最优 CK
+```
+
+**在任意一台设备上存一次，全屋设备下次加载配置就自动生效**，不用每台重新扫码。
+
+**怎么存**（三选一，都走同一个保险库）：
+
+| 方式 | 操作 |
+| --- | --- |
+| 手机/电脑浏览器 | 打开 `http://10.0.0.11:8099/ck`，粘贴 CK → 保存 |
+| 管理页 | `http://10.0.0.11:8099/` → 「网盘 CK」面板 → 粘贴 → 保存 |
+| 命令行 / 脚本 | `POST /api/ck/report`，见下方接口表 |
+
+粘贴什么都能认：裸 Cookie 串、`quark_cookie=…`、`https://pan.quark.cn/…?cookie=…`、
+整份 `tokenm.json` —— 自动识别是哪个网盘。
+
+**覆盖规则**（对应「有效新 CK 自动覆盖旧 CK」）：
+
+| 新值状态 | 行为 |
+| --- | --- |
+| 校验通过（valid） | **覆盖**旧值，旧值进 history（掩码保存，最多留 5 条） |
+| 判不了（unverified） | 只填空位；已有有效值时不覆盖 |
+| 明确失效（invalid） | **绝不覆盖**已有有效值；只记一条事件 |
+| 播放成功 | 该渠道 `hits+1` 并自动置为有效 |
+
+入库时会**真实调用网盘接口**校验登录态（夸克 / UC / 百度 / 115 / 123 / 189 / 阿里）。
+迅雷 / PikPak / 移动 / 光雅需要客户端签名或验证码，服务端判不了，标 `待验证`——
+**网络不通一律记 unverified，不会因为一次抖动把你的好 CK 清掉**。
+
+**安全边界**：真实 CK **只回局域网来源**；公网来源（经 CF 隧道）只拿到空模板，
+响应头 `X-CK-Scope` 会明确写 `lan` 还是 `public-masked`。
+公网入口的 ingress 只放行 `/hai` 与 `/gw`，`/api/ck`、`/ck` 在公网是 404。
+（想放开：`OKTV_CK_PUBLIC=1`。）
+
+**自动嗅探**：任何带 CK 的请求经中枢且返回 2xx，会被自动识别入库并计一次播放命中
+（`OKTV_CK_AUTOSNIFF=1`，默认开）。自己下发的 `tokenm.json` 与 `/api/ck*` 已豁免，不会自刷命中数。
+
+> 首次用网盘内容时，播放器仍可能弹一次二维码 —— 那是客户端自己的登录态。
+> 扫完把 CK 存进捕获台，之后所有设备都不用再扫。
 
 ---
 
@@ -145,15 +184,22 @@ CF_API_TOKEN=xxx python3 tools/deploy/cf_public_ingress.py --apply
 | --- | --- |
 | `/hai/jsm.json` | 成品配置（播放器用这个） |
 | `/hai/pg.jar` · `/hai/js/*` · `/hai/lib/*` | 包内资源 |
+| **`/hai/lib/tokenm.json`** | **动态：模板 + 保险库里的网盘 CK**（`GET` 取、`PUT/POST` 回传） |
 | `/hai/version.json` | 版本 / 站点数 / 上次巡检时间 |
 | `/gw/<TAG>/…` | 网关反代（域名漂移免疫） |
 | `/api/status` `/api/pool` | 状态与域名池明细 |
 | **`/api/verify[?deep=1]`** | **与原版逐项比对**（证明没被精简；`deep=1` 连 sha256 一起比） |
 | **`/api/libcheck`** | lib 资源体检：`missing`=作者要求自备的，`upstream`=原版本来就缺的 |
 | **`/api/access`** | 播放器访问明细（来源 IP / UA / Range），排查「取配置失败」用 |
+| **`/api/ck`** | CK 保险库总览（默认掩码；`?full=1` 且来自局域网才给明文） |
+| **`/api/ck/report` `POST`** | 上报 CK：`{channel,value}` / `{quark_cookie:…}` / `{raw:"<任意文本>"}` |
+| **`/api/ck/check` `POST`** | 重新做一次网盘登录态校验（`?ch=quark` 只校验单个） |
+| **`/api/ck/drop` `POST`** | 删除某渠道（`?ch=quark`） |
+| **`/api/ck/version`** | 轻量轮询：版本号变了就该重取 `tokenm.json` |
+| **`/ck`** | 局域网 CK 捕获台（手机浏览器直接打开） |
 | `/api/repair` `POST` | 一键检测修复（插件调它） |
 | `/api/check` `/api/sync` `/api/render` `POST` | 单独跑巡检/同步/生成 |
-| `/` | 暗色管理界面（含「🛡 与原版比对」按钮） |
+| `/` | 暗色管理界面（含「🛡 与原版比对」与「网盘 CK」面板） |
 
 ---
 
@@ -173,10 +219,14 @@ tools/
     sync.py                   ← 上游同步 + host/站名双通道域名采集
     patch.py                  ← 生成修复后的 jsm.json 并原子落盘
     gateway.py                ← /gw 反代（故障转移 + Location/Cookie 改写）
+    ckvault.py                ← 网盘 CK 保险库（提取/覆盖策略/渲染 tokenm.json）
+    ckcheck.py                ← 网盘登录态真实校验（valid/invalid/unverified）
     notify.py                 ← SEA / NapCat 私聊通知
     store.py                  ← 状态与事件日志
   baseline/                   ← 原始基线（不带任何修复）
+  data/ck.json                ← 保险库数据（运行时生成）
   web/index.html              ← 管理界面
+  web/ck.html                 ← 局域网 CK 捕获台
   deploy/                     ← systemd / 部署脚本 / 隧道配置
 ```
 
@@ -287,8 +337,11 @@ curl -s "http://10.0.0.11:8099/oktv/api/verify?deep=1" | python3 -m json.tool
 
 | 文件 | 原版状态 | 本仓库 |
 | --- | --- | --- |
-| `tokenm.json`、`sambashare.txt`、`webdav.json`、`alistjar.json` | 只给模板/示例，**要使用者自己复制改名**（作者 README 明确写了步骤） | **代为生成**（从模板派生，等价于替使用者执行 README 的步骤） |
+| `tokenm.json`、`sambashare.txt`、`webdav.json`、`alistjar.json` | 只给模板/示例，**要使用者自己复制改名**（作者 README 明确写了步骤） | **代为生成**（从模板派生，等价于替使用者执行 README 的步骤）；`tokenm.json` 另外叠上网盘 CK 保险库 → 见第一节 |
 | `4kzn.txt`、`guanying.txt`、`hdhaven.txt`、`hdhive.txt`、`huamucang.txt`、`panta.txt`、`qianfan.txt`、`woniu.txt`、`yiso.txt`、`ytblive.m3u` | **本来就不存在**（404），由 jar 自己向站点拉 | **保持不存在**，与原版一致 |
+
+> `tokenm.json` 的**字段全集永远取自原版模板**，只覆盖 CK 那几个字段；
+> 其余字段（各网盘的线程数 / flags / 代理 / pan_order）原样保留，`/api/verify` 已确认这一点。
 
 > 早期版本曾为后一类落「空文件占位」，已撤销。原因：这些是 jar 向站点拉取的**本地缓存清单**，
 > 给空文件等于告诉 jar「本地清单就是空的」，反而会让内容变少；404 时 jar 会走自己的回退逻辑。
