@@ -22,6 +22,11 @@ F_STATE = os.path.join(DATA_DIR, "state.json")        # 运行状态（上次同
 F_LOG = os.path.join(DATA_DIR, "events.jsonl")        # 事件日志（追加）
 F_OVERRIDES = os.path.join(DATA_DIR, "overrides.json")  # 人工修正：手工加域名/禁用域名/模式
 F_CK = os.path.join(DATA_DIR, "ck.json")              # 网盘 CK 保险库（一处保存/多端同步）
+F_DEVICES = os.path.join(DATA_DIR, "devices.json")    # 客户端台账（谁来过/有没有贡献 CK）
+F_PROBE = os.path.join(LOG_DIR, "probe.jsonl")        # 写入探针（CK 到底有没有被送回来）
+F_RELAY = os.path.join(DATA_DIR, "relay.json")        # 外部中转路由表（显式登记才转发）
+F_RELAY_LOG = os.path.join(LOG_DIR, "relay.jsonl")    # 中转流量原始记录（旁路采集证据）
+F_DAV_LOG = os.path.join(LOG_DIR, "dav.jsonl")        # WebDAV 交互记录（端主动备份/恢复）
 
 # 服务参数
 HOST = os.environ.get("OKTV_HOST", "0.0.0.0")
@@ -55,6 +60,22 @@ CK_VALIDATE = os.environ.get("OKTV_CK_VALIDATE", "1") == "1"
 # 接受 CK 上报的来源网段（逗号分隔前缀；空 = 允许所有来源）
 CK_ALLOW_PREFIX = [x.strip() for x in
                    os.environ.get("OKTV_CK_ALLOW", "").split(",") if x.strip()]
+# 写入探针：记录所有可能携带 CK 写入意图的请求（非 GET / 带 query / 带 CK 特征头）
+PROBE_ENABLED = os.environ.get("OKTV_PROBE", "1") == "1"
+# 相对路径绝对化：把配置里的 ./lib/ ./js/ 渲染成「客户端当前所用的中枢地址」。
+# 原版 PG 是本地面向「解压目录」设计的，路径绝对化用于消除
+# 「端把扫描到的 CK 写进自己本地文件」这种歧义。
+ABS_PATHS = os.environ.get("OKTV_ABS_PATHS", "1") == "1"
+# 外部中转改写：把 tokenm.json 里 open_api_url 之类「指向第三方」的地址改写成
+# 中枢自己的 /gw/<tag>/<path>，透传上游并旁路采集凭据。
+# 默认**关闭** —— 打开会改变端的凭据换取路径，确认中转链路可用后再启用。
+RELAY_REWRITE = os.environ.get("OKTV_RELAY_REWRITE", "0") == "1"
+
+# 内置 WebDAV 端点：接管 PG「WEBDAV 缓存网盘信息」的备份/恢复通道。
+# 端主动 PUT 凭据上来 → 中枢落盘并入库；端 GET 恢复 → 中枢把最好的那份给它。
+DAV_ENABLED = os.environ.get("OKTV_DAV", "1") == "1"
+# 是否允许公网来源读写（默认否：只放行局域网/回环，避免成为公开的凭据中转）
+DAV_PUBLIC = os.environ.get("OKTV_DAV_PUBLIC", "0") == "1"
 HEALTH_MIN_BYTES = 800          # 响应体小于该值视为无效页（机房停放页/空页）
 
 UA = ("Mozilla/5.0 (Linux; Android 12; SM-G981B) AppleWebKit/537.36 "

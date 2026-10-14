@@ -25,17 +25,26 @@ from flask import Blueprint, Flask, Response, jsonify, request, send_from_direct
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import config as C          # noqa: E402
-from core import (ckvault, gateway, health, libfill, notify, patch,  # noqa: E402
-                  sources as S, store, sync, verify)
+from core import (absbase, ckvault, dav, devices, gateway, health,  # noqa: E402
+                  libfill, notify, patch, probe, relay, sources as S,
+                  store, sync, verify)
 
 app = Flask(__name__, static_folder=None)
 bp = Blueprint("oktv", __name__)
 
 F_ACCESS = os.path.join(C.LOG_DIR, "access.jsonl")
 
-# 嗅探豁免：这些路径上出现的 CK 要么是我们自己下发的，要么是查询/管理用的，
-# 若也计入会把自己下发的值当成「播放成功」反复刷新 hits。
-_SKIP_SNIFF = ("/api/ck", "/hai/lib/tokenm.json", "/lib/tokenm.json", "/ck/report")
+# 嗅探豁免：/api/ck* 是查询/管理接口，其响应与语义由自己的 handler 负责，
+# 再走一遍通用嗅探只会重复入库。
+#
+# 注意：曾经这里也排除了 /hai/lib/tokenm.json —— 那是过度排除。通用嗅探只看
+# 「请求」的 query/headers，不看响应体，所以下发 tokenm 不会被误当成播放；
+# 而如果端哪天用 `GET /hai/lib/tokenm.json?quark_cookie=...` 这种形式把凭据
+# 送回来，排除掉就等于把唯一的线索扔掉。
+_SKIP_SNIFF = ("/api/ck",)
+
+# CK 端点接受的方法全集：端怎么写都接得住（含扫码页可能用的 PATCH / OPTIONS）
+_WRITE_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 
 
 def _skip_sniff(path):
@@ -46,16 +55,21 @@ def _skip_sniff(path):
 def _client_ip():
     """取真实客户端 IP。
 
-    公网走 CF 隧道时 remote_addr 是 127.0.0.1，真实 IP 在 CF-Connecting-IP / XFF 里；
-    局域网直连时就是 remote_addr 本身（10.0.0.x）。
+    只用**代理自己设置、客户端无法伪造**的头：
+      * CF-Connecting-IP —— Cloudflare 边缘强制写入并覆盖同名请求头，可信；
+      * X-Real-IP       —— 本机 nginx 若配了 `proxy_set_header X-Real-IP $remote_addr` 才可信；
+      * remote_addr     —— 局域网直连时的真实来源。
+
+    **刻意不看 X-Forwarded-For**：CF 是在客户端已有的 XFF 后面 append 真实地址，
+    而链子里第一个值才是客户端可以自由伪造的。早先的实现取 XFF 第一段，等于
+    允许任何人塞一句 `X-Forwarded-For: 10.0.0.108` 就把自己伪装成局域网设备，
+    从而把只该发给内网的真实网盘 CK 拿走。安全判定（_is_lan）直接挂钩这里，
+    所以这个口子必须堵死。
     """
     for k in ("CF-Connecting-IP", "X-Real-IP"):
         v = request.headers.get(k)
         if v:
             return v.strip()
-    xff = request.headers.get("X-Forwarded-For") or ""
-    if xff:
-        return xff.split(",")[0].strip()
     return (request.remote_addr or "").strip()
 
 
@@ -91,8 +105,10 @@ def _access_log(resp):
             nbytes = -1
         rec = {
             "t": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "ip": request.headers.get("X-Forwarded-For") or request.remote_addr,
-            "m": request.method, "p": request.path, "s": resp.status_code,
+            "ip": _client_ip(),
+            "m": request.method, "p": request.path,
+            "q": request.query_string.decode("utf-8", "ignore")[:1000],
+            "s": resp.status_code,
             "ua": (request.headers.get("User-Agent") or "")[:160],
             "ae": request.headers.get("Accept-Encoding") or "",
             "range": request.headers.get("Range") or "",
@@ -103,6 +119,45 @@ def _access_log(resp):
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception as e:
         store.log_event("error", f"访问日志写入失败: {type(e).__name__}: {e}")
+
+    # 写入探针 + 设备台账：把「客户端有没有把 CK 送回来」变成可查的事实。
+    # 网盘 CK 的采集天生是盲区（扫码与播放都不经过中枢），所以这里不做取舍，
+    # 凡是有写入嫌疑的请求一律留证，再由 /api/probe 下结论。
+    try:
+        ip = _client_ip()
+        ua = request.headers.get("User-Agent") or ""
+        qs = request.query_string.decode("utf-8", "ignore")
+        body = b""
+        if request.method not in ("GET", "HEAD"):
+            try:
+                clen = int(request.headers.get("Content-Length") or 0)
+            except Exception:
+                clen = 0
+            if clen <= 262144:
+                body = request.get_data(cache=True) or b""
+            # form 请求的原始 body 取不回来（Werkzeug 解析表单时消费掉了流），
+            # 但路由里已经解析过 request.form —— 用拼回来的形式补上。
+            # 少了这一步，form 形态的 CK 上报在探针里就是「空 body」，
+            # 设备台账会把贡献方误判成纯消费方。
+            if not body:
+                try:
+                    form = request.form
+                    if form:
+                        body = "&".join("%s=%s" % (k, form.get(k)) for k in form.keys()).encode("utf-8")
+                except Exception:
+                    pass
+        prec = probe.record(request.method, request.path, qs, dict(request.headers),
+                            body, resp.status_code, ip, ua)
+        is_write = request.method not in ("GET", "HEAD")
+        ck_hit = bool(prec and probe.looks_like_ck(prec))
+        if prec is not None or is_write:
+            devices.touch(ip, ua=ua, path=request.path,
+                          kind="write" if is_write else "read", seen_ck=ck_hit)
+        if ck_hit:
+            store.log_event("ck", f"探针捕获到携带 CK 的请求：{request.method} "
+                                  f"{request.path} 来自 {ip}")
+    except Exception as e:
+        store.log_event("error", f"探针/台账记录失败: {type(e).__name__}: {e}")
 
     # 网盘 CK 自动嗅探：客户端把带 CK 的请求送到中枢（且成功）就算「播放成功」，
     # 该渠道 CK 入库并 hits+1 —— 这是「播放成功即保存」的自动路径。
@@ -344,11 +399,37 @@ def index():
     return send_from_directory(os.path.join(C.BASE_DIR, "web"), "index.html")
 
 
+_jsm_cache = {"key": None, "body": None}
+
+
+def _jsm_body(req, tail):
+    """渲染 jsm.json 的响应体。
+
+    这里做「相对路径绝对化」：原版包是给「解压到本地再用本地 jsm.json」的用法
+    写的，`./lib/tokenm.json` 在那种场景下是本地文件路径；而我们的用法是 HTTP
+    配置源，同一个字符串到底被解析成网络地址还是端上的本地文件，取决于 PG 的
+    内部实现。tokenm.json 恰恰是网盘 CK 的载体，一旦它落到端本地，扫码得到的
+    CK 就永远回不到中枢。把路径渲染成端自己正在用的那个绝对地址，歧义即消除。
+    """
+    jsm = get_config()
+    suffix = ""
+    if getattr(C, "ABS_PATHS", True):
+        base, pfx = absbase.site_base(req, C.PUBLIC_BASE or "")
+        if base:
+            suffix = base
+            jsm = absbase.absolutize(jsm, base, prefix=pfx)
+    key = (suffix, tail, _last_render["ts"], ckvault.version())
+    if _jsm_cache["key"] == key and _jsm_cache["body"]:
+        return _jsm_cache["body"]
+    body = json.dumps(jsm, ensure_ascii=False, indent=1)
+    _jsm_cache["key"], _jsm_cache["body"] = key, body
+    return body
+
+
 @bp.route("/jsm.json")
 def jsm_json():
-    jsm = get_config()
-    body = json.dumps(jsm, ensure_ascii=False, indent=1)
-    return Response(body, mimetype="application/json; charset=utf-8",
+    return Response(_jsm_body(request, "/jsm.json"),
+                    mimetype="application/json; charset=utf-8",
                     headers={"Cache-Control": "no-cache",
                              "Access-Control-Allow-Origin": "*"})
 
@@ -393,9 +474,8 @@ def hai_index():
 @bp.route("/hai/jsm.json")
 def hai_jsm():
     """hai 包的主配置，永远回给最新生成的版本"""
-    jsm = get_config()
-    body = json.dumps(jsm, ensure_ascii=False, indent=1)
-    return Response(body, mimetype="application/json; charset=utf-8",
+    return Response(_jsm_body(request, "/hai/jsm.json"),
+                    mimetype="application/json; charset=utf-8",
                     headers={"Cache-Control": "no-cache",
                              "Access-Control-Allow-Origin": "*"})
 
@@ -405,7 +485,7 @@ def hai_version():
     return version_json()
 
 
-@bp.route("/hai/lib/<path:p>", methods=["GET", "POST", "PUT"])
+@bp.route("/hai/lib/<path:p>", methods=list(_WRITE_METHODS))
 def hai_lib(p):
     if p.replace("\\", "/").lower() == "tokenm.json":
         return _tokenm(p)
@@ -437,34 +517,174 @@ def _apply_ck_payload(data, source):
     return {"ok": True, "results": res}
 
 
-def _tokenm(p):
-    if request.method in ("POST", "PUT"):
-        raw = request.get_data(as_text=True) or ""
-        if not _check_ck_source():
-            return jsonify({"ok": False, "error": "该来源不允许上报 CK"}), 403
-        ck_hdr = request.headers.get("X-CK") or ""
-        if ck_hdr:
-            raw = ck_hdr + "\n" + raw
-        hits = ckvault.extract(raw, source=f"tokenm PUT {_client_ip()}")
-        if not hits:
-            try:
-                obj = json.loads(raw)
-                res = _apply_ck_payload(obj, f"tokenm PUT {_client_ip()}")
-                return (jsonify(res), 200) if res.get("ok") else (jsonify(res), 400)
-            except Exception:
-                return jsonify({"ok": False, "error": "未识别到网盘 CK"}), 400
-        out = [ckvault.report(ch, f, source=src, validate=C.CK_VALIDATE)
-               for ch, f, src in hits]
-        ckvault.write_tokenm()
-        return jsonify({"ok": True, "results": out,
-                        "version": ckvault.version()})
+def _payload_chunks():
+    """把一次请求里**所有**可能承载 CK 的地方收集成候选文本。
 
+    端点不可能预先知道 PG 用哪种形式把凭据送回来 —— 可能是一整份 tokenm.json
+    （PUT body）、可能是一条 `quark_cookie=xxx`（form / query）、可能直接放在
+    Cookie 头里、也可能是扫码页那种 multipart 提交。所以不做取舍，全部收上来，
+    交给 ckvault.extract 去识别；识别不出就当普通读取处理。
+
+    返回 [(来源标签, 文本), ...]
+    """
+    chunks = []
+    qs = request.query_string.decode("utf-8", "ignore")
+    if qs:
+        chunks.append(("query", qs))
+
+    try:
+        clen = int(request.headers.get("Content-Length") or 0)
+    except Exception:
+        clen = 0
+
+    if request.method not in ("GET", "HEAD", "OPTIONS") and clen <= 262144:
+        ct = (request.content_type or "").lower()
+        if "multipart/form-data" in ct or "x-www-form-urlencoded" in ct:
+            try:
+                for k, v in request.form.items():
+                    chunks.append(("form:" + k, "%s=%s" % (k, v)))
+            except Exception:
+                pass
+            try:
+                for k, v in request.files.items():
+                    chunks.append(("file:" + k, v.filename or ""))
+            except Exception:
+                pass
+        else:
+            raw = b""
+            try:
+                raw = request.get_data(cache=True) or b""
+            except Exception:
+                raw = b""
+            if raw:
+                chunks.append(("body", raw.decode("utf-8", "replace")))
+
+    for k in ("Authorization", "X-CK", "X-Cookie", "X-Token",
+              "X-Quark-Cookie", "X-Baidu-Cookie", "X-Tokenm"):
+        v = request.headers.get(k)
+        if v:
+            chunks.append(("header:" + k, v))
+
+    # Cookie 有两条来源，都要：
+    #   1. 原始头 —— 最保真（一整条 `quark_cookie=__pus=…; __kp=…`）
+    #   2. Flask 解析后的 cookie 字典 —— 兜底。有些 WSGI 服务器 / 测试客户端
+    #      会把 Cookie 头剥离出 headers，只留解析结果，此时来源 1 是空的。
+    #      拼回去时用 `; ` 连接，正好还原成原来的串（_CK_FIELD_RE 的值部分
+    #      允许分号，所以能完整取回整条凭据，而不是被截断成半截）。
+    # Cookie 有两条来源，但**只用先到的那条**：
+    #   1. 原始头 —— 最保真（一整条 `quark_cookie=__pus=…; __kp=…`）
+    #   2. Flask 解析后的 cookie 字典 —— 兜底。有些 WSGI 服务器会把 Cookie 头
+    #      剥离出 headers，只留解析结果，此时来源 1 是空的。
+    # 为什么互斥：解析后的字典是按 `;` 拆开的，拼回去虽然大多能还原，但遇到
+    # 值里本身就带 `=` 的凭据（夸克 cookie 就是这样）会有残缺风险。残缺值一旦
+    # 入库，会顶掉刚写进去的完整值 —— 宁可不用，也不能用坏的覆盖好的。
+    raw_cookie = request.headers.get("Cookie") or request.environ.get("HTTP_COOKIE")
+    if raw_cookie:
+        chunks.append(("header:Cookie", raw_cookie))
+    else:
+        try:
+            jar = request.cookies
+            if jar:
+                parts = ["%s=%s" % (k, jar.get(k)) for k in list(jar.keys())[:60]]
+                chunks.append(("cookies", "; ".join(parts)[:8192]))
+        except Exception:
+            pass
+    return chunks
+
+
+def _absorb_payload(source):
+    """尝试从当前请求里吸收 CK。
+
+    返回 (识别到的条数, 结果列表)；0 表示这不是一次 CK 写入。
+    """
+    all_hits = []
+    for tag, text in _payload_chunks():
+        if not text or not text.strip():
+            continue
+        try:
+            for ch, fields, src in ckvault.extract(text, source="%s %s/%s" % (source, _client_ip(), tag)):
+                all_hits.append((ch, fields, src))
+        except Exception:
+            continue
+        # 也可以是「整份 tokenm 字段」形态
+        if text.lstrip().startswith("{"):
+            try:
+                obj = json.loads(text)
+                if isinstance(obj, dict):
+                    for f, v in obj.items():
+                        ch = ckvault._FIELD2CH.get(str(f).lower())
+                        if ch and str(v or "").strip():
+                            all_hits.append((ch, {str(f).lower(): str(v).strip()},
+                                             source + " /json"))
+            except Exception:
+                pass
+    if not all_hits:
+        return 0, []
+
+    seen, out = set(), []
+    for ch, fields, src in all_hits:
+        key = (ch, tuple(sorted(fields.items())))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ckvault.report(ch, fields, source=src, validate=C.CK_VALIDATE))
+    if out:
+        ckvault.write_tokenm()
+        store.log_event("ck", "tokenm 写入端点吸收 %d 条 CK（来源 %s）"
+                              % (len(out), _client_ip()))
+    return len(out), out
+
+
+def _tokenm(p):
+    """网盘 CK 的读写端点（tokenm.json）
+
+    读：GET 返回「模板 + 保险库当前最优 CK」，公网来源只拿到空模板。
+    写：任何方法、任何载荷形态下出现凭据字段都会被吸收并入库 —— 这一端点是
+        「扫码设置一次，全屋自动生效」的上游入口。
+    """
+    if not _check_ck_source():
+        return jsonify({"ok": False, "error": "该来源不允许上报 CK"}), 403
+
+    if request.method == "OPTIONS":
+        return Response("", 204, headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        })
+
+    # ---- 写入路径：任何方法都先尝试吸收 ----
+    looks_write = (request.method not in ("GET", "HEAD")) or bool(request.query_string)
+    if looks_write:
+        try:
+            n, results = _absorb_payload("tokenm")
+            if n:
+                return jsonify({"ok": True, "written": n, "results": results,
+                                "version": ckvault.version()})
+        except Exception as e:
+            store.log_event("error", "tokenm 吸收异常: %s: %s" % (type(e).__name__, e))
+        if request.method not in ("GET", "HEAD"):
+            # 端写了一个我们认不出来的东西 —— 不报错（避免端放弃重试），
+            # 但要留下明确记录，原始报文已由探针落盘。
+            store.log_event("ck", "tokenm 收到写入但未识别出网盘 CK（%s %s，%d 字节）"
+                                  % (request.method, _client_ip(),
+                                     len(request.get_data(cache=True) or b"")))
+            return jsonify({"ok": False, "error": "未识别到网盘 CK 字段",
+                            "hint": "原始报文已记入 logs/probe.jsonl"})
+
+    # ---- 读取路径 ----
+    base, pfx = absbase.site_base(request, C.PUBLIC_BASE or "")
+    # 中枢根（不含配置根目录）：/gw/<tag>/<path> 是绝对路由，不能用 base 拼
+    hub = (absbase.base_from_request(request, C.PUBLIC_BASE or "") + C.PREFIX).rstrip("/")
     lan = C.CK_PUBLIC or _is_lan()
-    body = ckvault.render_text(lan=lan)
+    body = ckvault.render_text(lan=lan, base=base, prefix=pfx, hub=hub)
     etag = '"ck-%d-%s"' % (ckvault.version(), hashlib.md5(body.encode()).hexdigest()[:10])
     if request.headers.get("If-None-Match") == etag:
         return Response(status=304, headers={"ETag": etag,
                                              "X-CK-Version": str(ckvault.version())})
+    if request.method == "HEAD":
+        return Response("", 200, headers={
+            "ETag": etag, "X-CK-Version": str(ckvault.version()),
+            "X-CK-Scope": "lan" if lan else "public-masked"})
     return Response(body, mimetype="application/json; charset=utf-8", headers={
         "Cache-Control": "no-cache, must-revalidate",
         "ETag": etag,
@@ -481,8 +701,8 @@ def _check_ck_source():
     return any(ip.startswith(p) for p in C.CK_ALLOW_PREFIX) or ip in ("127.0.0.1", "::1")
 
 
-@bp.route("/hai/lib/tokenm.json", methods=["GET", "POST", "PUT"])
-@bp.route("/lib/tokenm.json", methods=["GET", "POST", "PUT"])
+@bp.route("/hai/lib/tokenm.json", methods=list(_WRITE_METHODS))
+@bp.route("/lib/tokenm.json", methods=list(_WRITE_METHODS))
 def tokenm_dynamic():
     """兼容两种配置挂载方式：/hai/lib/... 与根路径 /lib/..."""
     return _tokenm("tokenm.json")
@@ -535,15 +755,45 @@ def js_assets(p):
 # ----------------------------------------------------------------------------
 
 
-@bp.route("/gw/<tag>/", defaults={"path": ""},
-           methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"])
-@bp.route("/gw/<tag>/<path:path>",
-           methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"])
+# strict_slashes=False：`/gw/dav` 与 `/gw/dav/` 都要直接命中，不能走 308。
+# WebDAV 客户端遇到 308 的处理各家不一（有的丢方法、有的不跟随重定向），
+# 而 PROPFIND/PUT 一旦被重定向基本就废了。
+@bp.route("/gw/<tag>", defaults={"path": ""}, strict_slashes=False,
+           methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH",
+                    "PROPFIND", "MKCOL"])
+@bp.route("/gw/<tag>/<path:path>", strict_slashes=False,
+           methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH",
+                    "PROPFIND", "MKCOL"])
 def gw(tag, path):
-    raw, code, err, hdrs = gateway.proxy(
-        tag, path, request.method, dict(request.headers),
-        request.get_data() if request.method in ("POST", "PUT", "PATCH") else None,
-        request.query_string.decode("utf-8", "ignore"))
+    # 内置 WebDAV 端点：接管 PG「网盘及弹幕配置 → WEBDAV 缓存网盘信息」。
+    # 挂在 /gw 之下是刻意的 —— CF 隧道的 ingress 只放行 /hai 与 /gw，
+    # 这样局域网与公网用的是同一个地址形态。
+    if tag.lower() == "dav":
+        # PROPFIND 的 <D:href> 必须是「客户端自己请求时用的路径前缀」，
+        # 否则端拿到的绝对路径对不上（局域网是 /gw/dav，公网老入口是 /oktv/gw/dav）。
+        base_url = request.path
+        if path and base_url.endswith(path):
+            base_url = base_url[:-len(path)]
+        out = dav.handle(path or "", request.method, dict(request.headers),
+                         request.get_data(cache=True), _client_ip(),
+                         base_url.rstrip("/") or "/gw/dav")
+        return Response(out[0], out[1], headers=out[2])
+
+    body = (request.get_data(cache=True)
+            if request.method in ("POST", "PUT", "PATCH", "DELETE") else None)
+    query = request.query_string.decode("utf-8", "ignore")
+
+    # 外部中转优先：这类路由指向**固定上游**（如网盘换 token 的接口），
+    # 不参与站点域名池的故障转移。未登记的路由 relay.handle 返回 None，
+    # 落回下面的域名池反代。
+    out = relay.handle(tag, path, request.method, dict(request.headers),
+                       body, query, ip=_client_ip())
+    if out is not None:
+        raw, code, hdrs = out
+        return Response(raw, code, headers=hdrs)
+
+    raw, code, err, hdrs = gateway.proxy(tag, path, request.method,
+                                         dict(request.headers), body, query)
     if raw is None:
         return Response(json.dumps({"error": err, "tag": tag}, ensure_ascii=False),
                         502, mimetype="application/json")
@@ -573,7 +823,13 @@ def api_status():
         "ck": {"version": ckvault.version(),
                "configured": ckvault.summary()["configured"],
                "valid": ckvault.summary()["valid"],
-               "autosniff": C.CK_AUTOSNIFF},
+               "autosniff": C.CK_AUTOSNIFF,
+               "abs_paths": getattr(C, "ABS_PATHS", True)},
+        "probe": probe.stats(),
+        "devices": {"count": len(devices.list_devices()),
+                    "contributors": len(devices.contributor_ips())},
+        "relay": relay.stats(),
+        "dav": dav.stats(),
     })
 
 
@@ -772,12 +1028,88 @@ def api_ck_version():
     return jsonify({"version": d.get("version") or 0, "updated": d.get("updated") or 0})
 
 
+@bp.route("/api/devices")
+def api_devices():
+    """客户端台账：谁连过这个包、有没有把 CK 送回来过"""
+    devs = devices.list_devices()
+    return jsonify({
+        "count": len(devs),
+        "lan": sum(1 for d in devs if d.get("lan")),
+        "contributors": [d for d in devs if int(d.get("ck_in") or 0) > 0],
+        "devices": devs,
+    })
+
+
+@bp.route("/api/probe")
+def api_probe():
+    """写入探针：端到底有没有把 CK 送回来
+
+    ?write=1   只看非 GET 的请求
+    ?path=xxx  只看路径里含 xxx 的
+    ?n=100     条数
+    """
+    n = int(request.args.get("n", 100))
+    rows = probe.tail(n,
+                      only_write=request.args.get("write") in ("1", "true", "yes"),
+                      path_contains=request.args.get("path"))
+    return jsonify({"stats": probe.stats(), "rows": rows})
+
+
+@bp.route("/api/relay", methods=["GET", "POST"])
+def api_relay():
+    """外部中转：把端直连第三方的凭据换取请求引到中枢，旁路采集。
+
+    背景：PG 的 tokenm.json 里 `open_api_url` 指向网盘换 token 的接口，
+    端扫码后的凭据就 POST 到那里 —— 直连第三方，中枢看不见。把它改写到
+    `/gw/ali/token` 即可透传 + 采集。
+
+    GET               查看中转状态与最近记录（?n=100&hit=1）
+    POST {"rewrite"}  开关「把 tokenm 外发地址改写到中枢」（改完端下一轮拉取即生效）
+    POST {"key","enabled"}  开关某条路由
+    """
+    if request.method == "POST":
+        d = request.get_json(silent=True) or {}
+        if "rewrite" in d:
+            relay.set_rewrite(bool(d["rewrite"]))
+            store.log_event("relay", "外部中转改写已%s"
+                                     % ("开启" if relay.rewrite_enabled() else "关闭"))
+        if d.get("key"):
+            relay.set_route_enabled(str(d["key"]), bool(d.get("enabled", True)))
+        return jsonify({"ok": True, "stats": relay.stats(),
+                        "routes": relay.routes()})
+
+    n = min(int(request.args.get("n", 100)), 500)
+    rows = relay.recent(n)
+    if request.args.get("hit") in ("1", "true", "yes"):
+        rows = [r for r in rows if r.get("hit")]
+    return jsonify({"stats": relay.stats(), "routes": relay.routes(),
+                    "rows": rows})
+
+
+@bp.route("/api/dav")
+def api_dav():
+    """内置 WebDAV 端点状态：端有没有把凭据备份上来"""
+    n = min(int(request.args.get("n", 100)), 500)
+    return jsonify({"stats": dav.stats(), "files": dav.list_files(),
+                    "rows": dav.recent(n)})
+
+
 @bp.route("/ck")
 def ck_page():
     """局域网 CK 捕获台（手机浏览器打开即可粘贴保存）"""
     p = os.path.join(C.BASE_DIR, "web", "ck.html")
     if not os.path.exists(p):
         return "capture page missing", 404
+    with open(p, encoding="utf-8") as f:
+        return Response(f.read(), mimetype="text/html; charset=utf-8")
+
+
+@bp.route("/live")
+def live_page():
+    """CK 同步监视台（手机浏览器打开，边操作 OK影视 边看请求有没有回来）"""
+    p = os.path.join(C.BASE_DIR, "web", "live.html")
+    if not os.path.exists(p):
+        return "live page missing", 404
     with open(p, encoding="utf-8") as f:
         return Response(f.read(), mimetype="text/html; charset=utf-8")
 

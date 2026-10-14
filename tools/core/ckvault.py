@@ -29,6 +29,7 @@ import re
 import time
 import urllib.parse
 
+from . import absbase
 from . import ckcheck
 from . import config as C
 from . import store
@@ -454,8 +455,29 @@ def render(lan=True):
     return tpl
 
 
-def render_text(lan=True):
-    return json.dumps(render(lan=lan), ensure_ascii=False, indent=1)
+def render_text(lan=True, base="", prefix="/hai", hub=""):
+    """渲染 tokenm.json 文本。
+
+    base 非空时把内容里的 `./lib/xxx` 之类的相对路径绝对化 —— tokenm 里同样
+    写着 aliproxy_url/xray_url/libxl_url 这类相对资源（见 tokentemplate.json），
+    端按相对路径解析时，基准是「配置目录」还是「本机目录」同样存在歧义。
+
+    hub 是**中枢根地址**（协议+主机[+挂载前缀]，不含配置根目录）。它只用于外部
+    中转改写：/gw/<tag>/<path> 是中枢自己的绝对路由，不在配置根之下，
+    用 base 拼会得到 /hai/gw/... 这种不存在的地址。
+    """
+    obj = render(lan=lan)
+    if base and getattr(C, "ABS_PATHS", True):
+        obj = absbase.absolutize(obj, base, prefix=prefix)
+    # 外部中转改写（默认关闭，见 relay.rewrite_enabled）：把 open_api_url 一类
+    # 「指向第三方」的地址引到中枢 /gw/<tag>/<path>，透传上游的同时旁路采集凭据。
+    if getattr(C, "RELAY_REWRITE", False) or os.path.exists(C.F_RELAY):
+        try:
+            from . import relay
+            obj = relay.patch_tokenm(obj, hub)
+        except Exception as e:
+            store.log_event("error", f"relay 改写 tokenm 失败: {type(e).__name__}: {e}")
+    return json.dumps(obj, ensure_ascii=False, indent=1)
 
 
 def write_tokenm():
@@ -465,8 +487,10 @@ def write_tokenm():
         if os.path.isdir(lib):
             p = os.path.join(lib, "tokenm.json")
             tmp = p + ".tmp"
+            # 公网入口把 /hai 挂在根下，所以资源根是 PUBLIC_BASE + /hai
+            base = (C.PUBLIC_BASE + "/hai") if C.PUBLIC_BASE else ""
             with open(tmp, "w", encoding="utf-8") as f:
-                f.write(render_text(True))
+                f.write(render_text(True, base=base, prefix="", hub=C.PUBLIC_BASE))
             os.replace(tmp, p)
             return p
     except Exception as e:

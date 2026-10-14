@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/>
+<title>hai · CK 同步监视</title>
+<style>
+  :root{
+    --bg:#05070d; --panel:rgba(10,16,28,.76); --line:rgba(0,255,170,.18);
+    --green:#28ffbf; --purple:#b98bff; --red:#ff4d6d; --dim:#6a7d8c; --txt:#d7e6ef;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:16px;background:var(--bg);color:var(--txt);
+    font:13px/1.6 -apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif}
+  h1{font-size:15px;letter-spacing:2px;color:var(--green);margin:0 0 4px;
+     text-shadow:0 0 12px rgba(40,255,191,.5)}
+  .sub{color:var(--dim);font-size:11px;letter-spacing:1px;margin-bottom:14px}
+  .verdict{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:14px 16px;margin-bottom:12px;backdrop-filter:blur(8px)}
+  .verdict .big{font-size:17px;font-weight:700;margin-bottom:6px}
+  .verdict .big.hit{color:var(--green);text-shadow:0 0 14px rgba(40,255,191,.55)}
+  .verdict .big.miss{color:var(--purple);text-shadow:0 0 14px rgba(185,139,255,.5)}
+  .kv{color:var(--dim);font-size:11px;letter-spacing:.6px}
+  .kv b{color:var(--txt);font-weight:600}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  button{background:rgba(40,255,191,.06);color:var(--green);cursor:pointer;
+    border:1px solid rgba(40,255,191,.45);border-radius:7px;padding:6px 12px;
+    font-size:12px;letter-spacing:.5px;font-family:inherit}
+  button.on{background:rgba(40,255,191,.22)}
+  button.p{color:var(--purple);border-color:rgba(185,139,255,.45);background:rgba(185,139,255,.07)}
+  table{width:100%;border-collapse:collapse;font-size:11.5px;
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  th{color:var(--dim);font-weight:500;text-align:left;padding:7px 9px;
+     letter-spacing:1px;border-bottom:1px solid var(--line);font-size:10.5px}
+  td{padding:6px 9px;border-bottom:1px solid rgba(0,255,170,.06);
+     word-break:break-all;vertical-align:top}
+  tr.ck{background:rgba(40,255,191,.09)}
+  tr.wr td:first-child{box-shadow:inset 3px 0 0 var(--purple)}
+  code{color:var(--green);font-family:ui-monospace,Consolas,monospace}
+  .m{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700;
+     background:rgba(40,255,191,.14);color:var(--green)}
+  .m.w{background:rgba(185,139,255,.18);color:var(--purple)}
+  .empty{padding:22px;text-align:center;color:var(--dim);
+     border:1px dashed var(--line);border-radius:10px;font-size:12px}
+  .warn{background:rgba(185,139,255,.08);border:1px solid rgba(185,139,255,.35);
+    border-radius:8px;padding:10px 12px;font-size:11.5px;margin-top:12px;line-height:1.75}
+  h2{font-size:12.5px;letter-spacing:2px;color:var(--purple);margin:20px 0 8px;
+     text-shadow:0 0 10px rgba(185,139,255,.45)}
+  .card{background:var(--panel);border:1px solid rgba(185,139,255,.28);border-radius:10px;
+    padding:12px 14px;margin-bottom:10px}
+  .card .big{font-size:14.5px;font-weight:700;margin-bottom:5px}
+  .card .big.hit{color:var(--green);text-shadow:0 0 12px rgba(40,255,191,.5)}
+  .card .big.off{color:var(--dim)}
+  tr.hit{background:rgba(185,139,255,.12)}
+  .pre{white-space:pre-wrap;word-break:break-all;color:var(--dim);
+     font-family:ui-monospace,Consolas,monospace;font-size:10.5px;max-height:120px;
+     overflow:auto;border-left:2px solid var(--line);padding-left:7px;margin-top:3px}
+</style>
+</head>
+<body>
+<h1>CK 同步监视</h1>
+<div class="sub">盯着这张表，然后在 OK影视 里做一次「网盘及弹幕配置 → 扫码 / 保存」</div>
+
+<div class="verdict">
+  <div class="big" id="verdict">…</div>
+  <div class="kv" id="stat"></div>
+</div>
+
+<div class="bar">
+  <button id="fAll" class="on" onclick="setF('')">全部</button>
+  <button id="fW" class="p" onclick="setF('write')">只看写入（非 GET）</button>
+  <button id="fC" class="p" onclick="setF('ck')">只看带 CK</button>
+  <button onclick="load()">↻ 立即刷新</button>
+  <span class="kv" id="auto" style="align-self:center"></span>
+</div>
+
+<div id="list"></div>
+
+<div class="warn">
+  <b>怎么读这张表：</b><br/>
+  · 看到 <span class="m w">PUT</span>/<span class="m w">POST</span> 且路径是 <code>/hai/lib/tokenm.json</code> →
+  端确实把 CK 送回中枢了，会立刻入库并同步给其他设备。<br/>
+  · 只有 <span class="m">GET</span> → 端只是在取配置，「扫码得到的 CK 目前留在端自己身上」，
+  需要靠下面的<b>外部中转</b>把凭据换取请求接过来。
+</div>
+
+<h2>外部中转 · 凭据旁路</h2>
+<div class="card">
+  <div class="big" id="rverdict">…</div>
+  <div class="kv" id="rstat"></div>
+</div>
+<div class="bar">
+  <button id="btnRW" onclick="toggleRW()">…</button>
+  <button onclick="loadRelay()">↻ 刷新中转</button>
+  <span class="kv" id="rhint" style="align-self:center"></span>
+</div>
+<div id="rlist"></div>
+<div class="warn">
+  <b>原理：</b>PG 的 <code>tokenm.json</code> 里 <code>open_api_url</code> 指向「网盘换 token 的接口」，
+  端会把扫码/刷新得到的凭据 <span class="m w">POST</span> 过去 —— 这一步本来直连第三方，中枢看不见。<br/>
+  改写开启后，该地址指向 <code>/gw/ali/token</code>：<b>原样透传给真正的上游</b>（端的功能不受影响），
+  同时把请求与响应里的凭据截下来入库 → 其余设备下一轮拉配置（约 15~30 秒）就自动生效。
+</div>
+
+<h2>WebDAV 端点 · 端主动备份通道</h2>
+<div class="card">
+  <div class="big" id="dverdict">…</div>
+  <div class="kv" id="dstat"></div>
+</div>
+<div class="bar">
+  <button onclick="loadDav()">↻ 刷新 WebDAV</button>
+  <span class="kv" id="daddr" style="align-self:center"></span>
+</div>
+<div id="dlist"></div>
+<div class="warn">
+  <b>怎么开：</b>在 OK影视 的「网盘及弹幕配置」里找到 <b>WEBDAV 缓存网盘信息</b>，
+  把地址填成 <code id="durl">…</code>（账号密码随便填，中枢不校验），
+  再做一次「备份 / 缓存」。<br/>
+  这张表出现 <span class="m w">PUT</span> → 端确实把凭据送上来了，会自动入库并同步给其他设备。<br/>
+  <span class="kv">注：PG 原生会走 WebDAV 的是影巢/栖影/123开放/光雅/YouTube/B站 这几类账号；
+  阿里云盘的凭据见上方「外部中转」。</span>
+</div>
+
+<script src="jquery.min.js" onerror="window.__nojq=1"></script>
+<script>
+const $ = window.jQuery || function(s){return document.querySelector(s)};
+let filter='', timer=null;
+
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+function setF(f){
+  filter=f;
+  for(const [id,val] of [['fAll',''],['fW','write'],['fC','ck']]){
+    const el=document.getElementById(id);
+    if(el) el.className = (f===val? 'on' : (id==='fAll'?'':'p'));
+  }
+  load();
+}
+
+async function load(){
+  try{
+    const r = await fetch('/api/probe?n=200');
+    const d = await r.json();
+    const st = d.stats||{};
+    const v = document.getElementById('verdict');
+    const got = (st.writes||0) > 0;
+    v.className = 'big ' + (got?'hit':'miss');
+    v.textContent = got
+      ? '✓ 已捕获到客户端写入 ' + st.writes + ' 次'
+      : '尚无写入 —— 端没有把 CK 送回中枢（改走外部中转，见下方）';
+    document.getElementById('stat').innerHTML =
+      '总计 <b>'+(st.total||0)+'</b> 条 &nbsp;|&nbsp; 带 CK 特征 <b>'+(st.with_ck||0)+'</b> 条'
+      + (st.last_write? ' &nbsp;|&nbsp; 最近写入 <b>'+esc(st.last_write)+'</b>':'')
+      + (st.last_with_ck? ' &nbsp;|&nbsp; 最近带 CK <b>'+esc(st.last_with_ck)+'</b>':'');
+
+    let rows = d.rows||[];
+    if(filter==='write') rows = rows.filter(x=>x.m!=='GET' && x.m!=='HEAD');
+    if(filter==='ck') rows = rows.filter(x=>/__pus|__kp|__puus|BDUSS|STOKEN|_UP_A4A_11_|quark|baidu|pan115|cookie|token/i
+        .test([x.p,x.q,x.b,JSON.stringify(x.h||{})].join(' ')));
+    rows = rows.slice().reverse();
+
+    const host = document.getElementById('list');
+    if(!rows.length){ host.innerHTML = '<div class="empty">暂无记录</div>'; return; }
+    host.innerHTML = '<table><thead><tr><th>时间</th><th>来源</th><th>方法</th><th>路径 / 参数</th><th>结果</th><th>UA</th></tr></thead><tbody>'
+      + rows.map(x=>{
+          const isW = x.m!=='GET' && x.m!=='HEAD';
+          const isCk = /__pus|__kp|__puus|BDUSS|STOKEN|_UP_A4A_11_|quark|baidu|pan115|cookie|token/i
+            .test([x.p,x.q,x.b,JSON.stringify(x.h||{})].join(' '));
+          const qs = x.q? ' <code>?'+esc(x.q.slice(0,120))+'</code>' : '';
+          const bd = x.b? '<div class="kv">body: '+esc(x.b.slice(0,160))+'</div>' : '';
+          return '<tr class="'+(isCk?'ck':'')+' '+(isW?'wr':'')+'">'
+            + '<td>'+esc((x.t||'').slice(11))+'</td>'
+            + '<td>'+esc(x.ip)+'</td>'
+            + '<td><span class="m'+(isW?' w':'')+'">'+esc(x.m)+'</span></td>'
+            + '<td>'+esc(x.p)+qs+bd+'</td>'
+            + '<td>'+esc(x.s)+'</td>'
+            + '<td class="kv">'+esc((x.ua||'').slice(0,42))+'</td></tr>';
+        }).join('') + '</tbody></table>';
+  }catch(e){
+    document.getElementById('verdict').textContent = '读取失败：'+e;
+  }
+}
+
+async function loadRelay(){
+  try{
+    const d = await (await fetch('/api/relay?n=60')).json();
+    const st = d.stats||{};
+    const v = document.getElementById('rverdict');
+    const on = !!st.rewrite;
+    const cred = st.with_cred||0;
+    v.className = 'big ' + (cred? 'hit' : (on? '' : 'off'));
+    v.textContent = cred
+      ? '✓ 已从中转通道捕获凭据 ' + cred + ' 次'
+      : (on ? '改写已开启 —— 等待端发起凭据换取' : '改写未开启 —— 端仍在直连第三方');
+    document.getElementById('rstat').innerHTML =
+      '中转次数 <b>'+(st.total||0)+'</b> &nbsp;|&nbsp; 含凭据 <b>'+cred+'</b>'
+      + ' &nbsp;|&nbsp; 路由 <b>'+esc((st.routes||[]).join(', ')||'-')+'</b>'
+      + (st.last? ' &nbsp;|&nbsp; 最近 <b>'+esc(st.last_key)+' '+esc(st.last)+'</b>':'');
+    const b = document.getElementById('btnRW');
+    b.className = on? 'on' : 'p';
+    b.textContent = on? '■ 关闭地址改写' : '▶ 开启地址改写（引到中枢）';
+    document.getElementById('rhint').textContent = on
+      ? '端下一轮拉取配置后生效（约 15~30 秒）' : '开启前端不会把凭据送给中枢';
+
+    const rows = (d.rows||[]);
+    const host = document.getElementById('rlist');
+    if(!rows.length){ host.innerHTML = '<div class="empty">暂无中转记录</div>'; return; }
+    host.innerHTML = '<table><thead><tr><th>时间</th><th>来源</th><th>方法</th><th>路由 → 上游</th>'
+      + '<th>状态</th><th>命中</th></tr></thead><tbody>'
+      + rows.map(x=>{
+          const hit = (x.hit||[]);
+          const body = (x.req||'') + ((x.resp&&!hit.length)? '\\n← '+x.resp : '');
+          return '<tr class="'+(hit.length?'hit':'')+'">'
+            + '<td>'+esc((x.t||'').slice(11))+'</td>'
+            + '<td>'+esc(x.ip)+'</td>'
+            + '<td><span class="m w">'+esc(x.m)+'</span></td>'
+            + '<td>'+esc(x.key)+'<div class="kv">→ '+esc(x.up||'')+'</div></td>'
+            + '<td>'+esc(x.status)+'<div class="kv">'+esc((x.ms||0))+'ms</div></td>'
+            + '<td>'+(hit.length? '<code>'+esc(hit.join(','))+'</code>' : '<span class="kv">-</span>')
+            + (body? '<div class="pre">'+esc(body.slice(0,600))+'</div>' : '')
+            + '</td></tr>';
+        }).join('') + '</tbody></table>';
+  }catch(e){
+    document.getElementById('rverdict').textContent = '读取失败：'+e;
+  }
+}
+
+async function loadDav(){
+  try{
+    const d = await (await fetch('/api/dav?n=60')).json();
+    const st = d.stats||{};
+    const v = document.getElementById('dverdict');
+    const put = st.puts||0;
+    v.className = 'big ' + (put? 'hit' : 'off');
+    v.textContent = put
+      ? '✓ 收到端备份 ' + put + ' 次'
+      : (st.enabled ? '尚未收到备份 —— 端还没把 WebDAV 地址指向中枢' : 'WebDAV 端点已停用');
+    document.getElementById('dstat').innerHTML =
+      '交互 <b>'+(st.total||0)+'</b> &nbsp;|&nbsp; 备份(PUT) <b>'+put+'</b>'
+      + ' &nbsp;|&nbsp; 恢复(GET) <b>'+(st.gets||0)+'</b>'
+      + ' &nbsp;|&nbsp; 落盘文件 <b>'+(st.files||0)+'</b>'
+      + ' &nbsp;|&nbsp; 含凭据 <b>'+(st.with_cred||0)+'</b>'
+      + (st.last? ' &nbsp;|&nbsp; 最近 <b>'+esc(st.last)+'</b>':'');
+    const local = location.origin + '/gw/dav';
+    document.getElementById('durl').textContent = local;
+    document.getElementById('daddr').innerHTML = '局域网 <code>'+esc(local)+'</code>';
+
+    const rows = (d.rows||[]);
+    const host = document.getElementById('dlist');
+    if(!rows.length){ host.innerHTML = '<div class="empty">暂无 WebDAV 交互</div>'; return; }
+    host.innerHTML = '<table><thead><tr><th>时间</th><th>来源</th><th>方法</th>'
+      + '<th>路径</th><th>状态</th><th>命中</th></tr></thead><tbody>'
+      + rows.map(x=>{
+          const hit = (x.hit||[]);
+          return '<tr class="'+(hit.length?'hit':'')+'">'
+            + '<td>'+esc((x.t||'').slice(11))+'</td>'
+            + '<td>'+esc(x.ip)+(x.user? '<div class="kv">'+esc(x.user)+'</div>':'')+'</td>'
+            + '<td><span class="m'+(x.m!=='GET'?' w':'')+'">'+esc(x.m)+'</span></td>'
+            + '<td>'+esc(x.p)+'</td>'
+            + '<td>'+esc(x.status)+(x.size? '<div class="kv">'+esc(x.size)+'B</div>':'')
+            +   (x.note? '<div class="kv">'+esc(x.note)+'</div>':'')+'</td>'
+            + '<td>'+(hit.length? '<code>'+esc(hit.join(','))+'</code>' : '<span class="kv">-</span>')+'</td>'
+            + '</tr>';
+        }).join('') + '</tbody></table>';
+  }catch(e){
+    document.getElementById('dverdict').textContent = '读取失败：'+e;
+  }
+}
+
+async function toggleRW(){
+  const cur = /关闭/.test(document.getElementById('btnRW').textContent);
+  if(!confirm(cur? '关闭「地址改写」？端将回到直连第三方。' : '开启「地址改写」？\\n\\n会把 tokenm.json 里的 open_api_url 指向中枢 /gw/ali/token 并透传上游。\\n端下一轮拉取配置后生效。'))
+    return;
+  await fetch('/api/relay', {method:'POST', headers:{'Content-Type':'application/json'},
+                             body: JSON.stringify({rewrite: !cur})});
+  loadRelay();
+}
+
+document.getElementById('auto').textContent = '每 3 秒自动刷新';
+load(); loadRelay(); loadDav();
+timer=setInterval(()=>{load(); loadRelay(); loadDav();}, 3000);
+</script>
+</body>
+</html>

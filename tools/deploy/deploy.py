@@ -24,17 +24,33 @@ LOCAL = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TARBALL = os.path.join(os.path.dirname(LOCAL), "_oktv_hub_deploy.tar.gz")
 
 
+EXCLUDES = {"data", "logs", "dist", "__pycache__", ".venv", "_work"}
+
+
 def make_tar(with_assets=True):
-    excludes = {"data", "logs", "dist", "__pycache__", ".venv"}
-    def flt(ti):
-        rel = os.path.relpath(ti.name, LOCAL).split(os.sep)[0]
-        if rel in excludes or ti.name.endswith((".pyc", ".log", ".err")):
-            return None
-        if not with_assets and (os.sep + "assets" + os.sep) in ti.name + os.sep:
-            return None
-        return ti
+    """打包本地产物。
+
+    这里**不能用 `tarfile.add(..., filter=fn)`** —— 实测该回调在本机环境下
+    完全不生效，结果是本地的 data/（域名池、CK 保险库、设备台账）和 logs/
+    会原样覆盖到服务器上：既污染运行状态，又会让「服务器上的日志」看起来
+    像是本地跑出来的（排查时极易被带偏，曾据此误解出「端在写入 CK」的假象）。
+    改为显式 os.walk 收集，排除逻辑一目了然。
+    """
+    picked = []
+    for root, dirs, files in os.walk(LOCAL):
+        dirs[:] = [d for d in dirs if d not in EXCLUDES]
+        for fn in files:
+            if fn.endswith((".pyc", ".log", ".err")):
+                continue
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, LOCAL).replace("\\", "/")
+            parts = rel.split("/")
+            if "assets" in parts and not with_assets:
+                continue
+            picked.append((full, "oktv-hub/" + rel))
     with tarfile.open(TARBALL, "w:gz") as t:
-        t.add(LOCAL, arcname="oktv-hub", filter=flt)
+        for full, arc in picked:
+            t.add(full, arcname=arc, recursive=False)
     return TARBALL
 
 
