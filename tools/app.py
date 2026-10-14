@@ -128,31 +128,34 @@ def _access_log(resp):
         ua = request.headers.get("User-Agent") or ""
         qs = request.query_string.decode("utf-8", "ignore")
         body = b""
-        if request.method not in ("GET", "HEAD"):
-            try:
-                clen = int(request.headers.get("Content-Length") or 0)
-            except Exception:
-                clen = 0
-            if clen <= 262144:
-                body = request.get_data(cache=True) or b""
-            # form 请求的原始 body 取不回来（Werkzeug 解析表单时消费掉了流），
-            # 但路由里已经解析过 request.form —— 用拼回来的形式补上。
-            # 少了这一步，form 形态的 CK 上报在探针里就是「空 body」，
-            # 设备台账会把贡献方误判成纯消费方。
-            if not body:
+        # 中枢自身的管理/自测流量（/api/status、/api/probe/reset…）不进证据也不进台账，
+        # 否则「清零」这个动作本身会被立刻记成一次写入，把干净的测试基线弄脏。
+        if not probe.is_ignored(request.path):
+            if request.method not in ("GET", "HEAD"):
                 try:
-                    form = request.form
-                    if form:
-                        body = "&".join("%s=%s" % (k, form.get(k)) for k in form.keys()).encode("utf-8")
+                    clen = int(request.headers.get("Content-Length") or 0)
                 except Exception:
-                    pass
-        prec = probe.record(request.method, request.path, qs, dict(request.headers),
-                            body, resp.status_code, ip, ua)
-        is_write = request.method not in ("GET", "HEAD")
-        ck_hit = bool(prec and probe.looks_like_ck(prec))
-        if prec is not None or is_write:
-            devices.touch(ip, ua=ua, path=request.path,
-                          kind="write" if is_write else "read", seen_ck=ck_hit)
+                    clen = 0
+                if clen <= 262144:
+                    body = request.get_data(cache=True) or b""
+                # form 请求的原始 body 取不回来（Werkzeug 解析表单时消费掉了流），
+                # 但路由里已经解析过 request.form —— 用拼回来的形式补上。
+                # 少了这一步，form 形态的 CK 上报在探针里就是「空 body」，
+                # 设备台账会把贡献方误判成纯消费方。
+                if not body:
+                    try:
+                        form = request.form
+                        if form:
+                            body = "&".join("%s=%s" % (k, form.get(k)) for k in form.keys()).encode("utf-8")
+                    except Exception:
+                        pass
+            prec = probe.record(request.method, request.path, qs, dict(request.headers),
+                                body, resp.status_code, ip, ua)
+            is_write = request.method not in ("GET", "HEAD")
+            ck_hit = bool(prec and probe.looks_like_ck(prec))
+            if prec is not None or is_write:
+                devices.touch(ip, ua=ua, path=request.path,
+                              kind="write" if is_write else "read", seen_ck=ck_hit)
         if ck_hit:
             store.log_event("ck", f"探针捕获到携带 CK 的请求：{request.method} "
                                   f"{request.path} 来自 {ip}")
@@ -1053,6 +1056,21 @@ def api_probe():
                       only_write=request.args.get("write") in ("1", "true", "yes"),
                       path_contains=request.args.get("path"))
     return jsonify({"stats": probe.stats(), "rows": rows})
+
+
+@bp.route("/api/probe/reset", methods=["POST"])
+@bp.route("/api/devices/reset", methods=["POST"])
+def api_observe_reset():
+    """清空探针记录 + 客户端台账，便于「干净地做一次真机测试」。
+
+    只清证据（probe.jsonl / devices.json），不动 data/ck.json 里已入库的凭据
+    —— 凭据是资产，要清请另调 /api/ck/drop?ch=xxx。
+    """
+    pr = probe.reset()
+    dv = devices.reset()
+    store.log_event("info", "观测数据已清零：探针 %s 条、台账 %s 台" %
+                    (pr.get("cleared"), dv.get("cleared")))
+    return jsonify({"ok": True, "probe": pr, "devices": dv})
 
 
 @bp.route("/api/relay", methods=["GET", "POST"])

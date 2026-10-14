@@ -94,3 +94,11 @@ def list_devices():
 def contributor_ips():
     """曾经贡献过 CK 的设备 IP（用于溯源「这台机器的 CK 是从哪来的」）"""
     return [d["ip"] for d in list_devices() if int(d.get("ck_in") or 0) > 0]
+
+
+def reset():
+    """清空客户端台账，用于「干净地做一次真机测试」"""
+    d = _load()
+    n = len(d.get("devices") or {})
+    _save({"devices": {}, "updated": 0})
+    return {"cleared": n}

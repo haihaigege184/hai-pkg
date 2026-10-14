@@ -197,10 +197,17 @@ CK 采集天生有盲区：扫码动作和网盘 API 请求**都不经过中枢*
 * `GET /api/probe` —— 写入探针：非 GET、带 query、带 CK 特征头的请求原样落盘
   （`logs/probe.jsonl`，含 method / query / body 片段 / 关键头 / UA）
 * `GET /api/devices` —— 客户端台账：谁连过、请求数、**有没有把 CK 送回来过**
+* `POST /api/probe/reset`（别名 `POST /api/devices/reset`）—— **清零基线**：
+  清空探针记录与客户端台账，便于干净地做一次真机测试。
+  只清「证据」，不动 `data/ck.json` 里已入库的凭据（凭据要清请用 `/api/ck/drop`）。
+  `/live` 上有对应的「🧹 清零基线」按钮。
 * `GET /live` —— 手机浏览器打开，每 3 秒刷新，**边在 OK影视 里操作边看请求有没有回来**
 
 排查「CK 没同步上」时先看 `/live`：只有 `GET` 说明端只是在取配置，
 CK 还留在端自己身上。
+
+中枢自身的管理/自测流量（`/api/status`、`/api/probe/reset`…）**既不进探针也不进台账**
+（`probe.is_ignored()`），否则清零动作本身会被立刻记成一次写入、把干净基线弄脏。
 
 ### 安全
 

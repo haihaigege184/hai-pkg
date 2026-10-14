@@ -39,16 +39,22 @@ _METHODS_ALWAYS = ("POST", "PUT", "PATCH", "DELETE")
 # 注意不要把 /api/ck/report 加进来 —— 那是真正的客户端上报入口。
 _IGNORE_PATH = ("/api/access", "/api/probe", "/api/logs", "/api/status",
                 "/api/ck/drop", "/api/ck/check", "/api/ck/version",
-                "/api/relay", "/api/dav")
+                "/api/relay", "/api/dav", "/api/devices")
 
 
 def _enabled():
     return bool(getattr(C, "PROBE_ENABLED", True))
 
 
+def is_ignored(path):
+    """这条路径是不是中枢自身的管理/自测流量 —— 不该进证据，也不该进台账。"""
+    p = (path or "").lower()
+    return any(x in p for x in _IGNORE_PATH)
+
+
 def _wanted(method, path, query, headers, has_body):
     p = (path or "").lower()
-    if any(x in p for x in _IGNORE_PATH):
+    if is_ignored(p):
         return False
     if method in _METHODS_ALWAYS:
         return True
@@ -142,6 +148,30 @@ def tail(n=200, only_write=False, path_contains=None):
             continue
         out.append(r)
     return out[-n:]
+
+
+def reset():
+    """清空探针记录，用于「干净地做一次真机测试」。
+
+    只清原始记录，不动 data/ck.json 里已入库的凭据 —— 两者用途不同：
+    探针是证据，保险库是资产。要一并清凭据请另调 /api/ck/drop。
+    """
+    f = getattr(C, "F_PROBE", os.path.join(C.LOG_DIR, "probe.jsonl"))
+    n = 0
+    if os.path.exists(f):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                n = sum(1 for ln in fh if ln.strip())
+        except Exception:
+            n = 0
+    try:
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        with open(f, "w", encoding="utf-8"):
+            pass
+    except Exception as e:
+        store.log_event("error", "探针清空失败: %s: %s" % (type(e).__name__, e))
+        return {"cleared": 0, "error": str(e)}
+    return {"cleared": n}
 
 
 def stats():

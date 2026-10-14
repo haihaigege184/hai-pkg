@@ -71,6 +71,7 @@
   <button id="fW" class="p" onclick="setF('write')">只看写入（非 GET）</button>
   <button id="fC" class="p" onclick="setF('ck')">只看带 CK</button>
   <button onclick="load()">↻ 立即刷新</button>
+  <button onclick="resetObs()" title="清空探针记录与客户端台账，方便干净地做一次真机测试（不动已入库的 CK）">🧹 清零基线</button>
   <span class="kv" id="auto" style="align-self:center"></span>
 </div>
 
@@ -269,11 +270,21 @@ async function loadDav(){
 
 async function toggleRW(){
   const cur = /关闭/.test(document.getElementById('btnRW').textContent);
-  if(!confirm(cur? '关闭「地址改写」？端将回到直连第三方。' : '开启「地址改写」？\\n\\n会把 tokenm.json 里的 open_api_url 指向中枢 /gw/ali/token 并透传上游。\\n端下一轮拉取配置后生效。'))
+  if(!confirm(cur? '关闭「地址改写」？端将回到直连第三方。' : '开启「地址改写」？\n\n会把 tokenm.json 里的 open_api_url 指向中枢 /gw/ali/token 并透传上游。\n端下一轮拉取配置后生效。'))
     return;
   await fetch('/api/relay', {method:'POST', headers:{'Content-Type':'application/json'},
                              body: JSON.stringify({rewrite: !cur})});
   loadRelay();
+}
+
+async function resetObs(){
+  if(!confirm('清空探针记录与客户端台账？\n\n只清「证据」，不动已入库的网盘 CK。\n用途：把基线归零，干净地做一次真机测试。'))
+    return;
+  const r = await fetch('/api/probe/reset', {method:'POST'});
+  const j = await r.json().catch(()=>({}));
+  const p=(j.probe||{}).cleared, d=(j.devices||{}).cleared;
+  alert('已清零：探针 '+p+' 条、台账 '+d+' 台');
+  load(); loadRelay(); loadDav();
 }
 
 document.getElementById('auto').textContent = '每 3 秒自动刷新';

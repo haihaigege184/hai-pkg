@@ -227,6 +227,7 @@ CF_API_TOKEN=xxx python3 tools/deploy/cf_public_ingress.py --apply
 | **`/api/ck/version`** | 轻量轮询：版本号变了就该重取 `tokenm.json` |
 | **`/api/probe`** | **CK 写入探针**：端到底有没有把凭据送回来（`?write=1` 只看非 GET） |
 | **`/api/devices`** | **客户端台账**：谁连过这个包、有没有贡献过 CK |
+| **`/api/probe/reset`** `POST` | **清零基线**：清空探针与台账（只清证据，不动已入库的 CK），别名 `/api/devices/reset` |
 | **`/gw/dav`** | **内置 WebDAV 端点**：把「WEBDAV 缓存网盘信息」地址填这里，端主动备份上来的凭据自动入库 |
 | **`/api/dav`** | WebDAV 交互明细（`PUT`=端备份、`GET`=端恢复、`hit`=提取到的字段） |
 | **`/gw/ali/token`** | **外部中转**：替端去第三方换网盘 token，透传上游的同时截留凭据 |
@@ -315,8 +316,9 @@ curl -s http://10.0.0.11:8099/api/access | python3 -m json.tool | tail -40
 
 所以中枢能自动拿到的，只有「设备主动把凭据送回来」的那些请求。
 
-**怎么确认**：打开 **`http://10.0.0.11:8099/live`**，然后在 OK影视 里做一次
-「网盘及弹幕配置 → 保存 / 重新扫码」，盯着那张表：
+**怎么确认**：打开 **`http://10.0.0.11:8099/live`**，
+先点一下表头的 **「🧹 清零基线」**（把旧的观测数据清掉，`/api/probe/reset`），
+然后在 OK影视 里做一次「网盘及弹幕配置 → 保存 / 重新扫码」，盯着那张表：
 
 | 你看到的 | 含义 | 怎么办 |
 | --- | --- | --- |
