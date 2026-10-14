@@ -1,0 +1,49 @@
+# 公网入口配置参考
+#
+# ⚠️ 重要：本机的 cloudflared-backup 隧道是 Cloudflare 面板【远程托管】的
+#    （运行日志里能看到 "Updated to new configuration ... version=8"），
+#    cloudflared 会忽略本地文件里的 ingress，改 /root/cloudflared-backup.yml 无效。
+#    要加规则必须走 Cloudflare API（需要 API Token），或在面板里改隧道配置。
+#
+# 下面两种写法都保留，等 token 到位后直接用。
+#
+# ─────────────────────────────────────────────────────────────
+# 方案 A：路径方式（不新增 DNS 记录，挂在已解析的 gps 主机名下的 /oktv）
+#   注意：gps.haihaigege.dpdns.org 能解析；wb.* 没有 DNS 记录，解析不了。
+# ─────────────────────────────────────────────────────────────
+# - hostname: gps.haihaigege.dpdns.org
+#   path: ^/oktv(/.*)?$
+#   service: http://localhost:8099
+#
+# ─────────────────────────────────────────────────────────────
+# 方案 B：独立子域（推荐，需要一个 DNS 记录 oktv.haihaigege.dpdns.org）
+#   建 DNS：  cloudflared tunnel route dns 63ac1096-e253-4e7a-9e6d-6d5fecc27ee4 oktv.haihaigege.dpdns.org
+#   再在 ingress 最前面加：
+# ─────────────────────────────────────────────────────────────
+# - hostname: oktv.haihaigege.dpdns.org
+#   service: http://localhost:8099
+#
+# ─────────────────────────────────────────────────────────────
+# 用 API 更新远程隧道配置（把 <TOKEN> / <ACCOUNT_ID> 换掉即可）：
+#
+# curl -X PUT \
+#   "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/cfd_tunnel/63ac1096-e253-4e7a-9e6d-6d5fecc27ee4/configurations" \
+#   -H "Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" \
+#   --data '{
+#     "config": {
+#       "ingress": [
+#         {"hostname":"oktv.haihaigege.dpdns.org","service":"http://localhost:8099"},
+#         {"hostname":"gpsdev.haihaigege.dpdns.org","service":"http://localhost:8012"},
+#         {"hostname":"gpsb.haihaigege.dpdns.org","service":"http://localhost:8012"},
+#         {"hostname":"gps2.haihaigege.dpdns.org","service":"http://localhost:8012"},
+#         {"hostname":"gps.haihaigege.dpdns.org","service":"http://localhost:8012"},
+#         {"hostname":"wb.haihaigege.dpdns.org","service":"http://localhost:18080"},
+#         {"service":"http_status:404"}
+#       ]
+#     }
+#   }'
+#
+# 保留本文件里的原始隧道信息备查：
+tunnel: 63ac1096-e253-4e7a-9e6d-6d5fecc27ee4
+credentials-file: /root/.cloudflared/backup-cred.json
+account: cb7d0657abcc06e52aa8a044452f9d40

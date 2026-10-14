@@ -1,0 +1,37 @@
+[Unit]
+Description=OK影视 接口修复与热更新中枢 (oktv-hub) + hai 本地包维护
+Documentation=file:/opt/oktv-hub/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/oktv-hub
+# 监听 0.0.0.0：局域网电视机要能直连 http://10.0.0.11:8099/hai/jsm.json
+Environment=OKTV_HOST=0.0.0.0
+Environment=OKTV_PORT=8099
+Environment=OKTV_PREFIX=/oktv
+# 对外永久地址：CF 隧道 hai.haihaigege.dpdns.org -> localhost:8099（根路径）
+# 网关备份站点会写成 https://hai.haihaigege.dpdns.org/gw/<TAG>/，电视机/外网都能用
+Environment=OKTV_PUBLIC_BASE=https://hai.haihaigege.dpdns.org
+# 长期维护的 hai 本地包目录
+Environment=OKTV_PKG_DIR=/root/hai
+Environment=OKTV_PKG_NAME=hai
+# 巡检 / 同步 / 每日报告
+Environment=OKTV_HEALTH_INTERVAL=600
+Environment=OKTV_SYNC_INTERVAL=21600
+Environment=OKTV_DAILY_HOUR=8
+Environment=OKTV_DAILY_MINUTE=0
+Environment=OKTV_NOTIFY_ON_FAIL=1
+Environment=OKTV_NOTIFY_ON_FIX=1
+Environment=OKTV_NOTIFY_DAILY=1
+# SEA 机器人通知（默认读取 /root/sea2/config.json 的 napcat_* 与 superAdmin）
+Environment=OKTV_SEA_CONFIG=/root/sea2/config.json
+ExecStart=/opt/oktv-hub/.venv/bin/python /opt/oktv-hub/app.py run
+Restart=always
+RestartSec=5
+StandardOutput=append:/opt/oktv-hub/logs/service.log
+StandardError=append:/opt/oktv-hub/logs/service.err
+
+[Install]
+WantedBy=multi-user.target
