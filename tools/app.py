@@ -24,7 +24,7 @@ from flask import Blueprint, Flask, Response, jsonify, request, send_from_direct
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import config as C          # noqa: E402
-from core import gateway, health, libfill, notify, patch, sources as S, store, sync  # noqa: E402
+from core import gateway, health, libfill, notify, patch, sources as S, store, sync, verify  # noqa: E402
 
 app = Flask(__name__, static_folder=None)
 bp = Blueprint("oktv", __name__)
@@ -558,15 +558,35 @@ def api_logs():
 
 @bp.route("/api/libcheck")
 def api_libcheck():
-    """hai 包 lib 资源体检：还缺哪些被配置引用却没落地的文件"""
-    return jsonify({"missing": libfill.missing(),
-                    "needed": sorted(libfill.needed_files()),
-                    "pkg_dir": C.PKG_DIR})
+    """hai 包 lib 资源体检
+
+    missing  —— 作者 README 要求使用者自备、但我们还没落地的（真正的待办）
+    upstream —— 被配置引用、但上游发行版本来就没有的（404 属正常，jar 会自行回退）
+    """
+    need = libfill.needed_files()
+    miss = libfill.missing()
+    derive = set(libfill.DERIVE)
+    return jsonify({
+        "missing": sorted(m for m in miss if m in derive),
+        "upstream": sorted(m for m in miss if m not in derive),
+        "needed": sorted(need),
+        "pkg_dir": C.PKG_DIR,
+    })
 
 
 @bp.route("/api/libfill", methods=["POST"])
 def api_libfill():
     return jsonify(libfill.fill())
+
+
+@bp.route("/api/verify")
+def api_verify():
+    """与原版 pg 包逐项比对：证明没有精简直播源 / 站点 / 字段 / 文件
+
+    ?deep=1 额外比对每个资源文件的 sha256（默认只比大小）
+    """
+    deep = request.args.get("deep") in ("1", "true", "yes")
+    return jsonify(verify.run(deep=deep))
 
 
 @bp.route("/api/access")

@@ -148,9 +148,12 @@ CF_API_TOKEN=xxx python3 tools/deploy/cf_public_ingress.py --apply
 | `/hai/version.json` | 版本 / 站点数 / 上次巡检时间 |
 | `/gw/<TAG>/…` | 网关反代（域名漂移免疫） |
 | `/api/status` `/api/pool` | 状态与域名池明细 |
+| **`/api/verify[?deep=1]`** | **与原版逐项比对**（证明没被精简；`deep=1` 连 sha256 一起比） |
+| **`/api/libcheck`** | lib 资源体检：`missing`=作者要求自备的，`upstream`=原版本来就缺的 |
+| **`/api/access`** | 播放器访问明细（来源 IP / UA / Range），排查「取配置失败」用 |
 | `/api/repair` `POST` | 一键检测修复（插件调它） |
 | `/api/check` `/api/sync` `/api/render` `POST` | 单独跑巡检/同步/生成 |
-| `/` | 暗色管理界面 |
+| `/` | 暗色管理界面（含「🛡 与原版比对」按钮） |
 
 ---
 
@@ -219,21 +222,83 @@ curl -s http://10.0.0.11:8099/api/access | python3 -m json.tool | tail -40
 
 ---
 
-## 七、已知边界
+## 七、与本仓库的边界：哪些是本仓库做的，哪些不是
 
-- 上游 pg 发行版**故意把 14 个 `lib/*` 做成「使用者自备」**（`tokenm.json`、`hdhaven.txt`、
-  `panta.txt` …）。作者 README 的原话是「複製 `lib/tokentemplate.json` 成爲 `lib/tokenm.json`」。
-  **本仓库由中枢自动补全**（`core/libfill.py`，启动与每次修复时执行，只补缺失、绝不覆盖）：
-  - 有官方模板的从模板派生：`tokenm.json`←`tokentemplate.json`、`sambashare.txt`、
-    `webdav.json`、`alistjar.json`
-  - 纯清单类的落空文件占位（语义 = 本地没有清单，由 jar 自行去站点拉）
+### 7.1 讲清楚「会不会被精简」
 
-  实测不补的后果：**播放器会在 2 秒内对 `/hai/lib/tokenm.json` 重试 16 次**，
-  既拖慢配置加载，也容易让部分播放器直接判「配置获取失败」。
-  补全后 `lib` 71 个 + `js` 29 个文件全部 200，无 404。
+**不会。** 本仓库对 pg 包只做一件事：**把失效站点的域名换成当前可用的域名**。
+
+配置里其它一切——**特别是直播源 `lives`**——都原样保留，一个字节都不改。
+资源文件（`pg.jar`、`js/`、`lib/`）也原样保留，实测 **87 个原版文件 sha256 全部一致**。
+
+**随时自查**（管理页有「🛡 与原版比对」按钮，或直接调接口）：
+
+```bash
+curl -s "http://10.0.0.11:8099/oktv/api/verify?deep=1" | python3 -m json.tool
+```
+
+```jsonc
+{
+  "core_ok": true,
+  "verdict": "与原版逐项一致（仅按需替换了失效域名）",
+  "fields": {                        // 逐条指纹比对，same=true 表示一条不差
+    "lives":  {"original": 36, "now": 36, "same": true},
+    "rules":  {"original": 17, "now": 17, "same": true},
+    "proxy":  {"original": 14, "now": 14, "same": true},
+    "hosts":  {"original":  5, "now":  5, "same": true},
+    "doh":    {"original":  5, "now":  5, "same": true},
+    "flags":  {"original": 10, "now": 10, "same": true}
+  },
+  "scalars": { "spider": {"same": true}, "wallpaper": {"same": true}, "...": {} },
+  "sites":   { "original": 79, "now": 79, "missing_keys": [], "api_changed": [], "type_changed": [] },
+  "domain_rewritten": [ /* 预期内的修复，通常 3 条 */ ],
+  "files":   { "original": 87, "missing": [], "size_diff": [], "hash_diff": [] }
+}
+```
+
+### 7.2 直播为什么可能「看起来少了」——这不是精简，是运行位置的问题
+
+`lives` 里 36 个直播分组，**29 个的地址是 `http://127.0.0.1:10079/…` 和 `http://127.0.0.1:35456/…`**：
+
+| 端口 | 作用 |
+| --- | --- |
+| `10079` | 直播 m3u 聚合 + 代理转码（`/c/3600/null/<url>`、`/mp4/3600/null/<url>`） |
+| `35456` | 源服务（`/tv.m3u`、`/migu.m3u`、`/bililive.m3u`、`/proxym3u/` …） |
+| `10077` / `10078` | 代理 / YT 解密增强 |
+| `19090` / `7777` / `10172` | 代理 / 版本 / 其它 |
+
+**`127.0.0.1` 指的是播放设备自己**，这些服务由 `pg.jar` 与播放壳在设备端启动。
+另外 4 条是外网直连（`aktv.top`、`tv.iill.top`、`sub.ottiptv.cc`），2 条读本地文件
+（`./lib/biptv.txt`、`./lib/ytblive.m3u`，其中 `ytblive.m3u` 原版发行版里本就不存在）。
+
+所以：**只要 `pg.jar` 在设备上正常加载，这些直播源就和原版一模一样**。
+如果直播列表明显变少，按下面顺序查：
+
+1. **清播放壳缓存 + 强杀重开**（作者 README「提示1」原话：影视壳有时加载不了最新的 jar）
+2. **确认壳是 OK影视 / 影视**（作者原话：其他播放器或魔改壳用这个 zip 会导致网盘内容无法播放）
+3. **看访问日志确认壳有没有取到包**：`/api/access`
+   - 完全没记录 → 客户端没连上（先查代理/梯子）
+   - 有 `jsm.json` 200 但没有 `pg.jar` → 壳在用本地缓存的 jar，清缓存后重试
+4. 手机端和电视端分别试一次，排除单端壳版本差异
+
+### 7.3 lib 资源的处理方式
+
+上游发行版里有两类「缺文件」，处理方式不同：
+
+| 文件 | 原版状态 | 本仓库 |
+| --- | --- | --- |
+| `tokenm.json`、`sambashare.txt`、`webdav.json`、`alistjar.json` | 只给模板/示例，**要使用者自己复制改名**（作者 README 明确写了步骤） | **代为生成**（从模板派生，等价于替使用者执行 README 的步骤） |
+| `4kzn.txt`、`guanying.txt`、`hdhaven.txt`、`hdhive.txt`、`huamucang.txt`、`panta.txt`、`qianfan.txt`、`woniu.txt`、`yiso.txt`、`ytblive.m3u` | **本来就不存在**（404），由 jar 自己向站点拉 | **保持不存在**，与原版一致 |
+
+> 早期版本曾为后一类落「空文件占位」，已撤销。原因：这些是 jar 向站点拉取的**本地缓存清单**，
+> 给空文件等于告诉 jar「本地清单就是空的」，反而会让内容变少；404 时 jar 会走自己的回退逻辑。
+
+实测不生成第一类的后果：播放器会在 2 秒内对 `/hai/lib/tokenm.json` 重试 16 次，拖慢配置加载。
+
 - 部分站点（土豆、盘链、盘Ta、至臻、栖影、大盘搜、88网盘、校长影视、聚影、观影）
   **从国内家宽已不可达**：DNS 废弃、502、Cloudflare 403 或跳转密码页。
   这类站点没有「正确域名」可换，接口会被标注 `⚠️失效`，等上游复活后自动恢复。
+  **注意：只改站点的显示名和 ext 里的域名，不删除站点**，所以列表长度和原版一致。
 - 域名池只收**公网地址**：上游配置里大量 `http://127.0.0.1/…` 占位符必须过滤，
   否则播放器会去连自己。
 

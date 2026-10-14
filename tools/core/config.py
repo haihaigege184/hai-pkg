@@ -7,6 +7,8 @@ DIST_DIR = os.path.join(BASE_DIR, "dist")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 BASELINE_JSM = os.path.join(BASE_DIR, "baseline", "jsm.json")
 BASELINE_LIB = os.path.join(BASE_DIR, "baseline", "lib")
+# 原版清单（文件清单 + 关键字段指纹），供 /api/verify 做一致性核对
+BASELINE_MANIFEST = os.path.join(BASE_DIR, "baseline", "manifest.json")
 
 # 长期维护的「hai 本地包」目录（对外发布的成品包）
 # 结构： <PKG_DIR>/jsm.json + pg.jar + js/ + lib/

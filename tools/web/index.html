@@ -63,6 +63,8 @@
   .tag{color:var(--purple);font-weight:700}
   .url{color:var(--txt);word-break:break-all}
   .ms{color:var(--dim)}
+  .vs-ok{color:var(--green);text-shadow:0 0 8px rgba(40,255,191,.45);font-weight:600}
+  .vs-bad{color:var(--red);text-shadow:0 0 8px rgba(255,77,109,.45);font-weight:600}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;
          padding:14px 16px;margin-top:18px;backdrop-filter:blur(8px)}
   .panel h2{font-size:13px;letter-spacing:2px;color:var(--purple);margin:0 0 12px;
@@ -96,6 +98,7 @@
     <button onclick="act('/api/check',{},'巡检')">⚡ 一键巡检</button>
     <button onclick="act('/api/sync',{},'上游同步')" class="pp">⟳ 上游同步</button>
     <button onclick="act('/api/render',{},'重新生成')">▸ 重新生成配置</button>
+    <button onclick="verifyPkg()" class="pp">🛡 与原版比对</button>
     <span class="muted">模式</span>
     <select id="mode" onchange="setMode(this.value)">
       <option value="direct">direct · 直连最优域名</option>
@@ -129,6 +132,16 @@
       </tr></thead>
       <tbody id="pool"></tbody>
     </table>
+  </div>
+
+  <div class="panel" id="verifyPanel" style="display:none">
+    <h2>与原版 pg 包一致性核对</h2>
+    <div id="verifyHead" class="muted" style="margin-bottom:10px"></div>
+    <table>
+      <thead><tr><th>项目</th><th>原版</th><th>当前</th><th>结论</th></tr></thead>
+      <tbody id="verifyBody"></tbody>
+    </table>
+    <div id="verifyExtra" class="muted" style="margin-top:10px;line-height:1.7"></div>
   </div>
 
   <div class="panel">
@@ -200,6 +213,44 @@ async function delDom(tag,url){
   refresh();
 }
 function copyCfg(){navigator.clipboard.writeText($('#cfgurl').textContent);}
+
+async function verifyPkg(){
+  busy('与原版逐项比对中…');
+  let d={};
+  try{ d=await api('/api/verify?deep=1'); }catch(e){ busy(''); return alert('比对失败：'+e); }
+  busy('');
+  const panel=$('#verifyPanel'); panel.style.display='';
+  const f=d.files||{}, s=d.sites||{};
+  const rows=[];
+  for(const k of ['lives','rules','parses','proxy','hosts','doh','flags']){
+    const v=(d.fields||{})[k]||{};
+    rows.push([k, v.original, v.now, !!v.same]);
+  }
+  for(const k of ['spider','wallpaper','disabled_wallpaper']){
+    const v=(d.scalars||{})[k]||{};
+    rows.push([k, v.original, v.now, !!v.same]);
+  }
+  rows.push(['sites', s.original, s.now, (s.missing_keys||[]).length===0 && (s.api_changed||[]).length===0 && (s.type_changed||[]).length===0]);
+  rows.push(['资源文件', f.original, (f.original-(f.missing||[]).length), (f.missing||[]).length===0 && (f.size_diff||[]).length===0 && (f.hash_diff||[]).length===0]);
+
+  $('#verifyBody').innerHTML = rows.map(([k,a,b,ok])=>
+    `<tr><td class="tag">${esc(String(k))}</td><td>${esc(String(a))}</td><td>${esc(String(b))}</td>
+     <td class="${ok?'vs-ok':'vs-bad'}">${ok?'一致':'差异'}</td></tr>`).join('');
+
+  const head = d.core_ok
+    ? `<span class="vs-ok">✔ 与原版逐项一致</span> &nbsp;—&nbsp; 仅替换了失效域名，直播/站点/字段/文件均未被精简`
+    : `<span class="vs-bad">✘ 存在差异</span> &nbsp;—&nbsp; 请查看下方明细`;
+  $('#verifyHead').innerHTML = head;
+
+  const rw=(d.domain_rewritten||[]);
+  $('#verifyExtra').innerHTML =
+    `<div>预期内的修改：失效域名替换 <b class="vs-ok">${rw.length}</b> 条 &nbsp;|&nbsp; 标注失效的站点 <b>${(s.renamed||[]).length}</b> 个</div>`+
+    (rw.length?`<div style="margin-top:6px">`+rw.map(r=>`· ${esc(String(r.key))}：${esc(String(r.original))} → <span class="vs-ok">${esc(String(r.now))}</span>`).join('<br>')+`</div>`:'')+
+    (f.expected_extra&&f.expected_extra.length?`<div style="margin-top:6px">作者要求使用者自备、已代为生成的：${f.expected_extra.map(x=>`<code>${esc(x)}</code>`).join('、')}</div>`:'')+
+    (f.unexpected_extra&&f.unexpected_extra.length?`<div style="margin-top:6px" class="vs-bad">非预期文件：${f.unexpected_extra.map(x=>`<code>${esc(x)}</code>`).join('、')}</div>`:'')+
+    (d.hint?`<div style="margin-top:8px">${esc(String(d.hint))}</div>`:'');
+  panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
 
 refresh();setInterval(refresh,20000);
 </script>

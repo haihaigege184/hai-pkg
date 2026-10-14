@@ -1,0 +1,794 @@
+{
+ "source": "pg.20261012-1935.zip",
+ "jsm_sha256": "33cbbfa0e95b5738",
+ "top_keys": {
+  "disabled_wallpaper": "http://www.kf666888.cn/api/tvbox/img",
+  "doh": 5,
+  "flags": 10,
+  "hosts": 5,
+  "lives": 36,
+  "parses": 0,
+  "proxy": 14,
+  "rules": 17,
+  "sites": 79,
+  "spider": "./pg.jar",
+  "wallpaper": "http://饭太硬.top/深色壁纸/api.php"
+ },
+ "lives": [
+  "{\"catchup\": {\"source\": \"?livemode=4&starttime=${(b)yyyyMMdd'T'HHmm}00.00Z&endtime=${(e)yyyyMMdd'T'HHmm}00.00Z\", \"type\": \"append\"}, \"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"最强国内直播(合并版可回看)\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/all.m3u\"}",
+  "{\"catchup\": {\"source\": \"?livemode=4&starttime=${(b)yyyyMMdd'T'HHmm}00.00Z&endtime=${(e)yyyyMMdd'T'HHmm}00.00Z\", \"type\": \"append\"}, \"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"最强国内直播\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/tv.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"最强国内直播(真低码)\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/ysptx.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"最强国内直播(纯低码)\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/yspweb.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"最强国内直播(高码)\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/ysptp.m3u\"}",
+  "{\"catchup\": {\"source\": \"?livemode=4&starttime=${(b)yyyyMMdd'T'HHmm}00.00Z&endtime=${(e)yyyyMMdd'T'HHmm}00.00Z\", \"type\": \"append\"}, \"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"最强国内直播(MGLIVE可回看)\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/migu.m3u\"}",
+  "{\"catchup\": {\"source\": \"?livemode=4&starttime=${(b)yyyyMMdd'T'HHmm}00.00Z&endtime=${(e)yyyyMMdd'T'HHmm}00.00Z\", \"type\": \"append\"}, \"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"最强国内直播(MGEVENT)\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:35456/miguevent.m3u\"}",
+  "{\"catchup\": {\"source\": \"?livemode=4&starttime=${(b)yyyyMMdd'T'HHmm}00.00Z&endtime=${(e)yyyyMMdd'T'HHmm}00.00Z\", \"type\": \"append\"}, \"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date=DATE1SUB\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"最强国内直播(EPG-1天回看)\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/tv.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"五星体育\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/wxty.m3u\"}",
+  "{\"catchup\": {\"source\": \"?livemode=4&starttime=${(b)yyyyMMdd'T'HHmm}00.00Z&endtime=${(e)yyyyMMdd'T'HHmm}00.00Z\", \"type\": \"append\"}, \"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date=DATE1SUB\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"FeiYang牧场\", \"type\": 0, \"ua\": \"okHttp/Mod-1.3.0.0\", \"url\": \"http://sub.ottiptv.cc/iptv.m3u\"}",
+  "{\"catchup\": {\"source\": \"?livemode=4&starttime=${(b)yyyyMMdd'T'HHmm}00.00Z&endtime=${(e)yyyyMMdd'T'HHmm}00.00Z\", \"type\": \"append\"}, \"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"BJYD\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/bjyd.m3u\"}",
+  "{\"catchup\": {\"source\": \"?livemode=4&starttime=${(b)yyyyMMdd'T'HHmm}00.00Z&endtime=${(e)yyyyMMdd'T'HHmm}00.00Z\", \"type\": \"append\"}, \"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date=DATE1SUB\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"BJYD(EPG-1天回看)\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/bjyd.m3u\"}",
+  "{\"catchup\": {\"source\": \"?livemode=4&starttime=${(b)yyyyMMdd'T'HHmm}00.00Z&endtime=${(e)yyyyMMdd'T'HHmm}00.00Z\", \"type\": \"append\"}, \"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date=DATE2SUB\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"BJYD(EPG-2天回看)\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/bjyd.m3u\"}",
+  "{\"catchup\": {\"source\": \"?livemode=4&starttime=${(b)yyyyMMdd'T'HHmm}00.00Z&endtime=${(e)yyyyMMdd'T'HHmm}00.00Z\", \"type\": \"append\"}, \"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date=DATE3SUB\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"BJYD(EPG-3天回看)\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/bjyd.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"BIPTV(IPV6,可回看)\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"./lib/biptv.txt\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"PandaGo投屏直播接收记录\", \"type\": 0, \"ua\": \"okhttp/3.15.\", \"url\": \"http://127.0.0.1:10079/dlnam3u/tv.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"FMM.m3u\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/proxy/https://raw.githubusercontent.com/fanmingming/live/refs/heads/main/tv/m3u/ipv6.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"FMM.m3u.音质增强\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/m3u/3600/proxy/https://raw.githubusercontent.com/fanmingming/live/refs/heads/main/tv/m3u/ipv6.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"FMM.txt\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/proxy/https://fanmingming.com/txt?url=https://live.fanmingming.cn/tv/m3u/ipv6.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"肥羊电视直播\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/1800/null/http://192.168.101.2:35455/tv.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"肥羊MG赛事直播\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:35456/miguevent.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"肥羊TX赛事直播\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/60/null/http://127.0.0.1:35456/txevent.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"肥羊QY赛事直播\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/60/null/http://127.0.0.1:35456/iqyevent.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"肥羊B站直播\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/bililive.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"肥羊B站直播.音质增强\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/mp4/3600/null/http://127.0.0.1:35456/bililive.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"肥羊虎牙一起看\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/huyayqk.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"肥羊虎牙一起看.音质增强\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/mp4/3600/null/http://127.0.0.1:35456/huyayqk.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"肥羊斗鱼一起看\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/douyuyqk.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"肥羊斗鱼一起看.音质增强\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/mp4/3600/null/http://127.0.0.1:35456/douyuyqk.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"肥羊YY轮播\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/null/http://127.0.0.1:35456/yylunbo.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"YTB直播\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"./lib/ytblive.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"AKTV.电视直播\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://aktv.top/live.m3u\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"Gather.电视直播\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"https://tv.iill.top/m3u/Gather\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"Gather.网络直播\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"https://tv.iill.top/m3u/Live\"}",
+  "{\"epg\": \"http://127.0.0.1:10079/p/0/proxy/https://epg.cdn.loc.cc?ch={name}&date={date}\", \"logo\": \"http://127.0.0.1:10079/p/0/proxy/https://cdn.jsdmirror.com/gh/fanmingming/live@master/tv/{name}.png\", \"name\": \"FMM.txt\", \"type\": 0, \"ua\": \"okhttp/3.15\", \"url\": \"http://127.0.0.1:10079/c/3600/proxy/https://fanmingming.com/txt?url=https://live.fanmingming.cn/tv/m3u/ipv6.m3u\"}",
+  "{\"channels\": [{\"name\": \"redirect\", \"urls\": [\"proxy://do=live&type=live&proxy=&url=\"]}], \"group\": \"redirect\"}"
+ ],
+ "rules": [
+  "{\"hosts\": [\"raw.githubusercontent.com\", \"googlevideo.com\", \"cdn.v82u1l.com\", \"cdn.iz8qkg.com\", \"cdn.kin6c1.com\", \"c.biggggg.com\", \"c.olddddd.com\", \"haiwaikan.com\", \"www.histar.tv\", \"youtube.com\", \"uhibo.com\", \".*boku.*\", \".*nivod.*\", \"*.t4tv.hz.cz\", \".*ulivetv.*\"], \"name\": \"proxy\"}",
+  "{\"host\": \"www.djuu.com\", \"rule\": [\"mp4.djuu.com\", \"m4a\"]}",
+  "{\"filter\": [], \"host\": \"www.sharenice.net\", \"rule\": [\"huoshan.com\", \"/item/video/\"]}",
+  "{\"filter\": [], \"host\": \"www.sharenice.net\", \"rule\": [\"sovv.qianpailive.com\", \"vid=\"]}",
+  "{\"host\": \"www.sharenice.net\", \"rule\": [\"douyin.com\", \"/play/\"]}",
+  "{\"filter\": [], \"host\": \"m.ysxs8.vip\", \"rule\": [\"ysting.ysxs8.vip:81\", \"xmcdn.com\"]}",
+  "{\"host\": \"hdmoli.com\", \"rule\": [\".m3u8\"]}",
+  "{\"filter\": [\"data.bilibili.com/log/web\", \"i0.hdslb.com/bfs/live/\"], \"host\": \"https://api.live.bilibili.com\", \"rule\": [\"bilivideo.com\", \"/index.m3u8\"]}",
+  "{\"host\": \"www.agemys.cc\", \"rule\": [\"cdn-tos\", \"obj/tos-cn\"]}",
+  "{\"host\": \"www.fun4k.com\", \"rule\": [\"https://hd.ijycnd.com/play\", \"index.m3u8\"]}",
+  "{\"host\": \"zjmiao.com\", \"rule\": [\"play.videomiao.vip/API.php\", \"time=\", \"key=\", \"path=\"]}",
+  "{\"hosts\": [\"huoshan.com\"], \"name\": \"火山嗅探\", \"regex\": [\"item_id=\"]}",
+  "{\"hosts\": [\"douyin.com\"], \"name\": \"抖音嗅探\", \"regex\": [\"is_play_url=\"]}",
+  "{\"hosts\": [\"toutiaovod.com\"], \"name\": \"農民嗅探\", \"regex\": [\"video/tos/cn\"]}",
+  "{\"hosts\": [\"yeslivetv.com\"], \"name\": \"夜市\", \"script\": [\"document.getElementsByClassName('vjs-big-play-button')[0].click()\"]}",
+  "{\"hosts\": [\"www.maolvys.com\"], \"name\": \"毛驢\", \"script\": [\"document.getElementsByClassName('swal-button swal-button--confirm')[0].click()\"]}",
+  "{\"hosts\": [\"magnet\"], \"name\": \"磁力广告\", \"regex\": [\"更多\", \"社 區\", \"x u u\", \"最 新\", \"直 播\", \"更 新\", \"社 区\", \"有 趣\", \"英皇体育\", \"全中文AV在线\", \"澳门皇冠赌场\", \"哥哥快来\", \"美女荷官\", \"裸聊\", \"新片首发\", \"UUE29\"]}"
+ ],
+ "parses": [],
+ "proxy": [
+  "\"raw.githubusercontent.com\"",
+  "\"googlevideo.com\"",
+  "\"cdn.v82u1l.com\"",
+  "\"cdn.iz8qkg.com\"",
+  "\"cdn.kin6c1.com\"",
+  "\"c.biggggg.com\"",
+  "\"c.olddddd.com\"",
+  "\"haiwaikan.com\"",
+  "\"www.histar.tv\"",
+  "\"youtube.com\"",
+  "\"uhibo.com\"",
+  "\".*boku.*\"",
+  "\".*nivod.*\"",
+  "\".*ulivetv.*\""
+ ],
+ "hosts": [
+  "\"cache.ott.ystenlive.itv.cmvideo.cn=base-v4-free-mghy.e.cdn.chinamobile.com\"",
+  "\"cache.ott.bestlive.itv.cmvideo.cn=base-v4-free-mghy.e.cdn.chinamobile.com\"",
+  "\"cache.ott.wasulive.itv.cmvideo.cn=base-v4-free-mghy.e.cdn.chinamobile.com\"",
+  "\"cache.ott.fifalive.itv.cmvideo.cn=base-v4-free-mghy.e.cdn.chinamobile.com\"",
+  "\"cache.ott.hnbblive.itv.cmvideo.cn=base-v4-free-mghy.e.cdn.chinamobile.com\""
+ ],
+ "doh": [
+  "{\"ips\": [\"8.8.4.4\", \"8.8.8.8\"], \"name\": \"Google\", \"url\": \"https://dns.google/dns-query\"}",
+  "{\"ips\": [\"1.1.1.1\", \"1.0.0.1\", \"2606:4700:4700::1111\", \"2606:4700:4700::1001\"], \"name\": \"Cloudflare\", \"url\": \"https://cloudflare-dns.com/dns-query\"}",
+  "{\"ips\": [\"94.140.14.140\", \"94.140.14.141\"], \"name\": \"AdGuard\", \"url\": \"https://dns.adguard.com/dns-query\"}",
+  "{\"ips\": [\"84.200.69.80\", \"84.200.70.40\"], \"name\": \"DNSWatch\", \"url\": \"https://resolver2.dns.watch/dns-query\"}",
+  "{\"ips\": [\"9.9.9.9\", \"149.112.112.112\"], \"name\": \"Quad9\", \"url\": \"https://dns.quad9.net/dns-quer\"}"
+ ],
+ "flags": [
+  "\"youku\"",
+  "\"qq\"",
+  "\"iqiyi\"",
+  "\"qiyi\"",
+  "\"letv\"",
+  "\"sohu\"",
+  "\"tudou\"",
+  "\"pptv\"",
+  "\"mgtv\"",
+  "\"wasu\""
+ ],
+ "spider": "./pg.jar",
+ "wallpaper": "http://饭太硬.top/深色壁纸/api.php",
+ "disabled_wallpaper": "http://www.kf666888.cn/api/tvbox/img",
+ "site_keys": [
+  "豆瓣",
+  "TGDouban",
+  "网盘配置",
+  "Youtube",
+  "Local",
+  "FirstAid",
+  "bili",
+  "TGYunPanLocal",
+  "TGYunPan",
+  "盘链",
+  "csp_Qwmp4",
+  "zmi",
+  "Mogg",
+  "PanSouGo",
+  "光鸭社区",
+  "HuamuCangShare",
+  "Guanying",
+  "FourKZN",
+  "校长影视",
+  "Wogg",
+  "Hjzc",
+  "Mipan",
+  "Hdhive",
+  "HDHaven",
+  "蜡笔网盘",
+  "至臻|网盘",
+  "LIBVIO",
+  "Moli",
+  "HongGuo",
+  "Guazi",
+  "美剧迷",
+  "WebDAV",
+  "AList",
+  "PushShare",
+  "AlistShare",
+  "AliShare",
+  "AliShareEBook",
+  "QuarkShare",
+  "123Share",
+  "189Share",
+  "ThunderShare",
+  "UCShare",
+  "115Share",
+  "PikPakShare",
+  "SambaShare",
+  "TianYiSou",
+  "YunPan",
+  "YingSo",
+  "混合盘",
+  "88Pan",
+  "PanSearch",
+  "盘友圈",
+  "易搜",
+  "秒搜",
+  "Funletu",
+  "QuarkPanso",
+  "Panta",
+  "DaPanSo",
+  "PikaSo",
+  "Qianfan",
+  "YunSo",
+  "YunPanOne",
+  "新6V",
+  "索尼资源",
+  "UP云搜",
+  "BLSGod",
+  "SeedHub",
+  "ikun",
+  "暴風",
+  "索尼",
+  "量子",
+  "非凡",
+  "異界",
+  "drpy_js_Alist",
+  "酷狗",
+  "Yinyuetai",
+  "push_agent",
+  "應用商店",
+  "直播转点播"
+ ],
+ "site_types": [
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  1,
+  3,
+  3,
+  3,
+  1,
+  1,
+  1,
+  1,
+  1,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3,
+  3
+ ],
+ "site_names": [
+  "豆瓣",
+  "TG豆瓣",
+  "网盘及彈幕配置",
+  "Youtube",
+  "本地",
+  "🚑 急救知识 ",
+  "B站 | Bili[jar]",
+  "TG频道搜索",
+  "TG群组搜索",
+  "盘链|网盘",
+  "七味|网盘|磁力",
+  "蜗牛|网盘",
+  "木偶哥哥|网盘",
+  "PanSouGo|网盘",
+  "光鸭社区",
+  "聚影|网盘|磁力",
+  "观影|网盘|磁力",
+  "4K指南|网盘|磁力",
+  "校长影视|网盘",
+  "玩偶哥哥|网盘",
+  "花卷|网盘",
+  "觅盘|网盘搜索",
+  "影巢|网盘|磁力",
+  "栖影|网盘|磁力",
+  "蜡笔|网盘",
+  "至臻|网盘",
+  "LIBVIO|网盘",
+  "HDmoli|网盘",
+  "红果短剧",
+  "瓜子|App",
+  "美剧迷|网盘",
+  "WebDAV[jar]",
+  "网盘|Alist[jar]",
+  "我的资源分享",
+  "网盘分享合集",
+  "阿里云盘影视分享",
+  "阿里云盘书籍分享",
+  "夸克云盘分享",
+  "123云盘分享",
+  "189云盘分享",
+  "迅雷云盘分享",
+  "UC云盘分享",
+  "115云盘分享",
+  "PikPak分享",
+  "Samba分享",
+  "天逸搜|网盘搜索",
+  "云盘资源|网盘",
+  "影搜|网盘搜索",
+  "混合盘|网盘搜索",
+  "88网盘|网盘搜索",
+  "PanSearch|网盘搜索",
+  "盘友圈|网盘搜索",
+  "易搜|网盘搜索",
+  "秒搜|网盘搜索",
+  "趣盘搜|夸克搜索",
+  "夸克盘搜|夸克搜索",
+  "盘Ta|网盘",
+  "大盘搜|网盘搜索",
+  "皮卡搜|网盘搜索",
+  "千帆|网盘搜索",
+  "小云搜索|网盘搜索",
+  "云盘One|网盘搜索",
+  "新6V|网盘",
+  "索尼┃资源",
+  "阿里|UP云搜",
+  "BLSGod|磁",
+  "SeedHub|磁",
+  "ikun",
+  "暴風",
+  "索尼 ",
+  "量子",
+  "非凡",
+  "異界",
+  "网盘 | Alist[js]",
+  "酷狗",
+  "音悦台",
+  "推送",
+  "應用商店",
+  "🐼️┃电视┃直播"
+ ],
+ "site_apis": [
+  "csp_Douban",
+  "csp_TGDouban",
+  "csp_Config",
+  "csp_Youtube",
+  "csp_Local",
+  "csp_FirstAid",
+  "csp_Bili",
+  "csp_TGYunPanLocal",
+  "csp_TGYunPan",
+  "csp_PingLian",
+  "csp_Qwmp4",
+  "csp_Zmi",
+  "csp_Mogg",
+  "csp_PanSouGo",
+  "csp_GuangYaShequ",
+  "csp_HuamuCangShare",
+  "csp_Guanying",
+  "csp_FourKZN",
+  "csp_XiaoZhang",
+  "csp_Wogg",
+  "csp_Hjzc",
+  "csp_Mipan",
+  "csp_Hdh",
+  "csp_HDHaven",
+  "csp_Wobg",
+  "csp_Wobg",
+  "csp_Libvio",
+  "csp_Moli",
+  "csp_HongGuo",
+  "csp_Guazi",
+  "csp_Meijumi",
+  "csp_WebDAV",
+  "csp_AList",
+  "csp_PushShare",
+  "csp_AlistShare",
+  "csp_AliShare",
+  "csp_AliShare",
+  "csp_QuarkShare",
+  "csp_P123Share",
+  "csp_P189Share",
+  "csp_ThunderShare",
+  "csp_UCShare",
+  "csp_P115Share",
+  "csp_PikPakShare",
+  "csp_SambaShare",
+  "csp_TianYiSou",
+  "csp_YunPan",
+  "csp_YingSo",
+  "csp_HunHePan",
+  "csp_EightEight",
+  "csp_PanSearch",
+  "csp_Panyq",
+  "csp_YiSo",
+  "csp_MiaoSou",
+  "csp_Funletu",
+  "csp_QuarkPanso",
+  "csp_Panta",
+  "csp_DaPanSo",
+  "csp_PikaSo",
+  "csp_Qianfan",
+  "csp_YunSo",
+  "csp_YunPanOne",
+  "csp_Xb6v",
+  "https://suoniapi.com/api.php/provide/vod/from/snm3u8/",
+  "csp_UpYun",
+  "csp_BLSGod",
+  "csp_SeedHub",
+  "http://127.0.0.1:10079/p/0/proxy/https://ikunzyapi.com/api.php/provide/vod/?",
+  "http://127.0.0.1:10079/p/0/proxy/https://bfzyapi.com/api.php/provide/vod?",
+  "http://127.0.0.1:10079/p/0/proxy/https://suoniapi.com/api.php/provide/vod?",
+  "http://127.0.0.1:10079/p/0/proxy/http://cj.lziapi.com/api.php/provide/vod/?",
+  "http://127.0.0.1:10079/p/0/proxy/http://cj.ffzyapi.com/api.php/provide/vod/?",
+  "csp_Ysj",
+  "./lib/alist.min.js",
+  "csp_Kugou",
+  "csp_Yinyuetai",
+  "csp_Push",
+  "csp_Market",
+  "./lib/live2vod.js"
+ ],
+ "files": {
+  "pg.jar": {
+   "size": 4607068,
+   "sha256": "92b6747fd42c4bc4"
+  },
+  "pg.jar.md5": {
+   "size": 32,
+   "sha256": "981b5dd2f9a67114"
+  },
+  "lib/drpy2.min.js": {
+   "size": 67385,
+   "sha256": "09e5fb139b58b5ae"
+  },
+  "lib/gbk.js": {
+   "size": 56313,
+   "sha256": "28097cea4538c346"
+  },
+  "js/模板.js": {
+   "size": 15217,
+   "sha256": "60bc13ee04302db0"
+  },
+  "js/template.js": {
+   "size": 15217,
+   "sha256": "60bc13ee04302db0"
+  },
+  "js/4khdr.js": {
+   "size": 5232,
+   "sha256": "1fb9ee1f955a87ad"
+  },
+  "js/mp4us.js": {
+   "size": 4937,
+   "sha256": "8af296c5b88be33b"
+  },
+  "js/jiyingw.js": {
+   "size": 8254,
+   "sha256": "59688811a838ff66"
+  },
+  "js/dygang.js": {
+   "size": 5620,
+   "sha256": "abc029ab582c2414"
+  },
+  "js/xb6v.js": {
+   "size": 6699,
+   "sha256": "c2c215b0a9b7a256"
+  },
+  "js/cilixiong.js": {
+   "size": 5014,
+   "sha256": "354b17bc26d3074c"
+  },
+  "js/cilixiongp.js": {
+   "size": 4930,
+   "sha256": "fb4563b4b0cc2085"
+  },
+  "js/jiyingwp.js": {
+   "size": 8255,
+   "sha256": "e1a7cbb36a4ed492"
+  },
+  "js/meijumi.js": {
+   "size": 9056,
+   "sha256": "4f9d0ff6d8a9ad56"
+  },
+  "js/kkpans.js": {
+   "size": 4748,
+   "sha256": "405a57c467ed87cb"
+  },
+  "js/kuba.js": {
+   "size": 5131,
+   "sha256": "cd9aca5d4181ccbc"
+  },
+  "js/meijumip.js": {
+   "size": 9179,
+   "sha256": "1a94aa2e3029b865"
+  },
+  "js/aipanso.js": {
+   "size": 3248,
+   "sha256": "1a487d0e2b9acbd3"
+  },
+  "js/funletu.js": {
+   "size": 2169,
+   "sha256": "a8c95c4d5fbe8893"
+  },
+  "js/xzys.js": {
+   "size": 4840,
+   "sha256": "d6e9386fdd36e9f7"
+  },
+  "js/dydhhy.js": {
+   "size": 3820,
+   "sha256": "a7dbb00c81e5d0be"
+  },
+  "js/yyets.js": {
+   "size": 2786,
+   "sha256": "62a74ca0e84a267f"
+  },
+  "js/yyetsp.js": {
+   "size": 2849,
+   "sha256": "4776fadcf0580d25"
+  },
+  "js/libvio.js": {
+   "size": 9741,
+   "sha256": "d8604a941af6be2c"
+  },
+  "js/ddys.js": {
+   "size": 4791,
+   "sha256": "1be8cd202acb1c14"
+  },
+  "js/tzfile.js": {
+   "size": 3443,
+   "sha256": "bb4ed701fdfa6c57"
+  },
+  "js/qimiao.js": {
+   "size": 1321,
+   "sha256": "17c002d4b6efe349"
+  },
+  "js/97tvs.js": {
+   "size": 5479,
+   "sha256": "7801107e91323130"
+  },
+  "js/rrdyw.js": {
+   "size": 4426,
+   "sha256": "7e544f3df60eb4d2"
+  },
+  "js/meow.js": {
+   "size": 2460,
+   "sha256": "8153929843463c95"
+  },
+  "js/huya.js": {
+   "size": 29719,
+   "sha256": "73eb1b4f0f4ba76e"
+  },
+  "lib/alistjar.example.json": {
+   "size": 168,
+   "sha256": "d9aaab53f76ca2c9"
+  },
+  "lib/live2vod.js": {
+   "size": 11895,
+   "sha256": "1e46621927658747"
+  },
+  "lib/feimaolive.json": {
+   "size": 2050,
+   "sha256": "a4057df670faa314"
+  },
+  "lib/douban.json": {
+   "size": 21967,
+   "sha256": "1de3e2c33d30b992"
+  },
+  "lib/jianpian.json": {
+   "size": 7548,
+   "sha256": "3d489f2e39e7891e"
+  },
+  "lib/alist.min.js": {
+   "size": 16214,
+   "sha256": "363dd8af765e1fd6"
+  },
+  "lib/wogg.json": {
+   "size": 24975,
+   "sha256": "586989af097703b1"
+  },
+  "lib/pikpakclass.json": {
+   "size": 9888,
+   "sha256": "f94d98d936f5d824"
+  },
+  "lib/pikpakclass.json.db.gz": {
+   "size": 825786,
+   "sha256": "8921a3a2f346ae49"
+  },
+  "lib/getsearchtxt.py": {
+   "size": 3736,
+   "sha256": "77f7000099647bc2"
+  },
+  "lib/aliproxy.tar.xz": {
+   "size": 11917040,
+   "sha256": "bcacb3fd09fcd4ab"
+  },
+  "lib/aliproxy.tar.xz.md5": {
+   "size": 33,
+   "sha256": "7551aefba5a241d4"
+  },
+  "lib/alishare.txt": {
+   "size": 727,
+   "sha256": "7c4817a7aa33cd7c"
+  },
+  "lib/thundershare.txt": {
+   "size": 912,
+   "sha256": "3348ee5b7121202c"
+  },
+  "lib/quarkshare.txt": {
+   "size": 1600,
+   "sha256": "16306f654a83bc93"
+  },
+  "lib/alishare.ebook.txt": {
+   "size": 2556,
+   "sha256": "883ebb552c18d5d7"
+  },
+  "lib/yt.json": {
+   "size": 16953,
+   "sha256": "b521a7109314c6a6"
+  },
+  "lib/moli.json": {
+   "size": 12442,
+   "sha256": "7ac3ac667060bed9"
+  },
+  "lib/pushshare.txt": {
+   "size": 955,
+   "sha256": "f4b0bfe4ab59c3b8"
+  },
+  "lib/duboku.json": {
+   "size": 15730,
+   "sha256": "822c66f40858bfe0"
+  },
+  "lib/XBPQ.jar": {
+   "size": 397355,
+   "sha256": "64637af0a0dc780c"
+  },
+  "lib/wgcf.json": {
+   "size": 4459,
+   "sha256": "ee3f40ccac4757db"
+  },
+  "lib/geoip.dat.gz": {
+   "size": 37858,
+   "sha256": "de4372edb57dbf6a"
+  },
+  "lib/bttt.json": {
+   "size": 3547,
+   "sha256": "77696f06dd552bd7"
+  },
+  "lib/youtube.json": {
+   "size": 39234,
+   "sha256": "6f64ba160d95d24a"
+  },
+  "lib/singbox.json": {
+   "size": 4192,
+   "sha256": "e73618d8f92fd705"
+  },
+  "lib/sing-box.tar.xz": {
+   "size": 19164732,
+   "sha256": "23d823ad8639b92f"
+  },
+  "lib/clash2singbox.tar.xz": {
+   "size": 11954128,
+   "sha256": "d02f3d186d2d868e"
+  },
+  "lib/sing-box.tar.xz.md5": {
+   "size": 32,
+   "sha256": "ac7ac319e8cb1f5f"
+  },
+  "lib/clash2singbox.tar.xz.md5": {
+   "size": 33,
+   "sha256": "ecf167e32ad31030"
+  },
+  "lib/115share.txt": {
+   "size": 58516,
+   "sha256": "7283bb42c57b57a7"
+  },
+  "lib/ucshare.txt": {
+   "size": 408,
+   "sha256": "3fa1a96e3cda00a5"
+  },
+  "lib/tgsearch.json": {
+   "size": 794,
+   "sha256": "398b640591855cbf"
+  },
+  "lib/allinone.tar.xz": {
+   "size": 10222308,
+   "sha256": "62e69d961011a86c"
+  },
+  "lib/allinone.tar.xz.md5": {
+   "size": 33,
+   "sha256": "56a599ec2024f731"
+  },
+  "lib/ffmpeg.dyn.tar.xz": {
+   "size": 17101472,
+   "sha256": "29e0abdfffe35e2e"
+  },
+  "js/88ball.js": {
+   "size": 1958,
+   "sha256": "ed80b602235a87d2"
+  },
+  "lib/node-rsa.js": {
+   "size": 167481,
+   "sha256": "b2e1d9c402ce06c1"
+  },
+  "lib/pako.min.js": {
+   "size": 46859,
+   "sha256": "7b7a3b8db4d7b658"
+  },
+  "lib/json5.js": {
+   "size": 60431,
+   "sha256": "1b3d54f76b910664"
+  },
+  "lib/jinja.js": {
+   "size": 22706,
+   "sha256": "6cf1781f0c322062"
+  },
+  "lib/mod.js": {
+   "size": 3668,
+   "sha256": "facaa97cad7d7eed"
+  },
+  "lib/sortName.js": {
+   "size": 32688,
+   "sha256": "0a63129bd27861a1"
+  },
+  "lib/cheerio.min.js": {
+   "size": 356588,
+   "sha256": "b4a69e4925383dd1"
+  },
+  "lib/crypto-js.js": {
+   "size": 204310,
+   "sha256": "731c9606953ddedd"
+  },
+  "lib/ffmpeg.dyn.tar.xz.md5": {
+   "size": 33,
+   "sha256": "fc7c09901f94ee79"
+  },
+  "lib/libxlsdk.tar.xz": {
+   "size": 6018476,
+   "sha256": "9502b771af34bbfa"
+  },
+  "lib/libxlsdk.tar.xz.md5": {
+   "size": 33,
+   "sha256": "ca7071965a986b1d"
+  },
+  "lib/biptv.txt": {
+   "size": 21562,
+   "sha256": "8dc3fb1e5d9a5672"
+  },
+  "lib/123share.txt": {
+   "size": 979,
+   "sha256": "71c024a05d35b73e"
+  },
+  "lib/189share.txt": {
+   "size": 7645,
+   "sha256": "ac93b61f48fc48ee"
+  },
+  "lib/webdav.example.json": {
+   "size": 230,
+   "sha256": "bd176eb412dd72b9"
+  },
+  "lib/tokentemplate.json": {
+   "size": 2772,
+   "sha256": "15f2fec3d13b6641"
+  },
+  "lib/pikpakclass.template.json": {
+   "size": 135,
+   "sha256": "07b4554a34ed6c0f"
+  },
+  "lib/sambashare.template.txt": {
+   "size": 58,
+   "sha256": "063ec696a5d4398a"
+  }
+ }
+}

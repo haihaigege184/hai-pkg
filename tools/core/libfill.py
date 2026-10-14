@@ -5,9 +5,15 @@
 不补的话播放器拿到的是一串 404 —— 实测 okhttp 会在 2 秒内对 tokenm.json 重试 16 次，
 既拖慢配置加载，也容易让部分播放器直接判定「配置获取失败」。
 
-这里做两件事（**只补缺失的，绝不覆盖已有文件**）：
-  derive —— 有官方模板的，从模板派生一份默认配置
-  stub   —— 纯清单类的，落一个空/最小合法文件，语义等于「本地没有清单，去站点拉」
+策略（**只补原作者明确要求使用者自备的那几个，其余一律保持原版状态**）：
+  derive —— 有官方模板/示例的，从模板派生一份默认配置（等价于替使用者执行 README 的步骤）
+  revert —— 撤掉早期版本擅自补出来的「空清单」占位文件
+
+为什么撤空清单：
+  4kzn.txt / guanying.txt / panta.txt / ytblive.m3u 这些是 jar 向站点拉取的**本地缓存清单**。
+  原版里它们不存在（404），jar 会走自己的回退逻辑去站点拉；给它一个空文件，
+  等于告诉 jar「本地清单就是空的」，反而会少内容。这就是「直播/站点被精简」的来源。
+  所以这里一律恢复成"文件不存在"。
 """
 import gzip
 import os
@@ -16,7 +22,7 @@ import shutil
 from . import config as C
 from . import store
 
-# 模板 -> 目标（作者指定的派生关系）
+# 模板 -> 目标（作者 README 指定的派生关系）
 DERIVE = {
     "tokenm.json": "tokentemplate.json",
     "sambashare.txt": "sambashare.template.txt",
@@ -24,36 +30,47 @@ DERIVE = {
     "alistjar.json": "alistjar.example.json",
 }
 
-# 清单类占位（空文件 = 本地无清单，由 jar 自行去站点获取）
-STUB_TEXT = {
-    "4kzn.txt": "",
-    "guanying.txt": "",
-    "hdhaven.txt": "",
-    "hdhive.txt": "",
-    "huamucang.txt": "",
-    "panta.txt": "",
-    "qianfan.txt": "",
-    "woniu.txt": "",
-    "yiso.txt": "",
-    "ytblive.m3u": "#EXTM3U\n",
+# 历史遗留：曾经擅自落过的空清单占位。仅当内容与当初写入的完全一致时才删除，
+# 避免误删使用者后来自己填好的文件。
+LEGACY_STUBS = {
+    "4kzn.txt": b"",
+    "guanying.txt": b"",
+    "hdhaven.txt": b"",
+    "hdhive.txt": b"",
+    "huamucang.txt": b"",
+    "panta.txt": b"",
+    "qianfan.txt": b"",
+    "woniu.txt": b"",
+    "yiso.txt": b"",
+    "ytblive.m3u": b"#EXTM3U\n",
 }
-
-# 需要是「合法 gzip」的（空 gzip 也比 404 强，gunzip 不会炸）
-STUB_GZ = {
-    "pikpakclass.json.txt.gz": "",
-}
+LEGACY_STUB_GZ = {"pikpakclass.json.txt.gz": b""}
 
 
 def needed_files():
-    """从当前配置里扫出所有被引用的 lib 文件，返回相对路径集合"""
+    """从当前配置里扫出所有被引用的 lib 文件，返回相对路径集合
+
+    三处都要扫：
+      sites[].ext / sites[].api  —— ./lib/xxx（jar 的站点参数、js 型 spider）
+      lives[].url / lives[].ext  —— 直播源里的 ./lib/ytblive.m3u、./lib/biptv.txt
+    """
     refs = set()
     try:
         import json
         import re
         with open(os.path.join(C.PKG_DIR, "jsm.json"), encoding="utf-8") as f:
             jsm = json.load(f)
-        for s in jsm.get("sites", []):
-            for m in re.findall(r"\./lib/([A-Za-z0-9_.\-]+)", str(s.get("ext") or "")):
+        blobs = []
+        for s in jsm.get("sites", []) or []:
+            blobs.append(str(s.get("ext") or ""))
+            blobs.append(str(s.get("api") or ""))
+        for lv in jsm.get("lives", []) or []:
+            if not isinstance(lv, dict):
+                continue
+            blobs.append(str(lv.get("url") or ""))
+            blobs.append(str(lv.get("ext") or ""))
+        for b in blobs:
+            for m in re.findall(r"\./lib/([A-Za-z0-9_.\-]+)", b):
                 refs.add(m)
     except Exception:
         pass
@@ -67,10 +84,49 @@ def missing():
     return sorted(f for f in needed_files() if not os.path.exists(os.path.join(d, f)))
 
 
-def fill():
-    """补全缺失的 lib 文件，返回 {created: [...], skipped: [...], unresolved: [...]}"""
+def revert_stubs():
+    """撤掉历史版本擅自补的空清单占位，恢复上游发行版的原始状态
+
+    只删内容与当初写入完全一致的文件；使用者后来填过内容的文件一律保留。
+    """
     lib = os.path.join(C.PKG_DIR, "lib")
-    out = {"created": [], "skipped": [], "unresolved": []}
+    out = []
+    if not os.path.isdir(lib):
+        return out
+
+    for name, body in LEGACY_STUBS.items():
+        p = os.path.join(lib, name)
+        try:
+            if os.path.exists(p) and open(p, "rb").read() == body:
+                os.remove(p)
+                out.append(name)
+        except Exception:
+            pass
+
+    for name, body in LEGACY_STUB_GZ.items():
+        p = os.path.join(lib, name)
+        try:
+            if not os.path.exists(p):
+                continue
+            if gzip.decompress(open(p, "rb").read()) == body:
+                os.remove(p)
+                out.append(name)
+        except Exception:
+            pass
+
+    if out:
+        store.log_event("libfill", f"撤掉空清单占位 {len(out)} 个（恢复原版行为）："
+                                   + "、".join(out))
+    return out
+
+
+def fill():
+    """补全作者要求自备的 lib 文件，并撤掉早期擅自补的空清单占位
+
+    返回 {created, skipped, unresolved, reverted}
+    """
+    lib = os.path.join(C.PKG_DIR, "lib")
+    out = {"created": [], "skipped": [], "unresolved": [], "reverted": []}
     if not os.path.isdir(lib):
         return out
 
@@ -84,23 +140,7 @@ def fill():
         else:
             out["unresolved"].append(name)
 
-    for name, body in STUB_TEXT.items():
-        dst = os.path.join(lib, name)
-        if os.path.exists(dst):
-            out["skipped"].append(name)
-        else:
-            with open(dst, "w", encoding="utf-8") as f:
-                f.write(body)
-            out["created"].append(f"{name} (空清单占位)")
-
-    for name, body in STUB_GZ.items():
-        dst = os.path.join(lib, name)
-        if os.path.exists(dst):
-            out["skipped"].append(name)
-        else:
-            with open(dst, "wb") as f:
-                f.write(gzip.compress(body.encode("utf-8")))
-            out["created"].append(f"{name} (合法空 gzip)")
+    out["reverted"] = revert_stubs()
 
     if out["created"]:
         store.log_event("libfill", f"补全 hai 包 lib 资源 {len(out['created'])} 个："
