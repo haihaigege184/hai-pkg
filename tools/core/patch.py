@@ -32,6 +32,17 @@ def gateway_base(tag):
     return f"{pub}/gw/{tag}/"
 
 
+def _health_state():
+    """读巡检状态（含每 TAG 的连续失败轮数），用于失效标注的滞后判定"""
+    f = getattr(C, "F_HEALTH_STATE", None)
+    if not f:
+        return {}
+    try:
+        return store.load(f, {}) or {}
+    except Exception:
+        return {}
+
+
 def build(pool, mode="dual", public_base=None):
     """生成修复后的 jsm.json 内容（dict）
 
@@ -40,6 +51,9 @@ def build(pool, mode="dual", public_base=None):
     jsm = load_baseline()
     if public_base:
         C.PUBLIC_BASE = public_base.rstrip("/")
+
+    hstate = _health_state()
+    need = max(1, int(getattr(C, "OFFLINE_CONFIRM_ROUNDS", 2)))
 
     changed, offline, clone_sites = [], [], []
     for s in jsm.get("sites", []):
@@ -52,9 +66,12 @@ def build(pool, mode="dual", public_base=None):
         tag = info["tag"]
         ent = pool.get(tag)
         detail = health.pick_best_detail(ent) if ent else None
-        # 只认 q>=2（带站点特征的页面）。q1 是门户页/空壳站，
-        # 用它去替换原地址反而是降级，所以宁可不改。
+        # 只认 q>=2（带站点特征、或网盘聚合站的正常首页）。q1 是门户页/空壳站/
+        # 人机校验页，用它去替换原地址反而是降级，所以宁可不改。
         best = detail["url"] if detail and (detail.get("quality") or 0) >= 2 else None
+        # 「有东西活着」：q>=1 也算。它不用于替换地址，但用于**免于误判失效**
+        # —— 人机校验页/前端空壳证明站点没死，只是我们这种数据中心 IP 探不到真相。
+        alive_any = health.survivable_count(ent) if ent else 0
 
         if mode == "gateway":
             gb = gateway_base(tag)
@@ -76,10 +93,36 @@ def build(pool, mode="dual", public_base=None):
                     clone["name"] = (s.get("name") or tag) + "·网关"
                     clone["ext"] = S.set_ext_base(ext, gb)
                     clone_sites.append(clone)
+        elif alive_any > 0:
+            # 有存活地址但质量存疑 —— 保留原地址，也**不判失效、不告警**。
+            # 这一档专门用来吸收「人机校验页 / 前端空壳」这类探不到真相的情况。
+            store.log_event("health",
+                            f"{tag}({s.get('key')}) 有 {alive_any} 条地址存活但质量存疑"
+                            f"（人机校验/空壳），保留原地址，不判失效")
         else:
-            offline.append({"tag": tag, "key": s.get("key")})
-            s["name"] = (s.get("name") or "") + "⚠️失效"
-            store.log_event("offline", f"{tag}({s.get('key')}) 域名池无可用地址，已标注失效")
+            # 本轮没有可用地址 —— 但不立刻打「⚠️失效」。
+            # 域名池本身会抖（偶发超时/5xx），一抖就改名字会让用户看到接口名
+            # 一会儿一个样（用户反馈的「反复失效」「标注失效但实测能用」）。
+            # 只有**连续 need 轮**都无可用才认定真失效。
+            streak = int((hstate.get(tag) or {}).get("streak") or 0)
+            confirmed = streak >= need
+            offline.append({"tag": tag, "key": s.get("key"),
+                            "streak": streak, "confirmed": confirmed})
+            # 标注写进 name 会破坏与原版的逐字一致性，且端缓存后「恢复了也不消失」
+            # （用户 3 号反馈）。默认只记事件、不改 name；确需直观看失效时用
+            # OKTV_MARK_NAMES=1 临时打开。失效状态由 /api/sites、/live、通知表达。
+            if confirmed and getattr(C, "MARK_NAMES", False):
+                s["name"] = (s.get("name") or "") + "⚠️失效"
+                store.log_event("offline",
+                                f"{tag}({s.get('key')}) 连续 {streak} 轮无可用地址，已标注失效")
+            elif confirmed:
+                store.log_event("offline",
+                                f"{tag}({s.get('key')}) 连续 {streak} 轮无可用地址，"
+                                f"判定失效（未写入 name，见 /api/sites）")
+            else:
+                store.log_event("health",
+                                f"{tag}({s.get('key')}) 本轮无可用地址（连续 {streak} 轮，"
+                                f"未达 {need} 轮阈值，暂不标注失效）")
 
     if mode == "dual":
         jsm["sites"] = jsm.get("sites", []) + clone_sites
@@ -144,6 +187,8 @@ def regenerate(pool, mode=None):
     mode = mode or store.get_state().get("mode", "direct")
     jsm, stat = build(pool, mode=mode)
     write_dist(jsm)
+    conf = sum(1 for x in stat["offline"] if x.get("confirmed"))
     store.log_event("render", f"生成配置：模式 {mode}，改写 {len(stat['changed'])} 条，"
-                              f"失效 {len(stat['offline'])} 条，网关备份 {stat['clones']} 条")
+                              f"无可用 {len(stat['offline'])} 条（已确认失效 {conf} 条），"
+                              f"网关备份 {stat['clones']} 条")
     return jsm, stat

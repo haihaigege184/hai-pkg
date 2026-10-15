@@ -26,8 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import config as C          # noqa: E402
 from core import (absbase, ckvault, dav, devices, gateway, health,  # noqa: E402
-                  libfill, notify, patch, probe, relay, sources as S,
-                  store, sync, verify)
+                  libfill, notify, patch, probe, relay, report,
+                  sources as S, store, sync, verify)
 
 app = Flask(__name__, static_folder=None)
 bp = Blueprint("oktv", __name__)
@@ -175,7 +175,7 @@ def _access_log(resp):
 POOL = {}                 # { TAG: {tag, api, proxy, rules, name, domains:[...]} }
 REGISTRY = {}
 _last_render = {"ts": 0, "jsm": None}
-F_HEALTH_STATE = os.path.join(C.DATA_DIR, "health_state.json")   # TAG -> 上次存活数
+F_HEALTH_STATE = C.F_HEALTH_STATE          # 兼容旧引用：{TAG: {alive, ts, streak, notified_offline}}
 
 # ----------------------------------------------------------------------------
 # 初始化
@@ -232,12 +232,15 @@ def _flush():
 
 
 def _tag_alive():
-    """统计每个 TAG 当前「可用」域名数
+    """统计每个 TAG 当前「还有东西活着」的域名数（q>=1）
 
-    只看 status=alive 不够：停放页/密码页也是 200。这里只认 q>=2（带站点特征），
-    这样通知里的「失效」才是真的影响观看。
+    为什么不用 usable_count(q>=2)：
+      数据中心 IP 会被 Cloudflare/WAF 返回 403 或人机校验页，q 只能是 1。
+      拿它当死站会**误报失效** —— 用户在家里明明能用（实测 hdhaven/re0.me/观影
+      都是 CF 拦截，fmcf.fun 是瞬时失败被误判）。所以告警判据放宽到 q>=1：
+      只要站点还有响应，就不打扰用户；真要判死必须是「一个响应的都没有」。
     """
-    return {tag: health.usable_count(ent) for tag, ent in POOL.items()}
+    return {tag: health.survivable_count(ent) for tag, ent in POOL.items()}
 
 
 def _name_of(tag):
@@ -249,25 +252,63 @@ def _sites_of(tag):
 
 
 def _apply_health_notify():
-    """对比上次巡检结果，接口由「有可用」变「无可用」→ 告警，反之 → 恢复通知"""
+    """对比上次巡检结果，接口由「有可用」变「无可用」→ 告警，反之 → 恢复通知
+
+    【为什么要加滞后 —— 2026-10-15】
+    用户反馈「蜡笔接口反复失效和修复通知」。原实现只要 alive 从 >0 掉到 0 就告警，
+    但域名池实测本身就在抖（偶发超时、偶发 5xx、CDN 节点差异）。于是：
+      alive 3 → 0（告警）→ 1（恢复通知）→ 0（告警）…
+    即使 notify.send 有去重，30~60 分钟后照样能再发一轮，用户侧就是「反复骚扰」。
+
+    现在改为「连续 OFFLINE_CONFIRM_ROUNDS 轮都无可用」才判定失效并告警，
+    而**恢复永远立即生效**（宁可早报好消息）。同一轮掉线只告警一次，靠
+    health_state 里的 notified_offline 标记；恢复后标记清零，下次掉线可再告警。
+    """
     now_map = _tag_alive()
-    prev = store.load(F_HEALTH_STATE, {}) or {}
+    prev = store.load(C.F_HEALTH_STATE, {}) or {}
+    need = max(1, int(getattr(C, "OFFLINE_CONFIRM_ROUNDS", 2)))
     results = {"failed": [], "recovered": []}
+    new_state = {}
+    now = int(time.time())
+
     for tag, n in now_map.items():
-        p = prev.get(tag, {}).get("alive")
-        if n == 0 and (p is None or p > 0):
-            results["failed"].append(tag)
-            if C.NOTIFY_ON_FAIL:
-                notify.send(notify.fmt_fail(tag, _name_of(tag), _sites_of(tag)),
-                            dedup_key=f"fail:{tag}", dedup_sec=3600)
-        elif n > 0 and p == 0:
-            best = health.pick_best(POOL.get(tag) or {})
-            results["recovered"].append(tag)
-            if C.NOTIFY_ON_FIX:
-                notify.send(notify.fmt_fixed(tag, _name_of(tag), best or "-"),
-                            dedup_key=f"fix:{tag}", dedup_sec=600)
-    store.save(F_HEALTH_STATE, {t: {"alive": n, "ts": int(time.time())}
-                                for t, n in now_map.items()})
+        p = prev.get(tag) or {}
+        pv = p.get("alive")
+        streak = int(p.get("streak") or 0)
+        notified = bool(p.get("notified_offline"))
+
+        if n > 0:
+            # 有可用：立刻恢复正常。
+            # 注意「恢复通知」只在**确实告过警**时才发 —— 抖动被阈值压下去的那些轮
+            # 从未告警，此时再报「已恢复」纯属噪音（实测第 3、5 轮会误报恢复）。
+            if notified:
+                best = health.pick_best(POOL.get(tag) or {})
+                results["recovered"].append(tag)
+                if C.NOTIFY_ON_FIX:
+                    notify.send(notify.fmt_fixed(tag, _name_of(tag), best or "-"),
+                                dedup_key=f"fix:{tag}", dedup_sec=600)
+            streak = 0
+            notified = False
+        else:
+            streak += 1
+            confirmed = streak >= need
+            # 只在「刚被确认失效」这一刻告警一次
+            if confirmed and not notified:
+                results["failed"].append(tag)
+                if C.NOTIFY_ON_FAIL:
+                    notify.send(notify.fmt_fail(tag, _name_of(tag), _sites_of(tag)),
+                                dedup_key=f"fail:{tag}", dedup_sec=7200)
+                notified = True
+                store.log_event("offline",
+                                f"{tag} 连续 {streak} 轮无可用地址，判定失效")
+            if not confirmed:
+                store.log_event("health",
+                                f"{tag} 连续 {streak} 轮无可用（未达 {need} 轮阈值，暂不判定）")
+
+        new_state[tag] = {"alive": n, "ts": now, "streak": streak,
+                          "notified_offline": notified}
+
+    store.save(C.F_HEALTH_STATE, new_state)
     return results
 
 
@@ -834,6 +875,33 @@ def api_status():
         "relay": relay.stats(),
         "dav": dav.stats(),
     })
+
+
+@bp.route("/api/sites")
+def api_sites():
+    """接口状态明细（站点视角）—— 给机器人插件的「接口状态」命令用。
+
+    与 /api/pool 的区别：/api/pool 是 TAG 视角（28 条，只有带远程地址的），
+    这里是站点视角（79 条，和客户端里看到的一一对应），并且带上
+    局域网/外网两个接口地址和「是否已打失效标注」。
+
+    查询参数：
+      ?status=offline   只看失效的
+      ?brief=1          只返回汇总 + 地址，不要明细（消息短）
+    """
+    only = (request.args.get("status") or "").strip()
+    # 用**实际下发的那一份**（get_config 就是渲染后写进 hai 包的内容）算明细，
+    # 否则「是否已标注失效」会恒为 0，与实际配置对不上。
+    try:
+        cur = get_config()
+    except Exception:
+        cur = None
+    rep = report.sites_report(POOL, jsm=cur if cur else None)
+    if request.args.get("brief") in ("1", "true", "yes"):
+        rep.pop("items", None)
+    elif only:
+        rep["items"] = [x for x in rep["items"] if x["status"] == only]
+    return jsonify(rep)
 
 
 @bp.route("/api/pool")
