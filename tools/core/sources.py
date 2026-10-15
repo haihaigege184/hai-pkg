@@ -68,6 +68,24 @@ def set_ext_base(ext, new_base):
     return SPLIT.join(parts)
 
 
+def tag_of(site, info):
+    """推导站点在**域名池里的 TAG** —— 必须与 build_sources 保持一致。
+
+    池里的 TAG = `ext 尾部 TAG or 站点的 api or key`（见 build_sources）。
+    而 ext 第二段经常**直接写域名**、没有独立 TAG，例如：
+
+        ./lib/tokenm.json$$$https://www.hdmoli.com/$$$noproxy$$$1
+        ./lib/tokenm.json$$$https://662688.xyz$$$
+
+    这些站点在池里叫 csp_Moli / csp_EightEight（走 api 兜底）。凡是只认
+    `info["tag"]` 的地方都会把它们整片漏掉 —— 表现为「本地」、不参与失效
+    判定、域名死了也不换。用同一套规则推导即可全部接回。
+    """
+    if not info:
+        return ""
+    return str(info.get("tag") or site.get("api") or site.get("key") or "")
+
+
 def norm_host(url):
     """取主机名（小写，去 www.）"""
     try:
@@ -148,7 +166,7 @@ def build_sources(baseline_jsm):
         info = parse_ext(ext) if isinstance(ext, str) else None
         if not info:
             continue
-        tag = info["tag"] or s.get("api") or s.get("key") or "UNKNOWN"
+        tag = tag_of(s, info) or "UNKNOWN"
         rec = out.setdefault(tag, {
             "tag": tag, "key": s.get("key"), "name": s.get("name"),
             "api": s.get("api"), "proxy": info["proxy"], "rules": info["rules"],

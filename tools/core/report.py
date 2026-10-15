@@ -43,23 +43,52 @@ def lan_ip():
                 pass
 
 
+def public_bases():
+    """全部对外入口（主地址在前）。
+
+    主地址取**当前生效**的 C.PUBLIC_BASE（patch 可能在运行期改写它，例如把
+    网关地址指向另一条隧道），其余入口来自 C.PUBLIC_BASES 的配置顺序。
+    """
+    out = []
+    cur = (getattr(C, "PUBLIC_BASE", "") or "").rstrip("/")
+    if cur:
+        out.append(cur)
+    for u in (getattr(C, "PUBLIC_BASES", None) or []):
+        u = (u or "").rstrip("/")
+        if u and u not in out:
+            out.append(u)
+    return out
+
+
 def endpoints():
-    """客户端该填的两个接口地址（局域网 / 外网）"""
+    """客户端该填的接口地址（局域网 / 外网，外网可能有多条）"""
     lan_base = (C.LAN_BASE or "").rstrip("/")
     if not lan_base:
         ip = lan_ip()
         if ip:
             lan_base = "http://%s:%d" % (ip, C.PORT)
-    pub_base = (C.PUBLIC_BASE or "").rstrip("/")
+    pubs = public_bases()
     join = lambda b: (b + "/hai/jsm.json") if b else ""   # noqa: E731
     return {
         "lan": join(lan_base),
-        "public": join(pub_base),
-        # 局域网直连时不需要 CF，最稳；外网用于不在同一网段的设备
-        "recommend": join(lan_base) or join(pub_base),
+        "public": join(pubs[0]) if pubs else "",
+        # 多条外网入口（如 CF 隧道 + 自建 gost 穿透），供命令里逐条展示
+        "public_list": [join(u) for u in pubs],
+        # 局域网直连不需要任何隧道，最稳；外网用于不在同一网段的设备
+        "recommend": join(lan_base) or (join(pubs[0]) if pubs else ""),
         "lan_base": lan_base,
-        "public_base": pub_base,
+        "public_base": pubs[0] if pubs else "",
     }
+
+
+def _domain_entry(ent, base):
+    """在某个 TAG 的域名列表里找出与 base 同站的那一条"""
+    if not ent or not base:
+        return None
+    for d in (ent.get("domains") or []):
+        if S.same_site(d.get("url") or "", base):
+            return d
+    return None
 
 
 def _state_of(tag, hstate):
@@ -104,11 +133,22 @@ def sites_report(pool, jsm=None, state=None):
         name = str(s.get("name") or "")
         ext = s.get("ext")
         info = S.parse_ext(ext) if isinstance(ext, str) else None
-        tag = (info or {}).get("tag") or ""
+        base = (info or {}).get("base") or ""
+        tag = S.tag_of(s, info)
+        tag_src = ("ext" if (info or {}).get("tag") else "api") if tag else ""
         ent = pool.get(tag) if tag else None
 
         det = health.pick_best_detail(ent) if ent else None
         best = det if det and (det.get("quality") or 0) >= 2 else None
+        # 与 patch.build 对齐口径：**原地址自己还活着时配置里根本不会换**，
+        # 明细也必须显示原地址。否则会出现「明细说是 666.xxx，配置里写的是
+        # 原版 123.xxx」这种自相矛盾，用户一比对就会怀疑数据不准。
+        orig = _domain_entry(ent, base) if (ent and base) else None
+        if orig and orig.get("status") == "alive" and int(orig.get("quality") or 0) >= 2:
+            best = {"url": orig.get("url") or base,
+                    "latency": orig.get("latency") or 0,
+                    "quality": orig.get("quality"),
+                    "note": orig.get("note") or ""}
         usable = health.usable_count(ent) if ent else 0
         soft = (health.survivable_count(ent) - usable) if ent else 0
         total = len(ent.get("domains", [])) if ent else 0
@@ -118,13 +158,16 @@ def sites_report(pool, jsm=None, state=None):
         streak, notified, ts = _state_of(tag, hstate) if tag else (0, False, 0)
         if best:
             status = "ok"
-        elif not tag:
-            # ext 里就没有远程地址（纯本地 JS/Python 脚本站点、本地 txt 资源），
-            # 这类站点不参与域名巡检，「查不到域名」是正常的，不是故障。
+        elif not base:
+            # ext 里**压根没有远程地址**（纯本地 JS/Python 脚本站点、本地 txt
+            # 分享库、jar 插件等），这类站点不参与域名巡检，「查不到域名」是
+            # 正常的，不是故障。判据是 base（必须带 $$$ 且有 http(s) 段）而不是
+            # tag —— 用 tag 会把「第二段就是域名」的站点误判成内置。
             status = "local"
         elif not ent:
-            # 有 TAG 但域名池里没有这条 —— 域名池还没建立（首次部署/同步失败）。
-            # 这跟「站点失效」是两回事，单独报出来，否则会被误当成"全部正常"。
+            # 有远程地址但域名池里没有这条 —— 要么池还没建立（首次部署/同步
+            # 失败），要么该域名未被纳入巡检。这跟「站点失效」是两回事，
+            # 单独报出来，否则会被误当成"全部正常"。
             status = "unknown"
         elif soft > 0:
             # 有地址活着但质量存疑（人机校验页 / 前端空壳）。
@@ -145,6 +188,8 @@ def sites_report(pool, jsm=None, state=None):
             # 标注与实际不符：标了失效但其实有可用地址（用户 3 号反馈的场景）
             "stale_mark": bool(marked and best),
             "tag": tag,
+            "tag_src": tag_src,         # ext=来自 ext 尾部 TAG；api=用 api 兜底
+            "base": base,               # ext 里的远程站根（空=内置站点）
             "api": s.get("api") or "",
             "proxy": (info or {}).get("proxy") or "",
             "status": status,

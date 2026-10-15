@@ -32,6 +32,22 @@ def gateway_base(tag):
     return f"{pub}/gw/{tag}/"
 
 
+def _base_alive(ent, base, minq=2):
+    """原地址在池里是否仍然可用（alive 且质量达标）
+
+    用于「优先贴近原版」：原地址自己还好端端活着的时候不要动它。以前只要池里
+    有更快/更优的地址就换，结果像 Mogg 这种原地址一直可用的站，ext 也会被改写成
+    另一个域名 —— 配置就会与原版不一致（用户明确要求尽量不动原版）。
+    """
+    if not ent or not base:
+        return False
+    for d in (ent.get("domains") or []):
+        if not S.same_site(d.get("url") or "", base):
+            continue
+        return d.get("status") == "alive" and int(d.get("quality") or 0) >= minq
+    return False
+
+
 def _health_state():
     """读巡检状态（含每 TAG 的连续失败轮数），用于失效标注的滞后判定"""
     f = getattr(C, "F_HEALTH_STATE", None)
@@ -61,9 +77,15 @@ def build(pool, mode="dual", public_base=None):
         if not isinstance(ext, str):
             continue
         info = S.parse_ext(ext)
-        if not info or not info["tag"]:
+        if not info:
             continue
-        tag = info["tag"]
+        # 用与 report.sites_report / sources.build_sources 完全一致的 TAG 推导：
+        # ext 尾部 TAG 优先，没有就退回 api。否则「第二段直接写域名」的站点
+        # （hdmoli / 662688.xyz / libvio.to 等 10 个）会被整片跳过 —— 它们既不
+        # 参与失效判定、域名死了也不会被换掉。
+        tag = S.tag_of(s, info)
+        if not tag:
+            continue
         ent = pool.get(tag)
         detail = health.pick_best_detail(ent) if ent else None
         # 只认 q>=2（带站点特征、或网盘聚合站的正常首页）。q1 是门户页/空壳站/
@@ -81,10 +103,15 @@ def build(pool, mode="dual", public_base=None):
             continue
 
         if best:
-            if best.rstrip("/") + "/" != S.norm_base(info["base"]):
+            # 两条「尽量贴近原版」的守则，顺序不能反：
+            #   1) 原地址自己还活着（alive 且 q>=2）-> 一字不改，哪怕池里有更快的
+            #   2) 要改就只改实质不同的地址，池里那份如果只是规范化写法（差尾斜杠/
+            #      大小写）也不写回
+            if not _base_alive(ent, info["base"]) \
+                    and S.norm_base(best) != S.norm_base(info["base"]):
                 changed.append({"tag": tag, "key": s.get("key"),
                                 "from": info["base"], "to": best})
-            s["ext"] = S.set_ext_base(ext, best)
+                s["ext"] = S.set_ext_base(ext, best)
             if mode == "dual":
                 gb = gateway_base(tag)
                 if gb:

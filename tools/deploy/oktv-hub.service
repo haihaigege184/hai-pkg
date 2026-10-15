@@ -11,9 +11,11 @@ WorkingDirectory=/opt/oktv-hub
 Environment=OKTV_HOST=0.0.0.0
 Environment=OKTV_PORT=8099
 Environment=OKTV_PREFIX=/oktv
-# 对外永久地址：CF 隧道 hai.haihaigege.dpdns.org -> localhost:8099（根路径）
-# 网关备份站点会写成 https://hai.haihaigege.dpdns.org/gw/<TAG>/，电视机/外网都能用
-Environment=OKTV_PUBLIC_BASE=https://hai.haihaigege.dpdns.org
+# 对外入口，**逗号分隔、第一项是主地址**（渲染 jsm.json 与 /gw/<TAG>/ 网关都用它）：
+#   1) CF 隧道（长期稳定，PROPFIND 会被 CF 拦，WebDAV 别走它）
+#   2) 自建 gost 穿透（实测更快，且 /gw/dav 的 PROPFIND 返回 207，WebDAV 可用）
+# 其余入口只在「接口状态」里展示，供客户端挑一条最快的填。
+Environment=OKTV_PUBLIC_BASE=https://hai.haihaigege.dpdns.org,https://hai.gl-hk1.gost.de5.net
 # 长期维护的 hai 本地包目录
 Environment=OKTV_PKG_DIR=/root/hai
 Environment=OKTV_PKG_NAME=hai

@@ -1,5 +1,6 @@
 """oktv-hub 全局配置与常量"""
 import os
+import re
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -43,7 +44,14 @@ F_DIST_JSM = os.path.join(DIST_DIR, "jsm.json")
 HOST = os.environ.get("OKTV_HOST", "0.0.0.0")
 PORT = int(os.environ.get("OKTV_PORT", "8099"))
 # 对外可访问地址（写入 jsm.json 的网关模式用；末尾不带 /）
-PUBLIC_BASE = os.environ.get("OKTV_PUBLIC_BASE", "").rstrip("/")
+# 支持逗号/分号分隔的**多个入口**，例如：
+#   OKTV_PUBLIC_BASE=https://hai.haihaigege.dpdns.org,https://hai.gl-hk1.gost.de5.net
+# 约定：**第一项是主地址**（渲染 jsm.json、生成 /gw/<TAG>/ 网关地址都用它），
+# 其余入口只用于「接口状态/明细」里展示，方便用户挑一条最快的填进客户端。
+# 这样即使同时挂着 CF 隧道和自建 gost 穿透，也不会改变既有下发行为。
+_PUBLIC_RAW = os.environ.get("OKTV_PUBLIC_BASE", "")
+PUBLIC_BASES = [u.strip().rstrip("/") for u in re.split(r"[,;]+", _PUBLIC_RAW) if u.strip()]
+PUBLIC_BASE = PUBLIC_BASES[0] if PUBLIC_BASES else ""
 # 局域网可达基址（只用于「接口状态」这类展示：告诉用户电视机该填哪个地址）。
 # 留空则自动探测本机局域网 IP。
 LAN_BASE = os.environ.get("OKTV_LAN_BASE", "").rstrip("/")
@@ -258,6 +266,10 @@ CHALLENGE_HINTS = (
     "cf-error-details", "cloudflare", "checking your browser",
     "浏览器安全验证", "安全验证", "请稍候", "验证您是真人",
     "verify you are human", "verifying you are human", "enable javascript and cookies",
+    # 2026-10-15 实测：www.libvio.to 返回 403 + 「browser verification required」
+    # （44 字节纯文本），被当成死站并累积到 77 轮 → 误报失效。它和 CF 挑战页
+    # 是同一类东西：站点活着、只是不放数据中心 IP 进，客户端家庭宽带能过。
+    "browser verification", "browser check", "security verification",
 )
 
 # ---------------------------------------------------------------- 巡检判定修正

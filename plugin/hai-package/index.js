@@ -154,7 +154,7 @@ class HaiPackagePlugin extends BasePlugin {
         return [
             '🧰 hai 本地包 · 维护命令',
             '───────────────',
-            '接口状态  —— 汇总：接口数量 + 域名池 + 局域网/外网接口地址',
+            '接口状态  —— 汇总：正常接口清单 + 接口数量 + 域名池 + 全部入口地址',
             '接口明细  —— 逐条列出全部接口（中文名、状态、域名、延迟）',
             '接口明细 玩偶 —— 只列匹配关键词的接口（名字/key/TAG/域名都能匹配）',
             '修复接口  —— 检测并修复失效接口（约 1~3 分钟，分步回报进度）',
@@ -185,26 +185,54 @@ class HaiPackagePlugin extends BasePlugin {
 
         const ep = j.endpoints || {};
         const pool = j.pool || {};
-        const bad = (j.items || []).filter((x) => x.status === 'offline');
-        const watch = (j.items || []).filter((x) => x.status === 'watch');
-        const guard = (j.items || []).filter((x) => x.status === 'guard');
+        const all = j.items || [];
+        const bad = all.filter((x) => x.status === 'offline');
+        const watch = all.filter((x) => x.status === 'watch');
+        const guard = all.filter((x) => x.status === 'guard');
+        const unk = all.filter((x) => x.status === 'unknown');
+        const good = all.filter((x) => x.status === 'ok');
+        // ext 里没有远程地址（内置脚本/jar/本地分享库），本来就不参与域名巡检
+        const localN = j.local_sites || 0;
         // 配置里标着失效、但实际有可用地址 —— 用户反馈过的「恢复了没去掉标注」
-        const stale = (j.items || []).filter((x) => x.stale_mark);
+        const stale = all.filter((x) => x.stale_mark);
 
         const lines = [
             '📊 hai 本地包 · 接口状态',
             '───────────────',
             `接口 ${j.total} 个 ｜ 正常 ${j.ok} ｜ 失效 ${j.offline}`
-                + ` ｜ 观察 ${j.watch} ｜ 存疑 ${j.guard || 0}`,
+                + ` ｜ 观察 ${j.watch} ｜ 存疑 ${j.guard || 0}`
+                + ` ｜ 未巡检 ${j.unknown || 0}`,
             `域名池 ${pool.domains_alive}/${pool.domains_total} 存活`
                 + `（可用 ${pool.domains_usable}）`,
             `上次巡检：${this._ts(this._lastCheck(j))}`,
             '───────────────',
-            '🌐 接口地址（填进 OK影视 的「配置地址」）',
         ];
+
+        // 正常的先列出来 —— 用户找的就是「我要的那个接口还在不在」。
+        // 以前这里只列有问题的，于是他发完「接口状态」找不到玩偶/木偶，
+        // 以为接口被截断了（实际它们一直正常）。
+        if (good.length) {
+            lines.push(`✅ 正常 ${good.length} 个：${this._nameList(good)}`);
+        } else {
+            lines.push('✅ 没有已确认正常的接口（发「修复接口」重新检测）');
+        }
+        if (localN) {
+            lines.push(`📦 另有 ${localN} 个内置接口（本地脚本/jar，不含远程域名，无需巡检）`);
+        }
+        lines.push('───────────────');
+
+        lines.push('🌐 接口地址（填进 OK影视 的「配置地址」）');
         if (ep.recommend) lines.push(` 推荐 ${ep.recommend}`);
-        if (ep.lan) lines.push(` 局域网 ${ep.lan}`);
-        if (ep.public) lines.push(` 外网 ${ep.public}`);
+        if (ep.lan && ep.lan !== ep.recommend) lines.push(` 局域网 ${ep.lan}`);
+        const pubs = (ep.public_list && ep.public_list.length)
+            ? ep.public_list : (ep.public ? [ep.public] : []);
+        pubs.forEach((u, i) => {
+            const tag = pubs.length > 1 ? `外网${i + 1}` : '外网';
+            lines.push(` ${tag} ${u}`);
+        });
+        if (ep.lan_base) {
+            lines.push(` 网盘CK备份(WebDAV) ${ep.lan_base}/gw/dav`);
+        }
         lines.push('───────────────');
 
         if (bad.length) {
@@ -222,6 +250,10 @@ class HaiPackagePlugin extends BasePlugin {
         if (guard.length) {
             lines.push(`🛡 存疑 ${guard.length} 个（有响应但被 WAF/人机校验拦，客户端通常可正常）`);
             for (const x of guard.slice(0, 8)) lines.push(` · ${x.name || x.key}｜${x.api}`);
+        }
+        if (unk.length) {
+            lines.push(`❓ 未纳入巡检 ${unk.length} 个（域名池里没有它的地址）`);
+            for (const x of unk.slice(0, 8)) lines.push(` · ${x.name || x.key}｜${x.api}`);
         }
         if (stale.length) {
             lines.push(`🔖 标注与实际不符 ${stale.length} 个（配置里标着失效、实测可用）`);
@@ -264,23 +296,58 @@ class HaiPackagePlugin extends BasePlugin {
             }
         }
 
-        const pages = Math.ceil(items.length / PAGE_SIZE);
+        // 不带关键词时，把「内置接口」（ext 里没有远程域名）单独压成一段。
+        // 这类站点有 60 多个、本来就不参与域名巡检，逐条铺开会把真正要看的
+        // 十几个接口淹掉 —— 用户上一版看到的「翻了三页全是本地」就是这个原因。
+        let locals = [];
+        if (!kw) {
+            locals = items.filter((x) => x.status === 'local');
+            items = items.filter((x) => x.status !== 'local');
+        }
+        if (!items.length && !locals.length) {
+            await this._say(context, 'ℹ️ 没有可展示的接口。');
+            return;
+        }
+
+        const pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
         const head = [
             `📋 hai 本地包 · 接口明细${kw ? `（筛选「${kw}」）` : ''}`
                 + `（${items.length} 条，共 ${pages} 页）`,
             kw
                 ? `匹配 ${items.length} 条（全部 ${all.length} 条）`
                 : `正常 ${j.ok} ｜ 失效 ${j.offline} ｜ 观察 ${j.watch}`
-                    + ` ｜ 存疑 ${j.guard || 0} ｜ 本地 ${j.local_sites} ｜ 未建立 ${j.unknown}`,
+                    + ` ｜ 存疑 ${j.guard || 0} ｜ 未巡检 ${j.unknown || 0}`
+                    + ` ｜ 内置 ${j.local_sites}`,
+            kw ? '' : '排序：失效 → 观察 → 存疑 → 正常（有远程域名的接口）',
             '───────────────',
-        ].join('\n');
+        ].filter((x) => x !== '').join('\n');
 
+        let seq = 0;
         for (let p = 0; p < pages; p++) {
             const chunk = items.slice(p * PAGE_SIZE, (p + 1) * PAGE_SIZE);
-            const body = chunk.map((x) => this._fmtSite(x)).join('\n');
+            const body = chunk.map((x) => `${++seq}. ${this._fmtSite(x)}`).join('\n');
             const text = (p === 0 ? `${head}\n` : `（第 ${p + 1}/${pages} 页）\n`) + body;
             await this._say(context, text);
         }
+
+        if (locals.length) {
+            const rows = [];
+            for (let i = 0; i < locals.length; i += 8) {
+                rows.push(' ' + locals.slice(i, i + 8)
+                    .map((x) => x.name || x.key).join(' / '));
+            }
+            await this._say(context, [
+                `📦 内置接口 ${locals.length} 个（本地脚本/jar/分享库，没有远程域名，无需巡检）`,
+                ...rows,
+            ].join('\n'));
+        }
+    }
+
+    /** 名字清单：「接口状态」里一行列出全部正常接口（过长则截断） */
+    _nameList(items, max = 24) {
+        const names = items.map((x) => String(x.name || x.key || '').trim()).filter(Boolean);
+        if (names.length <= max) return names.join(' / ');
+        return `${names.slice(0, max).join(' / ')} …另 ${names.length - max} 个`;
     }
 
     /**
