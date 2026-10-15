@@ -27,7 +27,7 @@ const http = require('node:http');
 
 // 用「包含」语义匹配，这样「接口状态怎么样」「帮我修复接口」也能命中
 const HELP_RE = /(hai帮助|接口帮助|hai菜单)/i;
-const SITES_RE = /(接口明细|接口列表|全部接口|接口详情|hai接口列表)/i;
+const SITES_RE = /(接口明细|接口列表|全部接口|接口详情|hai接口列表|查接口|搜索接口)/i;
 const STATUS_RE = /(接口状态|接口情况|hai状态|本地包状态|hai包状态)/i;
 const REPAIR_RE = /(修复接口|检测修复|hai修复|hai接口修复)/i;
 
@@ -124,6 +124,22 @@ class HaiPackagePlugin extends BasePlugin {
         return t;
     }
 
+    /** 取命令词后面的关键词：「接口明细 玩偶哥哥」-> 「玩偶哥哥」 */
+    _kwOf(msg, re) {
+        let t = String(msg || '');
+        if (!re.test(t)) return '';
+        t = t.replace(re, ' ');                              // 非全局，只去掉第一处命令词
+        t = t.replace(/^[\s:：\-—_,，、/|]+/, '').trim();       // 剥前导分隔符
+        t = t.replace(/[。，,、！!？?~～]+$/, '').trim();       // 剥结尾语气词
+        return t;
+    }
+
+    /** 关键词是否命中该接口（名字 / key / TAG / api / 当前域名都能匹配） */
+    _matchSite(x, k) {
+        return [x.name, x.key, x.tag, x.api, x.best, x.proxy]
+            .some((v) => String(v || '').toLowerCase().includes(k));
+    }
+
     _route(msg) {
         if (HELP_RE.test(msg)) return 'help';
         if (SITES_RE.test(msg)) return 'sites';
@@ -139,7 +155,8 @@ class HaiPackagePlugin extends BasePlugin {
             '🧰 hai 本地包 · 维护命令',
             '───────────────',
             '接口状态  —— 汇总：接口数量 + 域名池 + 局域网/外网接口地址',
-            '接口明细  —— 逐条列出全部接口（状态、域名、延迟）',
+            '接口明细  —— 逐条列出全部接口（中文名、状态、域名、延迟）',
+            '接口明细 玩偶 —— 只列匹配关键词的接口（名字/key/TAG/域名都能匹配）',
             '修复接口  —— 检测并修复失效接口（约 1~3 分钟，分步回报进度）',
             'hai帮助   —— 显示本说明',
             '───────────────',
@@ -193,7 +210,7 @@ class HaiPackagePlugin extends BasePlugin {
         if (bad.length) {
             lines.push(`⚠️ 失效 ${bad.length} 个（连续 ${j.confirm_rounds} 轮无可用）`);
             for (const x of bad.slice(0, 12)) {
-                lines.push(` · ${x.key}（${x.api}）域名 ${x.usable}/${x.total}`);
+                lines.push(` · ${x.name || x.key}（${x.api}）域名 ${x.usable}/${x.total}`);
             }
             if (bad.length > 12) lines.push(` …另有 ${bad.length - 12} 个`);
         } else {
@@ -204,19 +221,23 @@ class HaiPackagePlugin extends BasePlugin {
         }
         if (guard.length) {
             lines.push(`🛡 存疑 ${guard.length} 个（有响应但被 WAF/人机校验拦，客户端通常可正常）`);
-            for (const x of guard.slice(0, 8)) lines.push(` · ${x.key}｜${x.api}`);
+            for (const x of guard.slice(0, 8)) lines.push(` · ${x.name || x.key}｜${x.api}`);
         }
         if (stale.length) {
             lines.push(`🔖 标注与实际不符 ${stale.length} 个（配置里标着失效、实测可用）`);
         }
         lines.push('───────────────');
-        lines.push('发「接口明细」逐条查看全部接口');
+        lines.push('发「接口明细」逐条查看全部接口；找单个接口用「接口明细 玩偶」这样带关键词。');
         await this._say(context, lines.join('\n'));
     }
 
-    /** 明细视图：逐条列出全部接口，按每页 PAGE_SIZE 拆分发送 */
+    /** 明细视图：逐条列出全部接口，按每页 PAGE_SIZE 拆分发送；可带关键词筛选 */
     async _cmd_sites(context) {
-        await this._say(context, '⏳ 收到「接口明细」，正在读取中枢…');
+        const kw = this._kwOf(this._normalize(String(context.msg || '')), SITES_RE);
+        await this._say(context, kw
+            ? `⏳ 收到「接口明细 ${kw}」，正在检索…`
+            : '⏳ 收到「接口明细」，正在读取中枢…');
+
         let j;
         try {
             j = await this._getJSON('/api/sites');
@@ -224,16 +245,33 @@ class HaiPackagePlugin extends BasePlugin {
             await this._say(context, `❌ 读取接口明细失败：${e.message}\n中枢地址：${this.base}`);
             return;
         }
-        const items = j.items || [];
-        if (!items.length) {
+
+        const all = j.items || [];
+        if (!all.length) {
             await this._say(context, 'ℹ️ 中枢还没有接口数据，先发一次「修复接口」建立域名池。');
             return;
         }
+
+        let items = all;
+        if (kw) {
+            const k = kw.toLowerCase();
+            items = all.filter((x) => this._matchSite(x, k));
+            if (!items.length) {
+                await this._say(context, `🔍 没找到匹配「${kw}」的接口（共 ${all.length} 个）。\n`
+                    + '可试：玩偶 / 木偶 / 夸克 / 百度 / 网盘 / 磁力 / 阿里\n'
+                    + '或发「接口明细」看全部。');
+                return;
+            }
+        }
+
         const pages = Math.ceil(items.length / PAGE_SIZE);
         const head = [
-            `📋 hai 本地包 · 接口明细（${items.length} 条，共 ${pages} 页）`,
-            `正常 ${j.ok} ｜ 失效 ${j.offline} ｜ 观察 ${j.watch}`
-                + ` ｜ 存疑 ${j.guard || 0} ｜ 本地 ${j.local_sites} ｜ 未建立 ${j.unknown}`,
+            `📋 hai 本地包 · 接口明细${kw ? `（筛选「${kw}」）` : ''}`
+                + `（${items.length} 条，共 ${pages} 页）`,
+            kw
+                ? `匹配 ${items.length} 条（全部 ${all.length} 条）`
+                : `正常 ${j.ok} ｜ 失效 ${j.offline} ｜ 观察 ${j.watch}`
+                    + ` ｜ 存疑 ${j.guard || 0} ｜ 本地 ${j.local_sites} ｜ 未建立 ${j.unknown}`,
             '───────────────',
         ].join('\n');
 
@@ -245,25 +283,37 @@ class HaiPackagePlugin extends BasePlugin {
         }
     }
 
+    /**
+     * 单条接口的展示。
+     *
+     * 中文名优先 —— 用户是按「玩偶哥哥」「木偶哥哥」这类名字找接口的，
+     * 只给英文 key（Mogg / Wogg）会让人以为列表里没有这些接口。
+     */
     _fmtSite(x) {
         const icon = {
             ok: '✅', offline: '⚠️', watch: '👀', guard: '🛡',
             unknown: '❓', local: '📦',
         }[x.status] || '·';
+
+        const name = String(x.name || '').trim();
+        const key = String(x.key || '').trim();
+        let label = name || key;
+        if (name && key && name !== key) label += `（${key}）`;
+
         let extra;
         if (x.status === 'ok') {
             extra = `${this._hostOf(x.best)} ${x.latency}ms`;
         } else if (x.status === 'local') {
-            extra = '本地脚本，无需域名';
+            extra = '本地';
         } else if (x.status === 'unknown') {
             extra = '域名池未建立';
         } else if (x.status === 'guard') {
-            extra = '有响应但被 WAF/人机校验拦，客户端通常可正常';
+            extra = 'WAF 拦（客户端通常可正常）';
         } else {
             extra = `域名 ${x.usable}/${x.total}`;
             if (x.streak) extra += `（已 ${x.streak} 轮无可用）`;
         }
-        return `${icon} ${x.key}｜${x.api}｜${extra}${x.stale_mark ? '｜🔖标注过期' : ''}`;
+        return `${icon} ${label} · ${extra}${x.stale_mark ? ' · 🔖标注过期' : ''}`;
     }
 
     // ------------------------------ 修复（后台 + 分阶段进度）------------------------------
