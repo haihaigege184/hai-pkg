@@ -363,6 +363,85 @@ def do_repair(reason="manual"):
     return stat
 
 
+# --------------------------------------------------------- 修复任务：后台执行 + 进度
+# 「修复接口」要跑 1~3 分钟。同步调用期间调用方拿不到任何中间信息 —— 用户看到的是
+# 「发了命令之后长时间没动静」，无法判断到底在跑还是挂了。
+# 这里提供一个单例后台任务：带 background=1 时立即返回，执行过程中把阶段写进
+# 模块级快照，调用方用 /api/repair/status 轮询，每进入新阶段就能回报一条进度。
+# 不传 background 时行为与以前完全一致（同步返回），既有调用方不受影响。
+
+_REPAIR = {
+    "running": False, "stage": "idle", "step": 0, "total": 3,
+    "note": "", "reason": "", "started": 0, "updated": 0, "finished": 0,
+    "sync": None, "result": None, "error": None,
+}
+_REPAIR_LOCK = threading.Lock()
+
+
+def _repair_set(**kw):
+    with _REPAIR_LOCK:
+        _REPAIR.update(kw)
+        _REPAIR["updated"] = int(time.time())
+
+
+def _repair_snapshot():
+    with _REPAIR_LOCK:
+        return dict(_REPAIR)
+
+
+def do_repair_bg(reason="api"):
+    """后台跑一次完整修复，逐阶段写进度（供 /api/repair/status 轮询）
+
+    阶段与 do_repair 保持一一对应，最后一步仍会 libfill，语义不缩水。
+    """
+    t0 = time.time()
+    # 无论从哪条路径进来（含同步调用），先把上一轮的成果字段清干净，
+    # 否则轮询方会把残留的 check / result 当成本轮进度。
+    _repair_set(sync=None, check=None, result=None, error=None)
+    try:
+        _repair_set(stage="sync", step=1, note="上游同步（拉取社区配置、发现新域名）")
+        before = _tag_alive()
+        sync_stat = sync.sync_pool(POOL, REGISTRY)
+        _flush()
+        _repair_set(sync={
+            "sources": len(sync_stat.get("sources", [])),
+            "new_domains": sync_stat.get("new_domains", 0),
+            "harvested": sync_stat.get("harvested", 0),
+        })
+
+        _repair_set(stage="check", step=2, note="全池巡检（逐个地址探测可用性）")
+        check_stat = do_check()
+        _repair_set(check={"checked": check_stat.get("checked", 0),
+                           "alive": check_stat.get("alive", 0)})
+
+        _repair_set(stage="render", step=3, note="重新生成 hai 本地包")
+        render_stat = do_render()
+        libfill.fill()
+
+        after = _tag_alive()
+        fixed = [t for t, n in after.items() if n > 0 and before.get(t, 0) == 0]
+        still = sorted(t for t, n in after.items() if n == 0)
+        stat = {
+            "ok": True, "reason": reason,
+            "elapsed": round(time.time() - t0, 1),
+            "sync": _repair_snapshot().get("sync") or {},
+            "checked": check_stat["checked"],
+            "alive": check_stat["alive"],
+            "fixed": fixed,
+            "still_offline": still,
+            "changed_sites": len(render_stat.get("changed", [])),
+            "pkg": C.PKG_DIR,
+        }
+        store.log_event("repair", f"修复完成：恢复 {len(fixed)} 个，"
+                                  f"仍失效 {len(still)} 个，耗时 {stat['elapsed']}s")
+        _repair_set(stage="done", step=3, note="完成", running=False,
+                    result=stat, error=None, finished=int(time.time()))
+    except Exception as e:
+        store.log_event("repair", f"修复失败：{type(e).__name__}: {e}")
+        _repair_set(stage="error", running=False, finished=int(time.time()),
+                    error=f"{type(e).__name__}: {e}")
+
+
 def do_daily():
     """每日巡检：修复 + 汇总报告 + 通知管理员"""
     stat = do_repair(reason="daily")
@@ -953,9 +1032,43 @@ def api_render():
 
 @bp.route("/api/repair", methods=["POST", "GET"])
 def api_repair():
-    """一键检测修复：同步上游 -> 全池巡检 -> 重新生成 hai 包（SEA 插件「修复接口」调这个）"""
+    """一键检测修复：同步上游 -> 全池巡检 -> 重新生成 hai 包
+
+    默认同步返回（与既有调用方兼容）。带 `background:true` 时改为后台执行并立即
+    返回，进度通过 /api/repair/status 轮询 —— SEA 插件用这个方式做「中途过程反馈」。
+    """
     body = request.get_json(silent=True) or {}
-    return jsonify(do_repair(reason=body.get("reason", "api")))
+    reason = body.get("reason", "api")
+
+    if body.get("background") or body.get("bg"):
+        with _REPAIR_LOCK:
+            if _REPAIR.get("running"):
+                return jsonify({"ok": False, "busy": True,
+                                "stage": _REPAIR.get("stage"),
+                                "step": _REPAIR.get("step"),
+                                "total": _REPAIR.get("total")}), 409
+            _REPAIR.update({
+                "running": True, "stage": "starting", "step": 0, "total": 3,
+                "note": "准备中", "reason": reason, "started": int(time.time()),
+                "updated": int(time.time()), "finished": 0,
+                # 三个成果字段必须全部清空。只清 sync 会导致上一轮的 check 残留，
+                # 调用方轮询时会把「上一轮的巡检结果」当成本轮进度报出去。
+                "sync": None, "check": None, "result": None, "error": None,
+            })
+        threading.Thread(target=do_repair_bg, args=(reason,), daemon=True).start()
+        return jsonify({"ok": True, "accepted": True, "total": 3})
+
+    return jsonify(do_repair(reason=reason))
+
+
+@bp.route("/api/repair/status")
+def api_repair_status():
+    """查询当前（或上一次）修复任务的进度快照"""
+    snap = _repair_snapshot()
+    # result 只在完成时有值；running 期间不带，避免响应体过大
+    if snap.get("running"):
+        snap.pop("result", None)
+    return jsonify(snap)
 
 
 @bp.route("/api/daily", methods=["POST"])

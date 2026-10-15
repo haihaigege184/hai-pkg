@@ -1,7 +1,9 @@
 """一键部署到 10.0.0.11
 
-    python deploy/deploy.py            # 推送 + 安装 + 启动
-    python deploy/deploy.py --no-assets  # 跳过 81MB 资产（首次之后的增量更新）
+    python deploy/deploy.py                  # 推送 + 安装 + 启动（含 SEA 插件）
+    python deploy/deploy.py --no-assets      # 跳过 81MB 资产（首次之后的增量更新）
+    python deploy/deploy.py --no-plugin      # 只更新中枢，不动 SEA 插件
+    python deploy/deploy.py --no-restart     # 更新插件但不重启 sea2-bot
 
 做的事：
     1. 本地打包（排除 data/logs/_work）
@@ -9,6 +11,13 @@
     3. 远端建 venv 并装依赖
     4. 安装 systemd 单元并启动
     5. 冒烟检查 /api/status
+    6. 部署 SEA 插件 + 框架补丁，重启 sea2-bot
+
+关于第 6 步（教训）
+------------------
+插件改动**不会**随中枢部署自动生效 —— 它们是两个目录。曾经因为漏了这一步，
+中枢与插件代码脱节了很久，表现是「机器人命令发了毫无反应」，排查绕了很远。
+所以把插件部署并进主流程，且默认重启 bot（改完不重启等于没改）。
 """
 import os
 import subprocess
@@ -22,6 +31,14 @@ HOST, USER, PWD = "10.0.0.11", "root", "liuhai"
 REMOTE = "/opt/oktv-hub"
 LOCAL = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TARBALL = os.path.join(os.path.dirname(LOCAL), "_oktv_hub_deploy.tar.gz")
+
+# SEA 机器人侧
+PLUGIN_SRC = os.path.join(os.path.dirname(LOCAL), "hai-package-plugin", "index.js")
+SEA_DIRS = ("/root/sea2", "/root/sea1")
+PLUGIN_DST = "/root/sea2/plugins/hai-package/index.js"
+FRAMEWORK_PATCH = os.path.join(LOCAL, "deploy", "sea", "base-adapter.js")
+FRAMEWORK_DST = "/adapters/base-adapter.js"
+PATCH_MARK = "userPermission: permissionLevel"
 
 
 EXCLUDES = {"data", "logs", "dist", "__pycache__", ".venv", "_work"}
@@ -62,31 +79,87 @@ def run(cli, cmd, timeout=600):
     return code, out, err
 
 
+def deploy_sea(c, restart=True):
+    """部署 SEA 插件与框架补丁
+
+    框架补丁（base-adapter.js）只做「缺了才补」：先检查目标文件是否已含修复标记，
+    已含就跳过 —— 这样人工改过的、或将来上游自己修好的版本不会被覆盖回去。
+    """
+    print("[7/7] 部署 SEA 插件 …")
+    if not os.path.exists(PLUGIN_SRC):
+        print("      !! 找不到插件源文件，跳过：" + PLUGIN_SRC)
+        return
+    sftp = c.open_sftp()
+    sftp.put(PLUGIN_SRC, PLUGIN_DST)
+    print(f"      插件 -> {PLUGIN_DST}")
+
+    if os.path.exists(FRAMEWORK_PATCH):
+        for base in SEA_DIRS:
+            dst = base + FRAMEWORK_DST
+            code, o, e = run(c, f"test -f {dst} && echo HAS || echo NONE")
+            if "HAS" not in o:
+                continue
+            code, o, e = run(c, f"grep -c {PATCH_MARK!r} {dst} || true")
+            if o.strip().isdigit() and int(o.strip()) > 0:
+                print(f"      框架已是修复版，跳过：{dst}")
+                continue
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            run(c, f"mkdir -p {base}/backups && "
+                   f"cp -a {dst} {base}/backups/base-adapter.js.bak-{ts}")
+            sftp.put(FRAMEWORK_PATCH, dst)
+            print(f"      框架补丁已应用（原文件已备份）：{dst}")
+    else:
+        print("      !! 找不到框架补丁，跳过框架检查")
+    sftp.close()
+
+    code, o, e = run(c, "cd /root/sea2 && node --check plugins/hai-package/index.js && "
+                        "node --check adapters/base-adapter.js && echo SYNTAX_OK")
+    if "SYNTAX_OK" not in o:
+        print("      语法检查：FAIL")
+        print("      " + (o or e).strip()[:400])
+        print("      ** 已中止重启；服务器上仍是上一版，运行不受影响。**")
+        return
+    print("      语法检查：OK")
+
+    if not restart:
+        print("      --no-restart：跳过重启。插件改动尚未生效，需手动 pm2 restart sea2-bot")
+        return
+    run(c, "pm2 restart sea2-bot >/dev/null 2>&1; sleep 6")
+    code, o, e = run(c, "tail -n 150 /root/.pm2/logs/sea2-bot-out.log "
+                        "| grep -a 'hai-package' | tail -2")
+    for line in (o or "").strip().split("\n"):
+        if line.strip():
+            print("      重启后日志：" + line.strip()[:120])
+
+
 def main():
     with_assets = "--no-assets" not in sys.argv
-    print("[1/6] 打包…")
+    with_plugin = "--no-plugin" not in sys.argv
+    restart = "--no-restart" not in sys.argv
+
+    print("[1/7] 打包…")
     tb = make_tar(with_assets)
     size = os.path.getsize(tb) / 1024 / 1024
     print(f"      {tb}  ({size:.1f} MB)")
 
-    print("[2/6] 连接 10.0.0.11 …")
+    print("[2/7] 连接 10.0.0.11 …")
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     c.connect(HOST, username=USER, password=PWD, timeout=15)
     run(c, f"mkdir -p {REMOTE}")
 
-    print("[3/6] 上传…")
+    print("[3/7] 上传…")
     sftp = c.open_sftp()
     sftp.put(tb, "/tmp/oktv-hub.tar.gz")
     sftp.close()
 
-    print("[4/6] 解包…")
+    print("[4/7] 解包…")
     code, o, e = run(c, f"tar xzf /tmp/oktv-hub.tar.gz -C /opt && "
                         f"mkdir -p {REMOTE}/data {REMOTE}/logs {REMOTE}/dist && "
                         f"ls {REMOTE}")
     print("      " + o.strip().replace("\n", " "))
 
-    print("[5/6] 建 venv + 依赖…")
+    print("[5/7] 建 venv + 依赖…")
     code, o, e = run(c, f"cd {REMOTE} && "
                         f"(test -d .venv || python3 -m venv .venv) && "
                         f"./.venv/bin/pip install -q --upgrade pip && "
@@ -95,7 +168,7 @@ def main():
                      timeout=900)
     print("      " + (o or e).strip()[-200:])
 
-    print("[6/6] 安装并启动服务…")
+    print("[6/7] 安装并启动服务…")
     run(c, f"cp {REMOTE}/deploy/oktv-hub.service /etc/systemd/system/ && "
            f"systemctl daemon-reload && systemctl enable oktv-hub >/dev/null 2>&1 && "
            f"systemctl restart oktv-hub")
@@ -105,6 +178,11 @@ def main():
     print("      " + o.strip())
     if e.strip():
         print("      [stderr] " + e.strip()[:300])
+
+    if with_plugin:
+        deploy_sea(c, restart=restart)
+    else:
+        print("[7/7] --no-plugin：跳过 SEA 插件部署")
 
     c.close()
     print("\n完成。管理入口： https://wb.haihaigege.dpdns.org/oktv/")
