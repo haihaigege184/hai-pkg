@@ -121,10 +121,20 @@
   电视上装个文件管理器、打开「显示隐藏文件」，就能看 / 拷走 / 删掉 / 替换。<br/>
   WebDAV 这边的文件名与它<b>一一对应</b>（去掉 <code>_user.pg</code>、换成 <code>.json</code>），
   所以「同步 CK」本质就是「同步这些文件」：<br/>
-  &nbsp;·&nbsp;<b>上行</b>：端只在<b>本地登录态发生变化</b>时才 PUT（实测只有
-  <code>cookie_guanying.json</code> 变更过一次）；单纯「填地址」只触发测试与拉取。<br/>
-  &nbsp;·&nbsp;<b>下行</b>：端约每 30 分钟来取一批，另外<b>打开对应网盘设置时会立刻取</b>
-  → <b>往保险库写一次 CK，端下次来取就自动写进它自己的落盘文件</b>（见下表「回填」）。<br/>
+  &nbsp;·&nbsp;<b>上行（端 → 中枢）</b>：<b>网盘 CK 类只读不写</b> ——
+  <code>quark / uc / baidu / 115 / 123 / 189 / aliyun / pikpak / thunder</code> 这些
+  <code>.json</code> 的 PUT 次数实测为 <b>0</b>。端只写过三类：
+  <b>播放进度</b> <code>playprogress.json</code>（播放中约每分钟一次）、
+  <b>连通测试</b> <code>connection_test.json</code>（填地址时一次）、
+  <b>观影站点 cookie</b> <code>cookie_guanying.json</code>（登录态变化时一次）。<br/>
+  &nbsp;&nbsp;&nbsp;→ <b>端上扫码得来的网盘 CK 不会自动送上来，必须人工导入一次。</b><br/>
+  &nbsp;·&nbsp;<b>下行（中枢 → 端）</b>：端在<b>打开对应网盘设置 / 重新保存 WebDAV 配置</b>
+  这一类时机来取一批（实测 <code>quark.json</code> 取过 10 次、<code>aliyun.json</code> 7 次、
+  <code>baidu.json</code> 6 次、<code>uc.json</code> 5 次），<b>取到 200 就用云端内容覆盖本地</b>
+  → 往保险库写一次 CK，端下次来取就写进它自己的落盘文件（见下表「回填」）。<br/>
+  &nbsp;·&nbsp;<b>⚠️ 覆盖风险</b>：云端一旦有值，端取走后会<b>盖掉本地那份</b>。
+  所以保险库里存的必须是<b>完整有效</b>的 CK —— 半截或过期的会把端上刚扫码登录好的状态冲掉。
+  如无把握，宁可不填。<br/>
   &nbsp;·&nbsp;<b>怎么开</b>：在 OK影视 的「网盘及弹幕配置」→ <b>WEBDAV 缓存网盘信息</b> 里填
   <code id="durl">…</code>（账号密码随便填，中枢不校验），再做一次「备份 / 缓存」。
 </div>
