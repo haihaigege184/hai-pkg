@@ -169,6 +169,44 @@ def _norm_source(source):
     return str(source or "")[:120]
 
 
+def _polluted(v, html=True):
+    """这条 CK 是不是被「错误页/HTML」污染了。
+
+    实测端在「夸克扫码登录」失败时会拼出一条畸形 Cookie —— 形如
+
+        __pus=d2edb2fe…; <!doctype html>
+        <html lang=en>
+        <title>404 Not Found</title>
+        <h1>Not Found</h1>
+        <p>The requested URL was not found on the server…</p>
+
+    即把上游（Flask/Werkzeug）的 404 页面正文当成了 Cookie 的一段。
+    危险在于：`extract` 认 `__pus=` 这个特征，会把它当夸克 CK 收进保险库，
+    而 tokenm.json 是**动态渲染**的 —— 等于把这份垃圾下发给所有设备。
+    所以这里硬性拦住。合法 Cookie 永远不含 `<`、`>` 与控制字符。
+
+    html=False 时只查控制字符（账号密码类字段允许出现 `<`/`>`）。
+    """
+    s = str(v or "")
+    if html and ("<" in s or ">" in s):
+        return "含 HTML 标记"
+    for ch in s:
+        if ord(ch) < 0x20 or ord(ch) == 0x7F:
+            return "含控制字符 0x%02x" % ord(ch)
+    return ""
+
+
+def _sanitize(fields, kind=""):
+    """挑出被污染的字段；返回 [(field, reason)]"""
+    html = (kind == "cookie")
+    bad = []
+    for k, v in (fields or {}).items():
+        r = _polluted(v, html=html)
+        if r:
+            bad.append((k, r))
+    return bad
+
+
 def report(channel, fields, source="", state=None, note="", force=False,
            validate=True, count_use=False):
     """写入一个渠道的 CK。
@@ -184,6 +222,14 @@ def report(channel, fields, source="", state=None, note="", force=False,
     fields = {k: str(v).strip() for k, v in (fields or {}).items() if str(v or "").strip()}
     if not fields:
         return {"ok": False, "action": "reject", "error": "空值"}
+
+    bad = _sanitize(fields, kind=CHANNELS[ch].get("kind", ""))
+    if bad:
+        why = "；".join("%s %s" % (k, r) for k, r in bad)
+        store.log_event("ck", "%s 上报的 CK 被污染，已拒收（%s）—— 多半是端把上游"
+                              "错误页当成 Cookie 拼进来了" % (CHANNELS[ch]["label"], why))
+        return {"ok": False, "action": "reject", "channel": ch,
+                "error": "CK 被错误页/HTML 污染：%s" % why}
 
     d = load()
     items = d["items"]

@@ -1,21 +1,28 @@
 # -*- coding: utf-8 -*-
-"""WebDAV 端点：接管 PG「网盘及弹幕配置 → WEBDAV 缓存网盘信息」的备份/恢复通道。
+"""WebDAV 端点：接管 OK影视「网盘及弹幕配置 → WEBDAV 缓存网盘信息」的备份/恢复通道。
 
 背景
 ----
-PG 包内置了一个 WebDAV 同步层（包内类 `com.github.catvod.spider.WebDAVConfig`），
-若干凭据类会把「登录态」以 `<key>.json` 的形式 PUT 上去：
+**这套同步是 App 主程序（`com.fongmi.android.tv`）内置的，不在 PG 包里**
+（`pg.jar` 里扫不到任何 webdav 字符串）。地址存在 SharedPreferences 的
+`global_panconfig_webdavconfig_address`，UI 上就是「网盘及弹幕配置」里的
+「WEBDAV 缓存网盘信息」。
 
-    GuangYaUser        -> guangya.json
-    HDHavenCredentials -> hdhaven.json
-    HdhiveCredentials  -> hdhive.json
-    Pan123OpenCredentials -> 123_open.json
-    YoutubeCredentials -> youtube.json
-    Bili.User          -> （Cookie 刷新）
-    OpenSubtitlesCredentials -> （同步）
+**实测（2026-10-16，真实客户端）**：端管理并会来回同步这些文件 ——
 
-地址存在 SharedPreferences 的 `global_panconfig_webdavconfig_address`，UI 上就是
-「网盘及弹幕配置」里的「WEBDAV 缓存网盘信息」。
+    quark.json        夸克网盘 CK          ← 用户最想要的
+    baidu.json        百度网盘 CK          ← 同上
+    uc.json           UC 网盘 CK
+    aliyun.json       阿里云盘 token
+    youtube.json      YouTube 凭据
+    ysp_uid.json      （弹幕/直播侧 UID）
+    fylive_ua.json    （直播侧 UA）
+    playprogress.json 播放进度（自动，最大 350KB+）
+    connection_test.json  填地址时自动写的连通性探针（内容 `{}`）
+
+**关键行为**：只填地址 → 端只会**拉取（GET）** + 写个 `connection_test.json`；
+必须**点一次「备份」**才会把上面这些凭据 **PUT** 上来。
+PUT 上来即自动落盘 + 提取入库，其它设备 GET 就能同步。
 
 **为什么这条通道比 tokenm.json 有价值**：它是端**主动发起**的外发请求，
 不受「端只 GET 不回写 tokenm」的限制。
@@ -33,7 +40,8 @@ PG 包内置了一个 WebDAV 同步层（包内类 `com.github.catvod.spider.Web
 安全
 ----
 * **任意 Basic Auth 都接受** —— 端会带它自己配置的账号密码，中枢只需吞下来；
-  真正的门禁是来源网段（默认只允许局域网写，见 C.DAV_ALLOW_PREFIX）。
+  真正的门禁是来源网段（默认只允许局域网写，见 `allow_from`）。
+  注：端走 CF/gost 穿透回源时 `remote_addr` 是 `127.0.0.1`，故回环一并放行。
 * 路径做穿越防护，任何逃出 data/dav 的相对路径一律 403。
 """
 import base64
@@ -134,11 +142,35 @@ def recent(n=100):
     return out[-n:][::-1]
 
 
+def wanted():
+    """端主动来要、但我们手上没有的文件（GET 404）。
+
+    这是**最有行动价值的一列**：它等于「端希望同步哪些渠道」。每出现一个新名字，
+    就说明 App 那边多了一个可同步项 —— 只要端 PUT 上来（或我们按同名放一份），
+    该渠道就自动接上了。
+    """
+    latest = {}
+    for r in recent(1000):
+        p = (r.get("p") or "").strip("/")
+        if not p or "/" in p or not p.endswith(".json"):
+            continue
+        latest[p] = r                      # recent() 是倒序，最后覆盖到的是最新
+    have = set(x["rel"].split("/")[-1] for x in list_files())
+    out = []
+    for name, r in sorted(latest.items()):
+        if name in have:
+            continue
+        out.append({"name": name, "m": r.get("m"), "status": r.get("status"),
+                    "t": r.get("t"), "note": r.get("note") or ""})
+    return out
+
+
 def stats():
     rows = recent(500)
     puts = [r for r in rows if r.get("m") == "PUT"]
     gets = [r for r in rows if r.get("m") == "GET" and r.get("status") == 200]
     hit = [r for r in rows if r.get("hit")]
+    want = wanted()
     return {
         "enabled": enabled(),
         "public": bool(getattr(C, "DAV_PUBLIC", False)),
@@ -150,6 +182,8 @@ def stats():
         "last": rows[0].get("t", "") if rows else "",
         "last_put": puts[0]["t"] if puts else "",
         "last_hit": hit[0]["hit"] if hit else [],
+        "wanted": want,                    # 端想要、我们还没有的渠道
+        "wanted_n": len(want),
         "url": "/gw/dav",
     }
 
