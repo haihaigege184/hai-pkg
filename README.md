@@ -271,6 +271,7 @@ systemctl daemon-reload && systemctl enable --now oktv-hub
 | `OKTV_OFFLINE_CONFIRM` | `2` | 连续多少轮无可用才判失效并告警 |
 | `OKTV_PROBE_ATTEMPTS` | `3` | 单地址探测重试次数（抗瞬时失败） |
 | `OKTV_ABS_PATHS` | `0` | 相对路径绝对化（默认关，见第三节） |
+| `OKTV_DAV_REFILL` | `1` | WebDAV **回填**：端来取 `<渠道>.json` 时用保险库的 CK 合成给它（写进端上 `.pg`）。置 `0` 关闭 |
 | `OKTV_SEA_CONFIG` | `/root/sea2/config.json` | 读 NapCat 地址/token/管理员 QQ |
 
 公网入口（Cloudflare 远程托管隧道必须走 API，本地 YAML 会被云端覆盖）：
@@ -303,8 +304,8 @@ CF_API_TOKEN=xxx python3 tools/deploy/cf_public_ingress.py --apply
 | **`/api/probe`** | **CK 写入探针**：端到底有没有把凭据送回来（`?write=1` 只看非 GET） |
 | **`/api/devices`** | **客户端台账**：谁连过这个包、有没有贡献过 CK |
 | **`/api/probe/reset`** `POST` | **清零基线**：清空探针与台账（只清证据，不动已入库的 CK），别名 `/api/devices/reset` |
-| **`/gw/dav`** | **内置 WebDAV 端点**：把「WEBDAV 缓存网盘信息」地址填这里，端主动备份上来的凭据自动入库 |
-| **`/api/dav`** | WebDAV 交互明细（`PUT`=端备份、`GET`=端恢复、`hit`=提取到的字段） |
+| **`/gw/dav`** | **内置 WebDAV 端点**：把「WEBDAV 缓存网盘信息」地址填这里，端主动备份上来的凭据自动入库；端来取时若保险库有对应渠道的 CK，会**合成一份回填**给它（写进端上的 `.pg` 文件） |
+| **`/api/dav`** | WebDAV 交互明细 + **对照表**：`stats.mirror[]` 给出「端上落盘路径 `device` / WebDAV 名 / 能否回填 `refill`」，`stats.wanted[]` 是端要而我们还没的，`stats.device_dir` = `/storage/emulated/0/TV` |
 | **`/gw/ali/token`** | **外部中转**：替端去第三方换网盘 token，透传上游的同时截留凭据 |
 | **`/api/relay`** | 中转状态；`POST {"rewrite":true|false}` 开关「把 tokenm 外发地址改写到中枢」 |
 | **`/live`** | **CK 同步监视台**（手机浏览器打开，边操作边看请求有没有回来） |
@@ -422,26 +423,69 @@ curl -s http://10.0.0.11:8099/api/access | python3 -m json.tool | tail -40
 **每 15~30 秒拉一次，清一色 GET，零 PUT/POST。** 所以「等它自己写回来」这条路
 不成立，得主动把它的**外发**请求引到中枢。为此做了两条通道：
 
+#### 先搞清一件事：端上的 CK 就是一个明文文件
+
+每个渠道的凭据都落在 App 自己的配置目录里，**一个渠道一个文件**：
+
+```
+/storage/emulated/0/TV/.quark_user.pg        ← 夸克
+/storage/emulated/0/TV/.baidu_user.pg        ← 百度
+/storage/emulated/0/TV/.<渠道>_user.pg       ← 其余同理
+```
+
+App 的「查看凭据」会直接把这个路径显示给你。该目录属**外置存储、非私有目录** ——
+电视上装个文件管理器、打开「显示隐藏文件」，就能看 / 拷走 / 删掉 / 替换。
+**所以「同步 CK」本质就是「同步这些文件」。**
+
+WebDAV 这边的文件名与它**去掉 `_user.pg`、换成 `.json`** 一一对应：
+
+| 端上的落盘文件 | WebDAV 名 | 渠道 |
+| --- | --- | --- |
+| `.quark_user.pg` | `quark.json` | 夸克 |
+| `.uc_user.pg` | `uc.json` | UC |
+| `.baidu_user.pg` | `baidu.json` | 百度 |
+| `.115_user.pg` | `115.json` | 115 |
+| — | `aliyun / 123 / 123_open / 189 / thunder / pikpak / youtube / bili / hdhive / hdhaven / ysp_uid / fylive_ua / playprogress.json` | 阿里云盘 / 123 / 天翼 / 迅雷 / PikPak / YouTube / B站 / 影巢 / 栖影 / 弹幕 / 直播 / 进度 |
+| — | `cookie_<站点key小写>.json` | PG 站点 Cookie（`cookie_guanying` / `cookie_panta` / `cookie_panlian` / `cookie_qwmp4` / `cookie_woniu` / `cookie_4kzn` / `cookie_huamucang`） |
+
+端 PUT 上来的封装格式（实测样本）：
+`{"cookie":"<裸 cookie>","_last_modified":<epoch秒>,"sitename":"<NAME>"}`
+
 #### 通道一：WebDAV 缓存（推荐先试这个）
 
-「网盘及弹幕配置」里那个 **WEBDAV 缓存网盘信息**，就是 PG 自带的凭据备份功能。
-把它的地址填成：
+把「网盘及弹幕配置」里 **WEBDAV 缓存网盘信息** 的地址填成：
 
 ```
 http://10.0.0.11:8099/gw/dav
 ```
 
-账号 / 密码**随便填**（中枢不校验，只按来源网段放行）。然后点一次「备份 / 缓存」，
-回 `/live` 看 **WebDAV 端点** 那张表：
+账号 / 密码**随便填**（中枢不校验，只按来源网段放行）。这条链路是**双向**的：
+
+| 方向 | 什么时候发生 | 效果 |
+| --- | --- | --- |
+| **上行**（端 → 中枢） | 端**本地登录态发生变化**时才 PUT（单纯「填地址」只会 GET + 写一个 `connection_test.json`） | 凭据自动入库 → 其余设备下一轮拉配置就生效 |
+| **下行**（中枢 → 端） | 端**约每 30 分钟**来取一批，另外**打开对应网盘设置时会立刻取** | **往保险库写一次 CK，端下次来取就自动写进它自己的 `.pg` 文件 —— 不用扫码、不用在电视上点任何东西** |
+
+下行这条叫 **「回填」**：端来要 `<渠道>.json` 而中枢手上没有落盘文件时，用**保险库当前
+最优 CK** 按上面的封装格式合成一份给它。目前开通回填的是格式已实测确认的四个 cookie 类渠道
+（**quark / uc / baidu / 115**）；账号密码类（thunder / pikpak / pan123 / pan189）与 token 类
+（aliyun / yd / guangya）的确切字段名还没实测到，**宁可不合成也不猜**（猜错会把端上那份还能用的
+凭据顶掉）。用 `OKTV_DAV_REFILL=0` 可整体关闭。
+
+回 `/live` 看 **WebDAV 端点** 面板：会有「🔁 回填就绪 N 个」一行，逐条列出
+`<渠道>.json → /storage/emulated/0/TV/.<渠道>_user.pg`。
 
 | 你看到的 | 含义 |
 | --- | --- |
 | 出现 `PUT` | ✅ 端把凭据送上来了，已自动入库，别的设备恢复即可 |
-| 只有 `PROPFIND` / `GET` | 端连上了但没备份，检查是不是点错了按钮 |
+| 只有 `PROPFIND` / `GET` | 端连上了但本地凭据没变化过，所以不会 PUT |
 | 什么都没有 | 端没用这个地址，或那台设备没连中枢 |
 
-> 补充：PG 原生走 WebDAV 的是**影巢 / 栖影 / 123开放 / 光雅 / YouTube / B站**
-> 这几类账号。**阿里云盘不在其中**，它走通道二。
+> **更正一条旧说法**：早先「WebDAV 只能同步影巢 / 栖影 / 123开放 / 光雅 / YouTube / B站、
+> 夸克百度不在内」是**错的** —— 那是照 `pg.jar` 里的类名推的，而 `pg.jar` 全文搜
+> `webdav` / `quark` 命中都是 **0**：这套同步是 **OK影视 App 主程序**的功能，不在 PG 包里。
+> 实测端同步的清单见上表，**夸克 / 百度 / UC / 115 / 123 / 189 / 迅雷 / PikPak 本来就在内**。
+> 另外：App 设置里的「备份与恢复」备的是**本地数据库**（历史/收藏），与 WebDAV 无关。
 
 #### 通道二：外部中转（阿里云盘）
 

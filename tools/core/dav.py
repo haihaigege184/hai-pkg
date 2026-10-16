@@ -55,6 +55,41 @@ from . import config as C
 _LOG_MAX_BYTES = 8 * 1024 * 1024
 _DAV_METHODS = ("GET", "HEAD", "PUT", "DELETE", "OPTIONS", "PROPFIND", "MKCOL", "MOVE", "COPY", "LOCK", "UNLOCK")
 
+# ---------------------------------------------------------------- 端上落盘位置
+#
+# 端上每个渠道的凭据都是一个**明文文件**，落在 App 自己的配置目录里：
+#
+#     /storage/emulated/0/TV/.<名字>_user.pg
+#
+# 例：夸克 = `/storage/emulated/0/TV/.quark_user.pg`
+# （App 的「查看凭据」会直接把这个路径显示给用户）。
+# 该目录属**外置存储、非私有目录** —— 电视上的文件管理器（打开「显示隐藏文件」）
+# 就能看 / 拷 / 删 / 换。而 WebDAV 那条通道的文件名与它**去掉 `_user.pg`、换成
+# `.json`** 一一对应，所以「同步 CK」本质就是「同步这些文件」。
+#
+# 端 PUT 上来的样本（实测 `cookie_guanying.json`）确定了 cookie 类的封装格式：
+#
+#     {"cookie":"<裸 cookie>","_last_modified":<epoch 秒>,"sitename":"<NAME>"}
+#
+# 下面这张表决定「哪些文件我们能替端合成」—— 只收录格式已实测确认的 cookie 类
+# 渠道；账号/密码类（thunder / pikpak / pan123 / pan189）与 token 类
+# （aliyun / yd / guangya）的确切字段名还没实测到，**宁可不合成也不猜**
+# （猜错会把端上那份还能用的凭据直接顶掉）。
+VAULT_FILES = {
+    "quark.json": "quark",
+    "uc.json":    "uc",
+    "baidu.json": "baidu",
+    "115.json":   "115",
+}
+
+DEVICE_DIR = "/storage/emulated/0/TV"
+
+
+def device_path(name):
+    """端上这个渠道文件的落盘位置（只用于展示，中枢本身碰不到设备）"""
+    stem = name[:-5] if name.endswith(".json") else name
+    return "%s/.%s_user.pg" % (DEVICE_DIR, stem)
+
 
 def root():
     return os.path.join(C.DATA_DIR, "dav")
@@ -142,6 +177,41 @@ def recent(n=100):
     return out[-n:][::-1]
 
 
+def _ask_index():
+    """端请求过的文件名 -> 最近一次记录（只保留根目录下的 <name>.json）"""
+    latest = {}
+    for r in recent(1000):
+        p = (r.get("p") or "").strip("/")
+        if not p or "/" in p or not p.endswith(".json"):
+            continue
+        latest[p] = r                      # recent() 是倒序，最后覆盖到的是最新
+    return latest
+
+
+def mirror():
+    """一张对照表：端上的落盘文件 / WebDAV 名 / 我们能不能替它合成。
+
+    `device` 是最有价值的一列 —— CK 在电视上的**实际落盘位置**，
+    即 App 的「查看凭据」里显示的那个路径。
+    """
+    from . import ckvault
+    have = set(x["rel"].split("/")[-1] for x in list_files())
+    out = []
+    for name, r in sorted(_ask_index().items()):
+        ch, main = refill_channel(name)
+        val = (ckvault.effective(ch) or {}).get(main) if ch else ""
+        out.append({
+            "name": name,
+            "device": device_path(name),
+            "have": name in have,
+            "refill": ("%s.%s" % (ch, main)) if val else "",
+            "m": r.get("m"),
+            "status": r.get("status"),
+            "t": r.get("t"),
+        })
+    return out
+
+
 def wanted():
     """端主动来要、但我们手上没有的文件（GET 404）。
 
@@ -149,19 +219,18 @@ def wanted():
     就说明 App 那边多了一个可同步项 —— 只要端 PUT 上来（或我们按同名放一份），
     该渠道就自动接上了。
     """
-    latest = {}
-    for r in recent(1000):
-        p = (r.get("p") or "").strip("/")
-        if not p or "/" in p or not p.endswith(".json"):
-            continue
-        latest[p] = r                      # recent() 是倒序，最后覆盖到的是最新
+    from . import ckvault
     have = set(x["rel"].split("/")[-1] for x in list_files())
     out = []
-    for name, r in sorted(latest.items()):
+    for name, r in sorted(_ask_index().items()):
         if name in have:
             continue
+        ch, main = refill_channel(name)
+        val = (ckvault.effective(ch) or {}).get(main) if ch else ""
         out.append({"name": name, "m": r.get("m"), "status": r.get("status"),
-                    "t": r.get("t"), "note": r.get("note") or ""})
+                    "t": r.get("t"), "note": r.get("note") or "",
+                    "device": device_path(name),
+                    "refill": ("%s.%s" % (ch, main)) if val else ""})
     return out
 
 
@@ -171,6 +240,10 @@ def stats():
     gets = [r for r in rows if r.get("m") == "GET" and r.get("status") == 200]
     hit = [r for r in rows if r.get("hit")]
     want = wanted()
+    mir = mirror()
+    if not getattr(C, "DAV_REFILL", True):
+        for x in want + mir:
+            x["refill"] = ""
     return {
         "enabled": enabled(),
         "public": bool(getattr(C, "DAV_PUBLIC", False)),
@@ -184,6 +257,10 @@ def stats():
         "last_hit": hit[0]["hit"] if hit else [],
         "wanted": want,                    # 端想要、我们还没有的渠道
         "wanted_n": len(want),
+        "mirror": mir,                     # 全量对照：端上文件 / WebDAV 名 / 能否回填
+        "refill_n": sum(1 for x in want if x.get("refill")),
+        "refill_on": bool(getattr(C, "DAV_REFILL", True)),
+        "device_dir": DEVICE_DIR,          # CK 在电视上的落盘目录
         "url": "/gw/dav",
     }
 
@@ -208,6 +285,46 @@ def _harvest(rel, body, ip):
         ckvault.report(ch, fields, source="dav %s" % rel, validate=False)
         hits.extend(fields.keys())
     return sorted(set(hits))
+
+
+# ------------------------------------------------------------------ 回填
+
+
+def refill_channel(name):
+    """这个文件能不能用保险库里的 CK 合成。返回 (渠道, 主字段) 或 (\"\", \"\")"""
+    if "/" in str(name or "").strip("/"):
+        return "", ""
+    ch = VAULT_FILES.get(str(name or "").strip("/"))
+    if not ch:
+        return "", ""
+    from . import ckvault
+    main = ((ckvault.CHANNELS.get(ch) or {}).get("fields") or [""])[0]
+    return ch, main
+
+
+def from_vault(rel):
+    """端来要 `<渠道>.json`、我们手上没有落盘文件 → 用保险库当前最优 CK 合成一份。
+
+    这是把云端 CK 送进电视的**唯一自动通道**：端每约 30 分钟（以及打开对应网盘
+    设置时）会 GET 这些文件，取到就写回它自己的
+    `/storage/emulated/0/TV/.<渠道>_user.pg`。所以只要往保险库写一次，端上那个
+    文件就会自动变成我们给的值 —— 不用扫码、不用在电视上点任何东西。
+
+    保险库为空 / 该渠道没值 → 返回 (None, "")，行为与以前完全一致（404）。
+    """
+    if not getattr(C, "DAV_REFILL", True):
+        return None, ""
+    ch, main = refill_channel(rel)
+    if not ch:
+        return None, ""
+    from . import ckvault
+    val = (ckvault.effective(ch) or {}).get(main) or ""
+    if not val:
+        return None, ""
+    obj = {"cookie": val,
+           "_last_modified": int(time.time()),
+           "sitename": str(rel).strip("/")[:-5].upper()}
+    return json.dumps(obj, ensure_ascii=False).encode("utf-8"), "%s.%s" % (ch, main)
 
 
 # ------------------------------------------------------------------ 响应
@@ -298,8 +415,17 @@ def handle(rel, method, headers, body, ip, base_url):
                 hdrs["Content-Type"] = "application/json"
                 size = len(out)
             else:
-                status, note = 404, "remote missing"
-                out = b""
+                # 落盘没有，但保险库里有这个渠道的 CK → 合成一份给端（回填）。
+                # 端会把它写进 /storage/emulated/0/TV/.<渠道>_user.pg。
+                blob, src = from_vault(rel)
+                if blob:
+                    out = blob
+                    hdrs["Content-Type"] = "application/json"
+                    size = len(out)
+                    note = "回填自保险库 %s" % src
+                else:
+                    status, note = 404, "remote missing"
+                    out = b""
 
         elif method == "DELETE":
             if os.path.isfile(path):

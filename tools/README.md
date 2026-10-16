@@ -150,6 +150,7 @@ journalctl -u oktv-hub -f
 | `OKTV_RELAY_REWRITE` | **0** | 外部中转移写（见 7.5 节，确认链路可用后再开） |
 | `OKTV_DAV` | 1 | 内置 WebDAV 端点（见 7.5 节） |
 | `OKTV_DAV_PUBLIC` | 0 | WebDAV 是否放行公网来源 |
+| `OKTV_DAV_REFILL` | 1 | WebDAV **回填**：端来取 `<渠道>.json` 时用保险库的 CK 合成给它（写进端上 `.pg`），见 7.5 节 B.3 |
 
 ### CLI
 
@@ -396,42 +397,75 @@ PG 的 `tokenm.json` 里有一批指向外部服务的字段，最典型的是�
 > 这不是我们改坏的，打开中转移写反而会把这个问题提前暴露；所以
 > `OKTV_RELAY_REWRITE` 保持关闭，等确认要用再开。
 
-### B. WebDAV 端点 —— PG 原生、由端主动发起的双向通道（`core/dav.py`）
+### B. WebDAV 端点 —— 端主动发起的双向通道（`core/dav.py`）
 
-「网盘及弹幕配置」里有一个 **WEBDAV 缓存网盘信息**，对应 PG 包内的
-`com.github.catvod.spider.WebDAVConfig`。若干凭据类会把登录态以 `<key>.json`
-PUT 上去（字符串证据）：
+> **先更正一个曾经的错误结论**：先前写「对应 PG 包内的 `com.github.catvod.spider.WebDAVConfig`、
+> 走 WebDAV 的只有影巢/栖影/123开放/光雅/YouTube/B站、夸克百度不在内」——**是错的**，
+> 那是照 `pg.jar` 的类名/字符串推的。实测 `pg.jar` 全文搜 `webdav` / `quark` 命中都是 **0**：
+> **这套备份/恢复是 OK影视 App 主程序的功能，不在 PG 包里**。端实际同步的清单见下表。
 
-```
-GuangYaUser            -> guangya.json
-HDHavenCredentials     -> hdhaven.json
-HdhiveCredentials      -> hdhive.json
-Pan123OpenCredentials  -> 123_open.json
-YoutubeCredentials     -> youtube.json
-Bili.User              -> Cookie 刷新
-```
+#### B.1 端上的落盘位置（这张表才是核心）
 
-地址存在 SharedPreferences 的 `global_panconfig_webdavconfig_address`（UI 就是那个输入框）。
-
-**这条通道比 A 更有价值**：它是端**主动发起**的外发请求，不受「端不回写」的限制。
-把地址填成中枢，链路就变成「端 ⇄ 中枢」：
+每个渠道的凭据是**设备上的一个明文文件**，落在 App 自己的配置目录：
 
 ```
-PUT  端备份凭据上来 → 中枢落盘 data/dav/ + 提取入库   ← 采集
-GET  端点「恢复」   → 中枢把手里的那份给它           ← 下发
+/storage/emulated/0/TV/.<渠道>_user.pg     例：.quark_user.pg
 ```
 
+* 属**外置存储、非私有目录** → 电视上的文件管理器（打开「显示隐藏文件」）能看/拷/删/换
+* App 的「查看凭据」会把这个路径直接显示给用户
+* WebDAV 名与它 **去掉 `_user.pg`、换成 `.json`** 一一对应
+
+| 端上的落盘文件 | WebDAV 名 | 渠道 |
+|---|---|---|
+| `.quark_user.pg` | `quark.json` | 夸克 |
+| `.uc_user.pg` | `uc.json` | UC |
+| `.baidu_user.pg` | `baidu.json` | 百度 |
+| `.115_user.pg` | `115.json` | 115 |
+| — | `aliyun / 123 / 123_open / 189 / thunder / pikpak / youtube / bili / hdhive / hdhaven / ysp_uid / fylive_ua / playprogress` | 阿里云盘 / 123 / 天翼 / 迅雷 / PikPak / YouTube / B站 / 影巢 / 栖影 / 弹幕 / 直播 / 进度 |
+| — | `cookie_<站点key小写>.json` | PG 站点 Cookie（`cookie_guanying` ↔ key `Guanying`、`cookie_qwmp4` ↔ `csp_Qwmp4`…） |
+
+端 PUT 的封装格式（实测 `cookie_guanying.json`，201/142B）：
+`{"cookie":"<裸 cookie>","_last_modified":<epoch秒>,"sitename":"<NAME>"}`
+
+#### B.2 两个方向的触发时机
+
+```
+PUT  端**本地登录态发生变化**时才备份上来 → 中枢落盘 data/dav/ + 提取入库   ← 采集
+GET  端约每 30 分钟来取一批，打开对应网盘设置时也会立刻取 → 中枢给它        ← 下发
+```
+
+* **「填地址」本身不会 PUT 凭据** —— 只会 GET + 写一个 `connection_test.json`（内容 `{}`）
+* App 设置里的「备份与恢复」备的是**本地数据库**（历史/收藏，`BackupManager`），与 WebDAV 无关
 * 地址：`http://10.0.0.11:8099/gw/dav`（挂在 `/gw` 下是刻意的 ——
   CF 隧道 ingress 只放行 `/hai` 与 `/gw`，这样局域网与公网同形）
 * 账号密码**随便填**，中枢不校验（端会带它自己配置的那份，中枢只吞下来记录）
-* 真正的门禁是来源网段：默认只放行局域网/回环（`OKTV_DAV_PUBLIC=1` 才放行公网）
+* 真正的门禁是来源网段：默认只放行局域网/回环（`OKTV_DAV_PUBLIC=1` 才放行公网）。
+  端经穿透回源时 `remote_addr` 是 `127.0.0.1`，所以回环必须放行
 * 实现了 `OPTIONS / PROPFIND(Depth 0,1) / MKCOL / GET / PUT / DELETE`；
   `/gw/dav` 与 `/gw/dav/` 都能直接命中（不依赖 308 —— PROPFIND/PUT 被重定向基本就废了）
-* 记录落 `logs/dav.jsonl`，状态见 `GET /api/dav`
+* 记录落 `logs/dav.jsonl`；状态见 `GET /api/dav`
 
-> ⚠️ 静态证据里，**阿里云盘不在 WebDAV 同步白名单内**。所以：
-> 阿里云盘走 A（`open_api_url`），影巢/栖影/123开放/光雅/YouTube/B站 走 B。
-> 两者都实测过链路，但「端到底发出哪些请求」必须在真机上确认。
+#### B.3 回填：把云端 CK 送进端上的那个文件（`OKTV_DAV_REFILL`，默认开）
+
+端来要 `<渠道>.json` 而中枢手上没有落盘文件时，用**保险库当前最优 CK** 合成一份给它 ——
+端取到就写进它自己的 `.pg`。**这是不扫码、不在端上做任何操作就能改端上 CK 的唯一通道。**
+
+只对**格式已实测确认**的 cookie 类渠道开通（`quark / uc / baidu / 115`）；账号密码类
+（thunder / pikpak / pan123 / pan189）与 token 类（aliyun / yd / guangya）的确切字段名
+还没实测到，**宁可不合成也不猜**（猜错会把端上那份还能用的凭据顶掉）。保险库为空时不产生
+任何影响（行为与以前一致，仍旧 404）。
+
+`GET /api/dav` 的 `stats` 会给出对照：`device_dir`（端上落盘目录）、
+`wanted[].device`（每个要取的文件对应端上哪个路径）、`wanted[].refill`（能否回填）、
+`refill_n`（回填就绪个数）、`mirror[]`（全量对照表）。`/live` 的 WebDAV 面板会渲染出来。
+
+
+> ✅ **已实测确认**（`logs/dav.jsonl` 真机请求，2026-10-16）：端同步的清单里**既有**
+> `aliyun.json`（阿里云盘），**也有** `quark / baidu / uc / 115 / 123 / 189 / thunder / pikpak.json`。
+> 先前「阿里云盘不在 WebDAV 同步白名单内、只有影巢/栖影/123开放/光雅/YouTube/B站」的说法来自
+> `pg.jar` 的**静态类名**，**已被实测推翻** —— 这套机制在 App 主程序里，不在 PG 包里。
+> 阿里云盘因此同时有两条路（A 的中转 + B 的 WebDAV），优先用 B。
 
 ---
 
@@ -475,7 +509,7 @@ oktv-hub/
 │  ├─ devices.py          客户端台账（谁连过/有没有贡献 CK）
 │  ├─ report.py           接口状态明细（站点视角 79 条 + 局域网/外网地址）
 │  ├─ relay.py            外部中转（把凭据换取请求接到中枢，旁路采集）
-│  ├─ dav.py              内置 WebDAV 端点（接管 PG 的「WEBDAV 缓存网盘信息」）
+│  ├─ dav.py              内置 WebDAV 端点（接管 OK影视 App 的「WEBDAV 缓存网盘信息」，含 CK 回填）
 │  ├─ libfill.py          lib 资源自动补全（防 404 风暴）
 │  └─ absbase.py          相对路径绝对化（按客户端所见地址渲染，默认关）
 ├─ baseline/              原始 jsm.json（基线，只读）

@@ -111,6 +111,11 @@ RELAY_REWRITE = os.environ.get("OKTV_RELAY_REWRITE", "0") == "1"
 DAV_ENABLED = os.environ.get("OKTV_DAV", "1") == "1"
 # 是否允许公网来源读写（默认否：只放行局域网/回环，避免成为公开的凭据中转）
 DAV_PUBLIC = os.environ.get("OKTV_DAV_PUBLIC", "0") == "1"
+# 「回填」：端来要 <渠道>.json、而我们手上没有落盘文件时，用**保险库当前最优 CK**
+# 合成一份给它。端上对应的落盘位置是 /storage/emulated/0/TV/.<渠道>_user.pg，
+# 端取到就写回去 —— 这是把云端 CK 送进电视的**唯一自动通道**（不用扫码、不用在端上点）。
+# 保险库为空时不产生任何影响（仍旧 404）。置 0 可整体关闭。
+DAV_REFILL = os.environ.get("OKTV_DAV_REFILL", "1") == "1"
 HEALTH_MIN_BYTES = 800          # 响应体小于该值视为无效页（机房停放页/空页）
 
 UA = ("Mozilla/5.0 (Linux; Android 12; SM-G981B) AppleWebKit/537.36 "

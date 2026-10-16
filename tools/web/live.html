@@ -107,6 +107,8 @@
 <div class="card">
   <div class="big" id="dverdict">…</div>
   <div class="kv" id="dstat"></div>
+  <div class="kv" id="dwanted"></div>
+  <div class="kv" id="drefill"></div>
 </div>
 <div class="bar">
   <button onclick="loadDav()">↻ 刷新 WebDAV</button>
@@ -114,12 +116,17 @@
 </div>
 <div id="dlist"></div>
 <div class="warn">
-  <b>怎么开：</b>在 OK影视 的「网盘及弹幕配置」里找到 <b>WEBDAV 缓存网盘信息</b>，
-  把地址填成 <code id="durl">…</code>（账号密码随便填，中枢不校验），
-  再做一次「备份 / 缓存」。<br/>
-  这张表出现 <span class="m w">PUT</span> → 端确实把凭据送上来了，会自动入库并同步给其他设备。<br/>
-  <span class="kv">注：PG 原生会走 WebDAV 的是影巢/栖影/123开放/光雅/YouTube/B站 这几类账号；
-  阿里云盘的凭据见上方「外部中转」。</span>
+  <b>端上的 CK 就是一个明文文件：</b><code>/storage/emulated/0/TV/.&lt;渠道&gt;_user.pg</code>
+  （例：夸克 = <code>.quark_user.pg</code>）。这个目录属<b>外置存储、非私有目录</b> ——
+  电视上装个文件管理器、打开「显示隐藏文件」，就能看 / 拷走 / 删掉 / 替换。<br/>
+  WebDAV 这边的文件名与它<b>一一对应</b>（去掉 <code>_user.pg</code>、换成 <code>.json</code>），
+  所以「同步 CK」本质就是「同步这些文件」：<br/>
+  &nbsp;·&nbsp;<b>上行</b>：端只在<b>本地登录态发生变化</b>时才 PUT（实测只有
+  <code>cookie_guanying.json</code> 变更过一次）；单纯「填地址」只触发测试与拉取。<br/>
+  &nbsp;·&nbsp;<b>下行</b>：端约每 30 分钟来取一批，另外<b>打开对应网盘设置时会立刻取</b>
+  → <b>往保险库写一次 CK，端下次来取就自动写进它自己的落盘文件</b>（见下表「回填」）。<br/>
+  &nbsp;·&nbsp;<b>怎么开</b>：在 OK影视 的「网盘及弹幕配置」→ <b>WEBDAV 缓存网盘信息</b> 里填
+  <code id="durl">…</code>（账号密码随便填，中枢不校验），再做一次「备份 / 缓存」。
 </div>
 
 <script src="jquery.min.js" onerror="window.__nojq=1"></script>
@@ -232,16 +239,37 @@ async function loadDav(){
     const st = d.stats||{};
     const v = document.getElementById('dverdict');
     const put = st.puts||0;
-    v.className = 'big ' + (put? 'hit' : 'off');
-    v.textContent = put
-      ? '✓ 收到端备份 ' + put + ' 次'
-      : (st.enabled ? '尚未收到备份 —— 端还没把 WebDAV 地址指向中枢' : 'WebDAV 端点已停用');
+    const cred = st.with_cred||0;
+    const wantN = st.wanted_n||0;
+    // 三态：① 拿到凭据 ② 端已接上但只做了测试/拉取 ③ 端根本没接上
+    let verdict, cls;
+    if(cred){ verdict = '✓ 已收到网盘凭据备份（'+cred+' 次命中）'; cls='hit'; }
+    else if(st.total){ verdict = '端已接入（'+(st.total||0)+' 次交互），但还没备份网盘凭据 —— 去点一次「备份」'; cls='off'; }
+    else { verdict = st.enabled ? '尚未收到任何交互 —— 端还没把 WebDAV 地址指向中枢' : 'WebDAV 端点已停用'; cls='off'; }
+    v.className = 'big ' + cls;
+    v.textContent = verdict;
     document.getElementById('dstat').innerHTML =
       '交互 <b>'+(st.total||0)+'</b> &nbsp;|&nbsp; 备份(PUT) <b>'+put+'</b>'
       + ' &nbsp;|&nbsp; 恢复(GET) <b>'+(st.gets||0)+'</b>'
       + ' &nbsp;|&nbsp; 落盘文件 <b>'+(st.files||0)+'</b>'
-      + ' &nbsp;|&nbsp; 含凭据 <b>'+(st.with_cred||0)+'</b>'
+      + ' &nbsp;|&nbsp; 含凭据 <b>'+cred+'</b>'
       + (st.last? ' &nbsp;|&nbsp; 最近 <b>'+esc(st.last)+'</b>':'');
+    const wl = (st.wanted||[]);
+    document.getElementById('dwanted').innerHTML = wl.length
+      ? '端来要、手上还没有 <b>'+wl.length+'</b> 个：'
+        + wl.map(x=>'<code>'+esc(x.name)+'</code>'+(x.refill?' 🔁':'')).join(' ')
+      : '';
+    // 回填：保险库里有 CK 的渠道 —— 端下次来取就会写进它自己的 .pg 文件
+    const rf = wl.filter(x=>x.refill);
+    document.getElementById('drefill').innerHTML = rf.length
+      ? '🔁 <b>回填就绪 '+rf.length+' 个</b>（端下次来取就会写进它自己的落盘文件）：'
+        + rf.map(x=>'<div style="margin-left:1.2em">· <code>'+esc(x.name)+'</code> → '
+            + '<span class="kv">'+esc(x.device)+'</span> '
+            + '<span class="kv">（'+esc(x.refill)+'）</span></div>').join('')
+      : (st.refill_on === false
+          ? '<span class="kv">回填已关闭（OKTV_DAV_REFILL=0）</span>'
+          : '<span class="kv">回填就绪 <b>0</b> 个 —— 保险库里还没有可回填的渠道 CK。'
+            + '写一次（<code>POST /api/ck/report</code>）后，端下次来取就自动写进设备。</span>');
     const local = location.origin + '/gw/dav';
     document.getElementById('durl').textContent = local;
     document.getElementById('daddr').innerHTML = '局域网 <code>'+esc(local)+'</code>';
