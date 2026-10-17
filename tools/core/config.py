@@ -33,6 +33,14 @@ F_DAV_LOG = os.path.join(LOG_DIR, "dav.jsonl")        # WebDAV 交互记录（�
 #   notified_offline = 本轮掉线是否已经告过警（避免反复骚扰）
 F_HEALTH_STATE = os.path.join(DATA_DIR, "health_state.json")
 
+# 我们**主动改写过的 base**：{TAG: url}
+#   【为什么必须落盘 —— 2026-10-17】patch.build() 每轮都从 baseline 重建配置，
+#   而只有「本轮探到可用地址」时才会把新 base 写回 ext。于是只要某轮探测抖动
+#   （本轮无可用），上一轮的修复就被静默撤销、退回原版的**已知死域名**；
+#   下一轮探通又写回来 —— 服务端配置自己来回翻，客户端看到的就是
+#   「接口反复失效与修复」。落盘后，本轮没有更好的选择时**保持上次的修复**。
+F_BASES = os.path.join(DATA_DIR, "bases.json")
+
 # 实际下发给客户端的那一份配置 / 本地生成的那一份。
 # 「接口状态」明细要读这两者而不是 baseline —— baseline 是原版母本，
 # 永远不含失效标注，拿它算「是否已标注」恒为 0，正是用户看到
@@ -311,9 +319,45 @@ PROBE_ATTEMPTS = int(os.environ.get("OKTV_PROBE_ATTEMPTS", "3"))
 # 重试间隔（秒），第 n 次失败后等待 n*该值
 PROBE_RETRY_WAIT = float(os.environ.get("OKTV_PROBE_RETRY_WAIT", "1.0"))
 
+# 探测 UA 回退链。
+# 【为什么需要 —— 2026-10-17，实测钉死】同一台机器、同一时刻、同一个 URL：
+#     requests + Chrome-Android UA(C.UA)  -> ConnectionError: Connection reset by peer
+#     requests + okhttp/5.0.0-alpha.14    -> HTTP 200 + 628223 字节（真站页面）
+#     curl     + 任意 UA                  -> HTTP 200
+#   => 该站（fmcf.fun，Cloudflare 后面）的 WAF 规则按 **UA** 重置连接。
+#   只用单一 UA 会把活站判死，而端上走 okhttp 一切正常 —— 这正是用户反馈
+#   「蜡笔接口循环报失效与修复」的根因：池里被探成 0 可用 -> 告警；
+#   下一轮偶发探通 -> 恢复；再来一轮又 0 -> 再告警。
+# 顺序：**第一个仍是 C.UA（保持现网已正常站点一字不变）**，只有它抛异常时才逐个回退。
+# 用 okhttp 作为回退项是因为它最贴近真实消费方（端就是 okhttp）。
+PROBE_UA_FALLBACKS = [u.strip() for u in
+                      os.environ.get("OKTV_PROBE_UA_FALLBACKS",
+                                     "okhttp/5.0.0-alpha.14").split("|")
+                      if u.strip()]
+
 # 连续多少次巡检都「一条可用地址都没有」才真正判定该 TAG 失效。
 # 目的：抑制抖动 —— 站点偶尔超时/偶发 5xx 不该立刻改配置、更不该发告警。
 OFFLINE_CONFIRM_ROUNDS = int(os.environ.get("OKTV_OFFLINE_CONFIRM", "2"))
+
+# 「最近活着」宽限期（秒）。域名只要在这个时间内**被探到过完整真站（q>=2）**，
+# 即使本轮所有探测都失败，也算「站点还活着（存疑）」，**不判失效、不告警**。
+# 【为什么需要 —— 2026-10-17 实测】「蜡笔」的 fmcf.fun 对机房 IP 是**成片间歇性**
+# 失败：连续 10 次里正常窗口 9~10 次成功、坏窗口连续 6 次全 reset。一轮坏窗口就把
+# 池打成「0 可用」-> 发失效告警；下一轮恢复正常 -> 发修复通知 —— 这就是用户看到的
+# 「循环报失效与修复」。重试治不了（坏窗口内 6 次全失败），只能记住「它刚才是好的」。
+# 设 0 可关闭该宽限（退回旧的严格口径）。
+ALIVE_GRACE_SEC = int(float(os.environ.get("OKTV_ALIVE_GRACE_HOURS", "6")) * 3600)
+
+# 串行复核（二审）。
+# 【为什么需要 —— 2026-10-17 实测钉死】同一个 fmcf.fun、同一份代码：
+#     单发探测（安静网络）   -> 6/6 成功，q=3，628KB 完整真站
+#     整轮巡检（16 并发）    -> 6 次重试全部 Connection reset
+# 说明并发高潮会把本机出口挤满 / 触发对端按 IP 限速，**批量**把活站判死。
+# 所以：并发跑完后 sleep 一下让网络安静，再把所有「判死」的地址**串行**重探一遍，
+# 只有二审仍死的才真判死。这是整套判定里最后一道防误报的闸门。
+HEALTH_REPROBE = os.environ.get("OKTV_HEALTH_REPROBE", "1") == "1"
+HEALTH_RETRY_SETTLE = float(os.environ.get("OKTV_HEALTH_SETTLE", "2.0"))   # 二审前静默秒数
+HEALTH_REPROBE_GAP = float(os.environ.get("OKTV_HEALTH_REPROBE_GAP", "0.4"))  # 串行间隔
 
 # 是否把「⚠️失效」后缀直接写进站点 name。
 #

@@ -59,6 +59,24 @@ def _health_state():
         return {}
 
 
+def _applied_bases():
+    """读「我们主动改写过的 base」——{TAG: url}
+
+    【为什么需要 —— 2026-10-17】build() 每轮都从 baseline 重建，而只有探到可用
+    地址时才把新 base 写回 ext。于是某一轮探测抖动（本轮无可用）时，上一轮的修复
+    会被静默撤销、退回原版的**已知死域名**；下一轮探通又写回来 —— 服务端下发的
+    配置自己来回翻，客户端看到的就是「接口反复失效与修复」。
+    有了这份记录，本轮没有更好的选择时**保持上次的修复**，不回退。
+    """
+    f = getattr(C, "F_BASES", None)
+    if not f:
+        return {}
+    try:
+        return store.load(f, {}) or {}
+    except Exception:
+        return {}
+
+
 def build(pool, mode="dual", public_base=None):
     """生成修复后的 jsm.json 内容（dict）
 
@@ -70,8 +88,10 @@ def build(pool, mode="dual", public_base=None):
 
     hstate = _health_state()
     need = max(1, int(getattr(C, "OFFLINE_CONFIRM_ROUNDS", 2)))
+    applied = _applied_bases()
 
     changed, offline, clone_sites = [], [], []
+    new_applied = {}
     for s in jsm.get("sites", []):
         ext = s.get("ext")
         if not isinstance(ext, str):
@@ -102,16 +122,28 @@ def build(pool, mode="dual", public_base=None):
                 changed.append({"tag": tag, "key": s.get("key"), "to": gb})
             continue
 
+        keep = applied.get(tag)
+        target = None
         if best:
             # 两条「尽量贴近原版」的守则，顺序不能反：
             #   1) 原地址自己还活着（alive 且 q>=2）-> 一字不改，哪怕池里有更快的
             #   2) 要改就只改实质不同的地址，池里那份如果只是规范化写法（差尾斜杠/
             #      大小写）也不写回
-            if not _base_alive(ent, info["base"]) \
-                    and S.norm_base(best) != S.norm_base(info["base"]):
-                changed.append({"tag": tag, "key": s.get("key"),
-                                "from": info["base"], "to": best})
-                s["ext"] = S.set_ext_base(ext, best)
+            if not _base_alive(ent, info["base"]):
+                target = best
+        elif keep and not _base_alive(ent, info["base"]) \
+                and S.norm_base(keep) != S.norm_base(info["base"]):
+            # 本轮一条可用地址都没有，但上一轮修过 —— **保持上次的修复**，
+            # 绝不退回原版那个已知死域名（否则配置自己来回翻，见 _applied_bases）
+            target = keep
+
+        if target and S.norm_base(target) != S.norm_base(info["base"]):
+            changed.append({"tag": tag, "key": s.get("key"),
+                            "from": info["base"], "to": target})
+            s["ext"] = S.set_ext_base(ext, target)
+            new_applied[tag] = target
+
+        if best:
             if mode == "dual":
                 gb = gateway_base(tag)
                 if gb:
@@ -156,6 +188,15 @@ def build(pool, mode="dual", public_base=None):
 
     # 合并 overrides：手工新增/删除/改名
     jsm = _apply_overrides(jsm)
+
+    # 记下「我们改写过的 base」，供下一轮在没有更好选择时保持（不回退到原版死域名）
+    if mode != "gateway":
+        merged = dict(applied)
+        merged.update(new_applied)
+        try:
+            store.save(C.F_BASES, merged)
+        except Exception as e:
+            store.log_event("error", f"bases 落盘失败: {type(e).__name__}: {e}")
 
     stat = {"changed": changed, "offline": offline, "clones": len(clone_sites)}
     return jsm, stat

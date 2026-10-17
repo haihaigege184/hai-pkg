@@ -129,10 +129,17 @@ def _quality(status, nbytes):
     return 2 if nbytes >= C.REAL_MIN_BYTES else 1
 
 
-def _one_shot(url, timeout, kind):
-    """探测一次，返回 (status, latency, code, bytes, final, note, quality)"""
+def _one_shot(url, timeout, kind, ua=None):
+    """探测一次，返回 (status, latency, code, bytes, final, note, quality)
+
+    ua 非空时**只对这一条请求**覆盖 User-Agent（会话默认仍是 C.UA）。
+    见 config.PROBE_UA_FALLBACKS：有些站的 WAF 按 UA 重置连接，
+    换一个 UA 就能拿到真站页面。
+    """
     t0 = time.time()
-    r = _sess().get(url, timeout=timeout, verify=False, allow_redirects=True)
+    headers = {"User-Agent": ua} if ua else None
+    r = _sess().get(url, timeout=timeout, verify=False, allow_redirects=True,
+                    headers=headers)
     dt = int((time.time() - t0) * 1000)
     body = r.content or b""
     n = len(body)
@@ -154,7 +161,7 @@ def _one_shot(url, timeout, kind):
     return "alive", dt, r.status_code, n, final, note, q
 
 
-def probe(url, timeout=None, kind=""):
+def probe(url, timeout=None, kind="", attempts=None):
     """探测单个地址，返回 (status, latency_ms, http_code, bytes, final_url, note, quality)
 
     kind: "netdisk" 表示这是网盘聚合类接口，判定标准放宽（见 _kind_of）。
@@ -166,32 +173,45 @@ def probe(url, timeout=None, kind=""):
     （那是站点的确定回复）。
     """
     timeout = timeout or C.HEALTH_TIMEOUT
-    attempts = max(1, int(getattr(C, "PROBE_ATTEMPTS", 3)))
+    attempts = max(1, int(attempts or getattr(C, "PROBE_ATTEMPTS", 3)))
     wait = float(getattr(C, "PROBE_RETRY_WAIT", 1.0))
+    host = S.norm_host(url)
+    uas = [None] + [u for u in (getattr(C, "PROBE_UA_FALLBACKS", ()) or ()) if u]
 
     last = None
-    for i in range(attempts):
-        try:
-            return _one_shot(url, timeout, kind)
-        except Exception as e:
-            last = e
-            # DNS 都解析不出来就别反复试了（域名确实废弃）
-            if not _dns_ok(S.norm_host(url)):
-                break
-            if i < attempts - 1:
-                time.sleep(wait * (i + 1))
+    dns_dead = False
+    for ua in uas:
+        for i in range(attempts):
+            try:
+                out = _one_shot(url, timeout, kind, ua=ua)
+                if ua:
+                    st, dt, code, n, final, note, q = out
+                    mark = f"换UA探通({ua[:22]})"
+                    out = (st, dt, code, n, final,
+                           (note + " · " + mark) if note else mark, q)
+                return out
+            except Exception as e:
+                last = e
+                # DNS 都解析不出来就别反复试了（域名确实废弃）
+                if not _dns_ok(host):
+                    dns_dead = True
+                    break
+                if i < attempts - 1:
+                    time.sleep(wait * (i + 1))
+        if dns_dead:
+            break
 
     dt = 0
     e = last
-    host = S.norm_host(url)
-    if not _dns_ok(host):
+    tries = attempts if dns_dead else attempts * len(uas)
+    if dns_dead:
         note = "DNS解析失败(域名已废弃)"
     elif type(e).__name__ in ("ReadTimeout", "ConnectTimeout"):
-        note = f"连接超时(站点无响应，已重试 {attempts} 次)"
+        note = f"连接超时(站点无响应，已重试 {tries} 次/{len(uas)} 种UA)"
     elif type(e).__name__ == "SSLError":
         note = "SSL证书异常(播放器可能拒绝)"
     else:
-        note = f"{type(e).__name__}(已重试 {attempts} 次)"
+        note = f"{type(e).__name__}(已重试 {tries} 次/{len(uas)} 种UA)"
     return "dead", dt, 0, 0, url, note, 0
 
 
@@ -230,8 +250,61 @@ def check_all(pool, only_dead=False, tags=None):
             d["checked"] = int(time.time())
             d["final"] = final
             d["note"] = note
+            # 记「最近一次探到完整真站」的时间 —— 供 survivable_count 的宽限期用，
+            # 让成片的间歇性失败不至于把刚验证过的活站判死（见 ALIVE_GRACE_SEC）。
+            if st == "alive" and int(q or 0) >= 2:
+                d["last_alive"] = int(time.time())
             results.append({"tag": tag, "url": d["url"], "status": st,
                             "latency": dt, "http": code, "note": note})
+
+    # ---- 二审：等网络安静下来，把「会被判失效」的 TAG 的地址**串行**重探一遍 ----
+    # 并发高潮会把本机出口挤满 / 触发对端按 IP 限速，批量把活站判死
+    # （实测：fmcf.fun 单发 6/6 成功 q3，16 并发下 6 次重试全 reset）。
+    # 只复核「本轮一条活着的都没有」的 TAG —— 其余 TAG 就算个别地址探挂了也不影响
+    # 结论，全量复核会让一轮巡检拖到几分钟。二审仍死的，才真判死。
+    if getattr(C, "HEALTH_REPROBE", True):
+        time.sleep(float(getattr(C, "HEALTH_RETRY_SETTLE", 2.0)))
+        gap = float(getattr(C, "HEALTH_REPROBE_GAP", 0.4))
+        rto = min(float(getattr(C, "HEALTH_TIMEOUT", 12)), 7.0)
+        revived = 0
+        by_url = {(r["tag"], r["url"]): r for r in results}
+        doomed = []
+        for tag, ent in pool.items():
+            if tags and tag not in tags:
+                continue
+            if survivable_count(ent) > 0:
+                continue
+            kind = _kind_of(ent.get("api"), ent.get("name"), tag)
+            for d in ent.get("domains", []) or []:
+                if d.get("status") == "alive":
+                    continue
+                if not _dns_ok(S.norm_host(d.get("url") or "")):
+                    continue      # 域名确实废弃，不必复核
+                doomed.append((tag, d, kind))
+        for tag, d, kind in doomed:
+            time.sleep(gap)
+            st, dt, code, n, final, note, q = probe(d["url"], timeout=rto,
+                                                    kind=kind, attempts=1)
+            d.update({"status": st, "latency": dt, "http": code, "bytes": n,
+                      "quality": q, "checked": int(time.time()),
+                      "final": final, "note": note})
+            if st == "alive" and int(q or 0) >= 2:
+                d["last_alive"] = int(time.time())
+            if st == "alive":
+                revived += 1
+                if final and not S.same_site(final, d["url"]):
+                    discovered.setdefault(tag, []).append(S.norm_base(final))
+                rec = by_url.get((tag, d["url"]))
+                new_rec = {"tag": tag, "url": d["url"], "status": st,
+                           "latency": dt, "http": code,
+                           "note": note + " · 串行复核转活"}
+                if rec is not None:
+                    results[results.index(rec)] = new_rec
+                else:
+                    results.append(new_rec)
+        if doomed:
+            store.log_event("health",
+                            f"串行复核 {len(doomed)} 个地址，救回 {revived} 个被并发误判死的")
 
     # 自动吸收漂移出来的新域名
     for tag, urls in discovered.items():
@@ -248,6 +321,8 @@ def check_all(pool, only_dead=False, tags=None):
                                   "bytes": n, "quality": q,
                                   "checked": int(time.time()),
                                   "final": final, "note": note})
+                        if st == "alive" and int(q or 0) >= 2:
+                            d["last_alive"] = int(time.time())
                 if st == "alive":
                     store.log_event("discover", f"{tag} 自动发现可用新域名 {u} ({dt}ms)")
                     results.append({"tag": tag, "url": u, "status": st,
@@ -280,14 +355,31 @@ def usable_count(ent):
                if d.get("status") == "alive" and (d.get("quality") or 0) >= 2)
 
 
-def survivable_count(ent):
-    """「有东西活着」的地址数：存活且 q>=1（含人机校验页、前端空壳）。
+def survivable_count(ent, grace=None):
+    """「有东西活着」的地址数：存活且 q>=1（含人机校验页、前端空壳），
+    **外加最近 grace 秒内被探到过完整真站（q>=2）的地址**。
 
     用于**判断该站点是否应该被判失效 / 告警**。这些地址质量不足以替换原地址，
     但足以证明「站点没死、只是我们这种 IP 探测不到真相」，据此判死会误伤用户。
+
+    【为什么要算「最近活着」—— 2026-10-17】实测这类站对机房 IP 是**成片**间歇性
+    失败：正常窗口 9~10/10 成功，坏窗口连续 6 次全 reset。只按「本轮探到没有」
+    判定，一段坏窗口就会把刚验证过的活站打成失效并告警，恢复后又报「已修复」，
+    来回循环。记住 last_alive 就能把这种抖动吸收掉。grace=0 时退回旧口径。
     """
-    return sum(1 for d in ent.get("domains", [])
-               if d.get("status") == "alive" and (d.get("quality") or 0) >= 1)
+    if grace is None:
+        grace = getattr(C, "ALIVE_GRACE_SEC", 0)
+    now = time.time()
+    n = 0
+    for d in (ent or {}).get("domains", []) or []:
+        if d.get("status") == "alive" and (d.get("quality") or 0) >= 1:
+            n += 1
+            continue
+        # 本轮没探到 —— 但不久前它还是完整真站，算「活着（存疑）」
+        la = float(d.get("last_alive") or 0)
+        if grace and la and (now - la) <= grace:
+            n += 1
+    return n
 
 
 def summary(pool):

@@ -194,6 +194,7 @@ def bootstrap():
     # 基线 + 内置历史域名知识库播种（已有条目的域名做并集）
     sync.seed_pool_from_baseline(POOL, REGISTRY)
     dropped = _prune_pool()
+    _seed_last_alive()
     gateway.set_pool(POOL)
     _flush()
     store.log_event("boot", f"中枢启动，登记接口源 {len(REGISTRY)} 个，域名池 {len(POOL)} 组"
@@ -206,6 +207,27 @@ def bootstrap():
     if _cks["configured"]:
         store.log_event("ck", f"网盘 CK 保险库：已配置 {_cks['configured']} 个渠道"
                               f"（有效 {_cks['valid']}），注入字段 {_cks['injected_fields']} 个")
+
+
+def _seed_last_alive():
+    """给「我们主动写入过的 base」补一份 last_alive，让防误报宽限期立刻生效。
+
+    【为什么 —— 2026-10-17】bases.json 里记着「这条地址是我们验证过才写进配置的」。
+    但刚部署/刚重启时，新加的 last_alive 字段还是空的，一旦这一轮又撞上探测坏窗口，
+    就会出现「配置明明指向一条我们刚验证过的好地址，却仍报失效」的自相矛盾。
+    这里以启动时刻兜底记一次；之后每轮巡检探通都会刷新它，探不通则会自然过期。
+    """
+    now = int(time.time())
+    try:
+        pairs = (patch._applied_bases() or {}).items()
+    except Exception:
+        return
+    for tag, base in pairs:
+        if not base:
+            continue
+        for d in (POOL.get(tag) or {}).get("domains", []) or []:
+            if S.same_site(d.get("url") or "", base):
+                d["last_alive"] = max(int(d.get("last_alive") or 0), now)
 
 
 def _prune_pool():
