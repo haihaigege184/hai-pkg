@@ -128,6 +128,10 @@ def _access_log(resp):
         ua = request.headers.get("User-Agent") or ""
         qs = request.query_string.decode("utf-8", "ignore")
         body = b""
+        # 必须先初始化：下面整块在「中枢自身管理流量」时会被跳过，
+        # 而末尾的 if ck_hit 在块外 —— 不初始化就会 UnboundLocalError，
+        # 静默丢掉这一条探针/台账记录（09:37 实测连报 4 次）。
+        ck_hit = False
         # 中枢自身的管理/自测流量（/api/status、/api/probe/reset…）不进证据也不进台账，
         # 否则「清零」这个动作本身会被立刻记成一次写入，把干净的测试基线弄脏。
         if not probe.is_ignored(request.path):
