@@ -41,6 +41,12 @@ F_HEALTH_STATE = os.path.join(DATA_DIR, "health_state.json")
 #   「接口反复失效与修复」。落盘后，本轮没有更好的选择时**保持上次的修复**。
 F_BASES = os.path.join(DATA_DIR, "bases.json")
 
+# 接口选择页上次下发的「头部顺序」（前 8 个 key）。
+#   用于抑制日志噪音：build() 每轮从 baseline 重建，`before` 永远是原版顺序，
+#   不能拿它判断「顺序有没有变」；延迟每轮小幅波动会让中后段位置常动，全记
+#   会把事件日志刷满。只在头部真的换了才记一条（见 core/order.py）。
+F_ORDER_HEAD = os.path.join(DATA_DIR, "order_head.json")
+
 # 实际下发给客户端的那一份配置 / 本地生成的那一份。
 # 「接口状态」明细要读这两者而不是 baseline —— baseline 是原版母本，
 # 永远不含失效标注，拿它算「是否已标注」恒为 0，正是用户看到
@@ -374,3 +380,17 @@ HEALTH_REPROBE_GAP = float(os.environ.get("OKTV_HEALTH_REPROBE_GAP", "0.4"))  # 
 #   * 私聊告警 / 恢复通知         只在真正确认失效的那一刻发一次
 # 确实需要「直接在客户端里看到哪个失效」时置 OKTV_MARK_NAMES=1 临时打开。
 MARK_NAMES = os.environ.get("OKTV_MARK_NAMES", "0") == "1"
+
+# ---- 接口选择页排序（2026-10-17 用户要求）----------------------------------
+# App 的「接口选择」按下发 jsm.json 里 sites 数组的顺序展示，所以顺序即产品体验：
+#   ① 网盘及弹幕配置置顶
+#   ② 玩偶哥哥(Wogg) / 木偶哥哥(Mogg) 紧随其后
+#   ③ 其余按接口实测延迟升序（快的在前）
+#   ④ 每轮巡检后重新渲染即重排（见 app.do_check，以及 get_config 的 60s 重渲染）
+# 只重排数组、不改任何站点内容；core_ok 按 key 集合判定，与顺序无关。
+SITE_ORDER_ENABLED = os.environ.get("OKTV_SITE_ORDER", "1") == "1"
+# 置顶表：可写 key / api / 池 TAG 的完整值，或 name 的子串（中英文都顺手）
+SITE_PIN_TOP = [x.strip() for x in os.environ.get(
+    "OKTV_SITE_PIN_TOP", "csp_Config,网盘配置").split(",") if x.strip()]
+SITE_PIN_NEXT = [x.strip() for x in os.environ.get(
+    "OKTV_SITE_PIN_NEXT", "Wogg,玩偶哥哥,Mogg,木偶哥哥").split(",") if x.strip()]

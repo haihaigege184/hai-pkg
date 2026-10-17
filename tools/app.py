@@ -338,13 +338,24 @@ def _apply_health_notify():
     return results
 
 
-def do_check(only_dead=False, tags=None, notify_changes=True):
+def do_check(only_dead=False, tags=None, notify_changes=True, render=True):
+    """全池巡检。
+
+    render=True（默认）时巡检结束后立刻重新生成配置 —— 接口选择页要**按最新
+    延迟重排**（用户 2026-10-17 要求：每次巡检更新排序）。修复流程里已经在
+    紧接着调 do_render()，那些调用点传 render=False 避免重复渲染。
+    """
     disc, res = health.check_all(POOL, only_dead=only_dead, tags=tags)
     _flush()
     store.set_state(last_health=int(time.time()))
     alive = sum(1 for r in res if r["status"] == "alive")
     store.log_event("health", f"巡检 {len(res)} 个地址，存活 {alive} 个")
     changes = _apply_health_notify() if notify_changes else {"failed": [], "recovered": []}
+    if render:
+        try:
+            do_render()
+        except Exception as e:
+            store.log_event("error", f"巡检后重渲染失败: {type(e).__name__}: {e}")
     return {"checked": len(res), "alive": alive, "results": res,
             "failed": changes["failed"], "recovered": changes["recovered"]}
 
@@ -363,7 +374,7 @@ def do_repair(reason="manual"):
     before = _tag_alive()
     sync_stat = sync.sync_pool(POOL, REGISTRY)
     _flush()
-    check_stat = do_check()
+    check_stat = do_check(render=False)
     render_stat = do_render()
     after = _tag_alive()
 
@@ -436,7 +447,7 @@ def do_repair_bg(reason="api"):
         })
 
         _repair_set(stage="check", step=2, note="全池巡检（逐个地址探测可用性）")
-        check_stat = do_check()
+        check_stat = do_check(render=False)
         _repair_set(check={"checked": check_stat.get("checked", 0),
                            "alive": check_stat.get("alive", 0)})
 

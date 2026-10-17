@@ -14,6 +14,7 @@ import os
 
 from . import config as C
 from . import health
+from . import order as O
 from . import sources as S
 from . import store
 
@@ -189,6 +190,9 @@ def build(pool, mode="dual", public_base=None):
     # 合并 overrides：手工新增/删除/改名
     jsm = _apply_overrides(jsm)
 
+    # 接口选择页排序：置顶项 + 其余按实测延迟升序（只动顺序，不动内容）
+    ostat = O.apply(jsm, pool)
+
     # 记下「我们改写过的 base」，供下一轮在没有更好选择时保持（不回退到原版死域名）
     if mode != "gateway":
         merged = dict(applied)
@@ -198,7 +202,8 @@ def build(pool, mode="dual", public_base=None):
         except Exception as e:
             store.log_event("error", f"bases 落盘失败: {type(e).__name__}: {e}")
 
-    stat = {"changed": changed, "offline": offline, "clones": len(clone_sites)}
+    stat = {"changed": changed, "offline": offline, "clones": len(clone_sites),
+            "order": ostat}
     return jsm, stat
 
 
