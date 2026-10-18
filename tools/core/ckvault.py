@@ -523,7 +523,67 @@ def render_text(lan=True, base="", prefix="/hai", hub=""):
             obj = relay.patch_tokenm(obj, hub)
         except Exception as e:
             store.log_event("error", f"relay 改写 tokenm 失败: {type(e).__name__}: {e}")
+    obj = _apply_overrides(obj)
     return json.dumps(obj, ensure_ascii=False, indent=1)
+
+
+def _apply_overrides(obj):
+    """把 data/tokenm_overrides.json 里的字段盖到渲染结果上。
+
+    只覆盖**模板里已经存在的字段**，避免往配置里塞未知键把端搞懵。典型用途是
+    `proxy`（科学上网地址）—— 见 config.F_TOKENM_OVERRIDES 的注释：tokenm 由中枢
+    下发，用户在 App 里填的值会被覆盖，必须从这一侧给它。
+    """
+    f = getattr(C, "F_TOKENM_OVERRIDES", "")
+    if not f:
+        return obj
+    try:
+        ov = store.load(f, {}) or {}
+    except Exception:
+        return obj
+    if not isinstance(ov, dict) or not ov:
+        return obj
+    applied, ignored = {}, []
+    for k, v in ov.items():
+        if k in obj and v not in (None, ""):
+            applied[k] = v
+        else:
+            ignored.append(k)
+    if applied:
+        obj = dict(obj)
+        obj.update(applied)
+    if ignored:
+        store.log_event("error", f"tokenm 覆盖字段无效（模板中不存在或值为空）：{ignored}")
+    return obj
+
+
+def tokenm_overrides():
+    """当前生效的覆盖项（给面板展示，脱敏）"""
+    f = getattr(C, "F_TOKENM_OVERRIDES", "")
+    try:
+        return store.load(f, {}) or {}
+    except Exception:
+        return {}
+
+
+def set_tokenm_overrides(patch):
+    """合并写入覆盖项并立即重渲染落盘，返回 (最终内容, 落盘路径)"""
+    f = getattr(C, "F_TOKENM_OVERRIDES", "")
+    cur = tokenm_overrides()
+    if not isinstance(cur, dict):
+        cur = {}
+    for k, v in (patch or {}).items():
+        k = str(k or "").strip()
+        if not k:
+            continue
+        v = "" if v is None else str(v).strip()
+        if v:
+            cur[k] = v
+        else:
+            cur.pop(k, None)
+    store.save(f, cur)
+    p = write_tokenm()
+    return cur, p
 
 
 def write_tokenm():

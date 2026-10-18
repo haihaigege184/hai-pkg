@@ -28,6 +28,10 @@
     font-size:12px;letter-spacing:.5px;font-family:inherit}
   button.on{background:rgba(40,255,191,.22)}
   button.p{color:var(--purple);border-color:rgba(185,139,255,.45);background:rgba(185,139,255,.07)}
+  .inp{background:rgba(0,0,0,.35);border:1px solid rgba(40,255,191,.35);border-radius:7px;
+    color:var(--txt);padding:6px 10px;font-size:12px;font-family:ui-monospace,Consolas,monospace;
+    min-width:340px;outline:none}
+  .inp:focus{border-color:var(--green);box-shadow:0 0 10px rgba(40,255,191,.25)}
   table{width:100%;border-collapse:collapse;font-size:11.5px;
     background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
   th{color:var(--dim);font-weight:500;text-align:left;padding:7px 9px;
@@ -83,6 +87,29 @@
   端确实把 CK 送回中枢了，会立刻入库并同步给其他设备。<br/>
   · 只有 <span class="m">GET</span> → 端只是在取配置，「扫码得到的 CK 目前留在端自己身上」，
   需要靠下面的<b>外部中转</b>把凭据换取请求接过来。
+</div>
+
+<h2>科学上网代理 · 起播的关键</h2>
+<div class="card">
+  <div class="big" id="pverdict">…</div>
+  <div class="kv" id="pstat"></div>
+</div>
+<div class="bar">
+  <input id="proxyUrl" class="inp" placeholder="http://192.168.1.10:7890 或 socks5://user:pass@host:port" />
+  <button onclick="saveProxy()">💾 保存并下发</button>
+  <button onclick="loadProxy()">↻ 读取</button>
+  <span class="kv" id="phint" style="align-self:center"></span>
+</div>
+<div class="warn">
+  <b>为什么不填就起播不了：</b><code>tokenm.json</code> 是由中枢渲染下发的（端每 15~30 秒拉一次），
+  其中 <code>proxy</code> 按原版 README 第 49 行就是<b>用于科学上网的地址</b>。
+  <br/>
+  <b>列表</b>由爬虫用 App 自己的代理去拿，所以能刷新；<b>播放</b>时媒体流会被 PG jar 包成
+  <code>127.0.0.1:10078/p/…</code>，这条通路<b>只认这里的 proxy</b> —— 空着就是直连，
+  <code>youtube.com / googlevideo.com / google.com</code> 一律拉不到，于是「列表正常、起播失败」。
+  <br/>
+  实测（同一台手机上的 jar 代理）：<code>baidu.com</code> 200 正常，<code>youtube.com</code> 报错、
+  <code>googlevideo / google</code> 超时。
 </div>
 
 <h2>外部中转 · 凭据旁路</h2>
@@ -325,8 +352,47 @@ async function resetObs(){
   load(); loadRelay(); loadDav();
 }
 
+async function loadProxy(){
+  try{
+    const r = await fetch('/api/settings');
+    const d = await r.json();
+    const v = document.getElementById('proxyUrl');
+    if(v && !v.dataset.dirty) v.value = d.proxy || '';
+    const big = document.getElementById('pverdict');
+    if(d.proxy){
+      big.className = 'big hit';
+      big.textContent = '✓ 已配置：' + d.proxy;
+    }else{
+      big.className = 'big miss';
+      big.textContent = '⚠️ 未配置 —— YouTube / PikPak 这类走媒体的接口会「列表正常、起播失败」';
+    }
+    document.getElementById('pstat').innerHTML =
+      'tokenm.proxy = <b>' + (d.proxy? esc(d.proxy) : '空') + '</b>'
+      + ' &nbsp;|&nbsp; youtube_proxy = <b>' + esc(d.youtube_proxy||'-') + '</b>';
+  }catch(e){}
+}
+
+async function saveProxy(){
+  const u = (document.getElementById('proxyUrl').value||'').trim();
+  const hint = document.getElementById('phint');
+  hint.textContent = '保存中…';
+  try{
+    const r = await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({proxy: u})});
+    const d = await r.json();
+    if(!d.ok){ hint.textContent = '✗ ' + (d.error||'失败'); return; }
+    hint.textContent = '✓ 已下发，端 15~30 秒内取到';
+    document.getElementById('proxyUrl').dataset.dirty = '';
+    loadProxy();
+  }catch(e){ hint.textContent = '✗ ' + e; }
+}
+
+document.getElementById('proxyUrl').addEventListener('input', ev=>{
+  ev.target.dataset.dirty = '1';
+});
+
 document.getElementById('auto').textContent = '每 3 秒自动刷新';
-load(); loadRelay(); loadDav();
+load(); loadRelay(); loadDav(); loadProxy();
 timer=setInterval(()=>{load(); loadRelay(); loadDav();}, 3000);
 </script>
 </body>

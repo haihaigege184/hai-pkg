@@ -1249,6 +1249,68 @@ def api_ck_version():
     return jsonify({"version": d.get("version") or 0, "updated": d.get("updated") or 0})
 
 
+# ----------------------------------------------------------------------------
+# tokenm 字段下发（代理地址等）
+#   【为什么要在中枢配 —— 2026-10-18】tokenm.json 是由中枢渲染下发的（ext.token
+#   指向我们的绝对地址），端每 15~30s 拉一次。用户在 App「网盘及弹幕配置」里填的
+#   代理地址会被我们下发的值覆盖 →「配了代理却不起作用」。
+#   README.txt:49 写明 "proxy" 就是用于科学上网的地址；PG jar 的媒体代理
+#   （127.0.0.1:10078）只认它，所以起播（媒体流）与列表（爬虫）走的是两条不同的
+#   网络通路 —— 这就是「列表能刷新、起播失败」的根因。
+# ----------------------------------------------------------------------------
+def _proxy_url_ok(u):
+    """代理地址校验：允许 http/https/socks4/socks5，带可选 user:pass@"""
+    u = (u or "").strip()
+    if not u:
+        return True                      # 空 = 清除
+    low = u.lower()
+    if not any(low.startswith(s) for s in ("http://", "https://", "socks4://", "socks5://")):
+        return False
+    rest = u.split("://", 1)[1]
+    if "/" in rest:                      # 只允许 host:port，不接受路径
+        rest = rest.split("/", 1)[0]
+    host = rest.split("@")[-1]
+    if ":" not in host:
+        return False
+    h, p = host.rsplit(":", 1)
+    return bool(h) and p.isdigit() and 0 < int(p) < 65536
+
+
+@bp.route("/api/settings", methods=["GET", "POST"])
+def api_settings():
+    """GET 取当前覆盖项；POST {proxy: "http://host:port"} 写入并重渲染 tokenm"""
+    if request.method == "GET":
+        ov = ckvault.tokenm_overrides()
+        proxy = str(ov.get("proxy") or "")
+        return jsonify({"ok": True, "proxy": proxy,
+                        "youtube_proxy": ckvault.render(lan=True).get("youtube_proxy"),
+                        "overrides": {k: v for k, v in ov.items()}})
+
+    body = request.get_json(silent=True) or {}
+    patch = {}
+    if "proxy" in body:
+        v = str(body.get("proxy") or "").strip()
+        if not _proxy_url_ok(v):
+            return jsonify({"ok": False,
+                            "error": "代理地址格式不对，应为 scheme://host:port，"
+                                     "scheme 取 http/https/socks4/socks5"}), 400
+        patch["proxy"] = v
+    for k in ("youtube_proxy", "pikpak_proxy", "tgsearch_api_proxy"):
+        if k in body:
+            v = str(body.get(k) or "").strip()
+            if v and v not in ("proxy", "noproxy"):
+                return jsonify({"ok": False,
+                                "error": f"{k} 只能填 proxy（走代理）或 noproxy（不走）"}), 400
+            patch[k] = v
+    if not patch:
+        return jsonify({"ok": False, "error": "没有可写入的字段"}), 400
+
+    cur, path = ckvault.set_tokenm_overrides(patch)
+    store.log_event("ck", f"tokenm 字段已更新：{ {k: v for k, v in patch.items()} }"
+                          f" → {path or '未落盘'}")
+    return jsonify({"ok": True, "path": path, "overrides": cur})
+
+
 @bp.route("/api/devices")
 def api_devices():
     """客户端台账：谁连过这个包、有没有把 CK 送回来过"""

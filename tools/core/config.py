@@ -47,6 +47,16 @@ F_BASES = os.path.join(DATA_DIR, "bases.json")
 #   会把事件日志刷满。只在头部真的换了才记一条（见 core/order.py）。
 F_ORDER_HEAD = os.path.join(DATA_DIR, "order_head.json")
 
+# 中枢下发 tokenm.json 时强制覆盖的字段（{字段名: 值}）。
+#   【为什么需要 —— 2026-10-18】tokenm 是**由中枢渲染下发**的（ext.token 指向
+#   我们的绝对地址），端每 15~30s 拉一次。用户在 App「网盘及弹幕配置」里填的
+#   代理地址会被我们下发的空值覆盖掉 —— 表现为「配置好了代理但不起作用」。
+#   README.txt:49 明确 "proxy" = 用于科学上网的地址，PG jar 的媒体代理
+#   （127.0.0.1:10078）只认它；实测该字段为空时 10078 拉 baidu 正常、
+#   拉 youtube/googlevideo 直接超时 —— 列表能刷（爬虫走 App 全局代理）、
+#   起播失败（媒体流走 jar 代理却是直连）。
+F_TOKENM_OVERRIDES = os.path.join(DATA_DIR, "tokenm_overrides.json")
+
 # 实际下发给客户端的那一份配置 / 本地生成的那一份。
 # 「接口状态」明细要读这两者而不是 baseline —— baseline 是原版母本，
 # 永远不含失效标注，拿它算「是否已标注」恒为 0，正是用户看到
