@@ -138,8 +138,24 @@ DAV_PUBLIC = os.environ.get("OKTV_DAV_PUBLIC", "0") == "1"
 # 「回填」：端来要 <渠道>.json、而我们手上没有落盘文件时，用**保险库当前最优 CK**
 # 合成一份给它。端上对应的落盘位置是 /storage/emulated/0/TV/.<渠道>_user.pg，
 # 端取到就写回去 —— 这是把云端 CK 送进电视的**唯一自动通道**（不用扫码、不用在端上点）。
-# 保险库为空时不产生任何影响（仍旧 404）。置 0 可整体关闭。
-DAV_REFILL = os.environ.get("OKTV_DAV_REFILL", "1") == "1"
+#
+# 【2026-10-18 停用，默认 0】多端 CK 同步这条路走不通，已废弃：
+#   ① CK 存在 App 主程序里（pg.jar 搜 quark/webdav 命中 0），PG 包只是能"读"；
+#   ② 壳给 JS 运行时的全局里**没有文件 IO**（只有 req/md5X/aesX/joinUrl），
+#      drpy2 的 readFile→os.open 在本壳无宿主实现；
+#   ③ 端对网盘 CK **只取不送**（PUT 恒为 0），扫码登录也不触发任何 WebDAV 请求；
+#   ④ core_ok 红线（unexpected_extra）不允许新增文件，没有合法的代码落点。
+# 更要紧的是：中枢下发的值会**覆盖端上用户自己登录好的状态**，风险大于收益。
+# ⇒ 关闭回填 + 关闭 tokenm 注入，让 PG 原版设置（端上自己在 App 里配的）完全接管。
+# 想重新试验再置 OKTV_DAV_REFILL=1 与 OKTV_CK_SYNC=1。
+DAV_REFILL = os.environ.get("OKTV_DAV_REFILL", "0") == "1"
+
+# 【2026-10-18 新增，默认 0 = 已废弃】CK 多端同步总开关：
+#   · 关闭时 tokenm.json 下发的是**原版模板原样**（不注入保险库里的任何 CK、
+#     不合并 data/tokenm_overrides.json 的代理等字段），端拿到的与 PG 原版一致；
+#   · /api/ck/report 的上报仍会被拒（避免"以为在同步"的错觉）；
+#   · WebDAV 端点仍保留只读观测（日志照记），但不再回填、不再入库。
+CK_SYNC_ENABLED = os.environ.get("OKTV_CK_SYNC", "0") == "1"
 HEALTH_MIN_BYTES = 800          # 响应体小于该值视为无效页（机房停放页/空页）
 
 UA = ("Mozilla/5.0 (Linux; Android 12; SM-G981B) AppleWebKit/537.36 "

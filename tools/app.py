@@ -1209,6 +1209,13 @@ def api_ck_report():
     """
     if not _check_ck_source():
         return jsonify({"ok": False, "error": "该来源不允许上报 CK"}), 403
+    # 【2026-10-18 废弃】CK 多端同步停用：上报不再入库，免得造成"以为在同步"的错觉。
+    if not getattr(C, "CK_SYNC_ENABLED", False):
+        return jsonify({
+            "ok": False, "deprecated": True,
+            "error": "CK 多端同步已废弃：请直接在 OK影视 里扫码登录，凭据保存在端上 "
+                     "/storage/emulated/0/TV/.<渠道>_user.pg 并只对该设备生效。",
+        }), 410
     data = request.get_json(silent=True)
     src = f"{_client_ip()} {request.headers.get('User-Agent', '')[:40]}"
     if data is None:
@@ -1278,37 +1285,20 @@ def _proxy_url_ok(u):
 
 @bp.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
-    """GET 取当前覆盖项；POST {proxy: "http://host:port"} 写入并重渲染 tokenm"""
+    """【2026-10-18 废弃】原来是「在中枢注入代理地址下发到 tokenm」。
+
+    废弃原因：tokenm.json 由中枢下发，注入的值会盖掉端上用户自己在 App
+    「网盘及弹幕配置」里填的代理。PG 原生用自己配的就能正常起播，所以恢复让
+    端上的原设置完全生效 —— 这个接口不再写入任何东西。
+    """
     if request.method == "GET":
-        ov = ckvault.tokenm_overrides()
-        proxy = str(ov.get("proxy") or "")
-        return jsonify({"ok": True, "proxy": proxy,
-                        "youtube_proxy": ckvault.render(lan=True).get("youtube_proxy"),
-                        "overrides": {k: v for k, v in ov.items()}})
-
-    body = request.get_json(silent=True) or {}
-    patch = {}
-    if "proxy" in body:
-        v = str(body.get("proxy") or "").strip()
-        if not _proxy_url_ok(v):
-            return jsonify({"ok": False,
-                            "error": "代理地址格式不对，应为 scheme://host:port，"
-                                     "scheme 取 http/https/socks4/socks5"}), 400
-        patch["proxy"] = v
-    for k in ("youtube_proxy", "pikpak_proxy", "tgsearch_api_proxy"):
-        if k in body:
-            v = str(body.get(k) or "").strip()
-            if v and v not in ("proxy", "noproxy"):
-                return jsonify({"ok": False,
-                                "error": f"{k} 只能填 proxy（走代理）或 noproxy（不走）"}), 400
-            patch[k] = v
-    if not patch:
-        return jsonify({"ok": False, "error": "没有可写入的字段"}), 400
-
-    cur, path = ckvault.set_tokenm_overrides(patch)
-    store.log_event("ck", f"tokenm 字段已更新：{ {k: v for k, v in patch.items()} }"
-                          f" → {path or '未落盘'}")
-    return jsonify({"ok": True, "path": path, "overrides": cur})
+        return jsonify({"ok": True, "deprecated": True,
+                        "proxy": "",
+                        "note": "CK 同步与代理注入已废弃；代理请在 App 里配置，"
+                                "由 PG 原版设置直接生效"})
+    return jsonify({"ok": False, "deprecated": True,
+                    "error": "已废弃：中枢不再向 tokenm 注入任何字段。"
+                             "代理请在 OK影视 App「网盘及弹幕配置」里填写。"}), 410
 
 
 @bp.route("/api/devices")

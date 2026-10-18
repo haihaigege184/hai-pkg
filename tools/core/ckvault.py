@@ -491,8 +491,15 @@ def merged():
 
 
 def render(lan=True):
-    """模板 + 保险库覆盖。lan=False（公网来源）时不注入任何真实 CK。"""
+    """模板 + 保险库覆盖。lan=False（公网来源）时不注入任何真实 CK。
+
+    【2026-10-18】CK 多端同步已废弃（见 config.CK_SYNC_ENABLED 的注释）：关闭时
+    直接返回原版模板原样 —— 下发的 tokenm.json 与 PG 原版逐字段一致，端上用户
+    在 App 里自己登录的网盘/自己配的代理不会被中枢覆盖。
+    """
     tpl = _template()
+    if not getattr(C, "CK_SYNC_ENABLED", False):
+        return tpl
     if not lan:
         return tpl
     for f, v in merged().items():
@@ -523,7 +530,10 @@ def render_text(lan=True, base="", prefix="/hai", hub=""):
             obj = relay.patch_tokenm(obj, hub)
         except Exception as e:
             store.log_event("error", f"relay 改写 tokenm 失败: {type(e).__name__}: {e}")
-    obj = _apply_overrides(obj)
+    # 【2026-10-18 停用】代理等字段注入已废弃：tokenm 由中枢下发，注入的值会盖掉
+    # 端上用户自己在「网盘及弹幕配置」里填的代理。恢复 PG 原设置生效 ⇒ 不再合并。
+    if getattr(C, "CK_SYNC_ENABLED", False):
+        obj = _apply_overrides(obj)
     return json.dumps(obj, ensure_ascii=False, indent=1)
 
 

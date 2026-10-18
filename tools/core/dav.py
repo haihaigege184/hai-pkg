@@ -269,6 +269,10 @@ def stats():
 
 
 def _harvest(rel, body, ip):
+    # 【2026-10-18 废弃】CK 多端同步停用：端上来的内容照样落盘留档（便于观察），
+    # 但不再解析入库 —— 保险库不再参与下发，入库只会造成"以为在同步"的错觉。
+    if not getattr(C, "CK_SYNC_ENABLED", False):
+        return []
     from . import ckvault
     text = ""
     try:
@@ -312,6 +316,10 @@ def from_vault(rel):
 
     保险库为空 / 该渠道没值 → 返回 (None, "")，行为与以前完全一致（404）。
     """
+    # 【2026-10-18 废弃】CK 多端同步停用后不再回填 —— 避免中枢的值盖掉端上
+    # 用户自己扫码登录的那份。端 GET 一律 404，它就继续用本地 .pg 文件。
+    if not getattr(C, "CK_SYNC_ENABLED", False):
+        return None, ""
     if not getattr(C, "DAV_REFILL", True):
         return None, ""
     ch, main = refill_channel(rel)
