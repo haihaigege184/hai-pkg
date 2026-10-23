@@ -118,7 +118,8 @@ def fmt_daily(stats, offline, recovered):
         f"{_bar(stats.get('alive', 0), stats.get('total', 0))}",
         f"其中完整真站 {stats.get('full', 0)} 个，仅存活未确认 {stats.get('alive_all', 0) - stats.get('alive', 0)} 个",
         f"上游同步：{stats.get('sync_sources', 0)} 个源，新增 "
-        f"{stats.get('new_domains', 0)} 个候选域名",
+        f"{stats.get('new_domains', 0)} 个候选域名"
+        + (f"（包内采集 {stats.get('pkg_added', 0)}）" if stats.get("pkg_added") else ""),
         f"本次自动修复：{stats.get('fixed', 0)} 个",
     ]
     if recovered:
@@ -129,5 +130,10 @@ def fmt_daily(stats, offline, recovered):
     else:
         lines.append("结论：全部接口可用 ✅")
     lines.append("───────────────")
-    lines.append(f"配置地址：{C.PUBLIC_BASE}/hai/jsm.json")
+    # 配置地址按「内网 → FRP → CF」逐条列出（顺序由 core/endpoints.py 决定）
+    try:
+        from . import endpoints as _ep
+        lines.extend(_ep.config_lines())
+    except Exception:
+        lines.append(f"配置地址：{C.PUBLIC_BASE}/hai/jsm.json")
     return "\n".join(lines)

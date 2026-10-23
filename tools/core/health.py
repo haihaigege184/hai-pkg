@@ -227,6 +227,19 @@ def check_all(pool, only_dead=False, tags=None):
         # 用影视站那套特征去判会把活着的接口误判成失效。
         kind = _kind_of(ent.get("api"), ent.get("name"), tag)
         for d in ent.get("domains", []):
+            # 用户已判弃用的域名：不探测（省超时）、固定标 dead、不计入任何可用数。
+            # 万一将来被人抢注复活探到 q3，下面 pick_best_detail 也会把它过滤掉，
+            # 不会写回下发配置 —— 双重保险。
+            if S.is_retired(tag, d.get("url") or ""):
+                d["retired"] = True
+                d["status"] = "dead"
+                d["quality"] = 0
+                d["latency"] = 0
+                d["http"] = 0
+                d["bytes"] = 0
+                d["note"] = "已弃用（用户确认到期停用，不再巡检）"
+                d["checked"] = int(time.time())
+                continue
             if only_dead and d.get("status") == "alive":
                 continue
             tasks.append((tag, d, kind))
@@ -278,6 +291,8 @@ def check_all(pool, only_dead=False, tags=None):
             for d in ent.get("domains", []) or []:
                 if d.get("status") == "alive":
                     continue
+                if d.get("retired") or S.is_retired(tag, d.get("url") or ""):
+                    continue      # 用户已判弃用，不必复核
                 if not _dns_ok(S.norm_host(d.get("url") or "")):
                     continue      # 域名确实废弃，不必复核
                 doomed.append((tag, d, kind))
@@ -338,7 +353,8 @@ def pick_best(ent):
 
 def pick_best_detail(ent):
     """同 pick_best，但返回整条记录，便于展示质量与体积"""
-    alive = [d for d in ent.get("domains", []) if d.get("status") == "alive"]
+    alive = [d for d in ent.get("domains", [])
+             if d.get("status") == "alive" and not d.get("retired")]
     if not alive:
         return None
     alive.sort(key=lambda d: (-(d.get("quality") or 0),
@@ -352,7 +368,8 @@ def usable_count(ent):
     用于**替换原地址**的判据 —— 质量不足的地址宁可不用。
     """
     return sum(1 for d in ent.get("domains", [])
-               if d.get("status") == "alive" and (d.get("quality") or 0) >= 2)
+               if d.get("status") == "alive" and (d.get("quality") or 0) >= 2
+               and not d.get("retired"))
 
 
 def survivable_count(ent, grace=None):
@@ -372,6 +389,8 @@ def survivable_count(ent, grace=None):
     now = time.time()
     n = 0
     for d in (ent or {}).get("domains", []) or []:
+        if d.get("retired"):
+            continue          # 已弃用域名不参与「站点是否还活着」的判断
         if d.get("status") == "alive" and (d.get("quality") or 0) >= 1:
             n += 1
             continue

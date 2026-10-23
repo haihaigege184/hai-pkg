@@ -47,6 +47,50 @@ F_BASES = os.path.join(DATA_DIR, "bases.json")
 #   会把事件日志刷满。只在头部真的换了才记一条（见 core/order.py）。
 F_ORDER_HEAD = os.path.join(DATA_DIR, "order_head.json")
 
+# 用户手动编辑的「接口顺序 + 显隐」。
+#   与自动排序（core/order.py）解耦：order 只是对自动结果的覆盖层，hidden 是
+#   「不下发给客户端」的名单。存在 data/ 下，换 PG 包（严格镜像只作用包目录）
+#   不会丢。verify.py 只对这张 hidden 名单豁免 missing_keys，红线不动。
+F_SITE_ORDER = os.path.join(DATA_DIR, "site_order.json")
+# 顺序/显隐的可撤销快照（重置前必留，见 siteorder._push_history 的教训注释）
+F_SITE_ORDER_HIST = os.path.join(DATA_DIR, "site_order.history.json")
+
+# 饭太硬导航页（https://fty.888484.xyz/）——上游各站源的「发布台」。
+#   导航页里每个人一条 `data-clipboard-text`，就是该站当前该填的接口地址。
+#   定期抓它并与上次快照比对，就能发现「某站换域名了 / 接口路径变了」。
+#   注意：这个页面对浏览器 UA 与 okhttp UA 都返回同一份 HTML（12486B），
+#   与饭太硬自己的 /tv（按 UA 分流）不同，所以用普通浏览器 UA 抓即可。
+NAV_WATCH = [
+    {"name": "饭太硬导航", "url": os.environ.get("OKTV_NAV_URL", "https://fty.888484.xyz/")},
+]
+F_NAV_STATE = os.path.join(DATA_DIR, "nav_state.json")
+F_FEED_STATE = os.path.join(DATA_DIR, "feed_state.json")
+
+# 入口地址测速（core/epbench.py）与动态渲染口径（core/renderbase.py）
+#   【为什么分开存】epbench 只回答「哪条快」，renderbase 只回答「现在用哪条」。
+#   前者是观测，后者是生效状态，必须能各自独立回退。
+F_EPBENCH = os.path.join(DATA_DIR, "epbench.json")   # 测速结果（可随时重算，丢了无害）
+F_RENDER_BASE = os.path.join(DATA_DIR, "render_base.json")  # 当前生效的渲染口径
+# 测速：拉 jsm.json（38KB 小文件）测往返+首字节；拉 pg.jar 的一段测带宽。
+#   两者必须分开 —— 隧道常常「小文件快、大文件慢」（实测 pg.gl-hk1 就是），
+#   只测小文件会把慢的那条误判成最快。
+EPB_JSM_PATH = os.environ.get("OKTV_EPB_JSM_PATH", "/hai/jsm.json")
+EPB_BIG_PATH = os.environ.get("OKTV_EPB_BIG_PATH", "/hai/pg.jar")
+EPB_BIG_BYTES = int(os.environ.get("OKTV_EPB_BIG_BYTES", "1048576"))  # Range 拉 1MB 测带宽
+EPB_TIMEOUT = int(os.environ.get("OKTV_EPB_TIMEOUT", "20"))
+EPB_ROUNDS = int(os.environ.get("OKTV_EPB_ROUNDS", "2"))   # 每条地址取几轮的中位数
+# 单轮失败要重试几次才判死 —— gost 隧道会抖动（实测偶发 404 / 连接断开），
+# 单次失败就判「不可用」会让自动择优误触发故障切换。
+EPB_ATTEMPTS = int(os.environ.get("OKTV_EPB_ATTEMPTS", "3"))
+EPB_INTERVAL = int(os.environ.get("OKTV_EPB_INTERVAL", "3600"))  # 定时测速周期（秒）
+
+# 动态渲染口径（core/renderbase.py）
+#   【红线】默认 0 = 完全保持旧行为：渲染口径恒等于 OKTV_PUBLIC_BASE 第一项。
+#   打开后才可能自动换，且只在「当前这条连续 RENDER_FAILOVER_ROUNDS 轮不可用」
+#   时才切（failover），**绝不因为「另一条更快」就换**——见 renderbase.py 顶部。
+RENDER_PICK = os.environ.get("OKTV_RENDER_PICK", "0") == "1"
+RENDER_FAILOVER_ROUNDS = int(os.environ.get("OKTV_RENDER_FAILOVER_ROUNDS", "3"))
+
 # 中枢下发 tokenm.json 时强制覆盖的字段（{字段名: 值}）。
 #   【为什么需要 —— 2026-10-18】tokenm 是**由中枢渲染下发**的（ext.token 指向
 #   我们的绝对地址），端每 15~30s 拉一次。用户在 App「网盘及弹幕配置」里填的
@@ -170,29 +214,109 @@ UPSTREAM_JSM_MIRRORS = [
 ]
 
 # 上游配置仓库。格式 "owner/repo:路径" 或 "owner/repo@分支:路径"
+#
+# 【2026-10-22 按「最近 push 时间 + 实际贡献」重排】
+# 实测（GitHub API 查 pushed_at）：
+#   qist/tvbox          2026-10-21  ★ 唯一每天都在更新的源，12.2k star
+#   cluntop/tvbox       2026-10-22  ★ 活跃，且它的 jsm.json 与我们同源（79 站点，
+#                                     命中 25 个 TAG）—— 等于作者配置的公开镜像，
+#                                     换域名时这里最先能捞到
+#   pkujf/TVBOX         2024-08-27  ✗ 两年没动
+#   angelo0o0/tv         2024-04-04  ✗
+#   gaotianliuyun/gao    2024-11-17  ✗（star 多但已停更；jsm.json 那个路径还连不上，
+#                                     每次同步白等 4 个镜像 × 超时，已挪到末尾）
+#   BartleySun/tvList    2025-01-19  ✗
+#   aiwu12/tBox / muzili0712/tBox     ✗ 对网盘类 TAG 零命中
+# 保留停更源的理由：它们是**免费的历史快照**，某些 TAG 的旧域名只在这些文件里存在，
+# 一次 200 的读取就能把池子补齐；代价只是同步耗时，不影响巡检与下发。
 UPSTREAM_REPOS = [
+    "qist/tvbox@master:jsm.json",       # 收录 150+ 站点，唯一活跃源
+    "cluntop/tvbox:jsm.json",          # 79 站点，本包的公开镜像
+    "BartleySun/tvList@master:0825.json",
     "pkujf/TVBOX:jsm.json",
     "angelo0o0/tv:jsm.json",
-    "gaotianliuyun/gao:jsm.json",
-    "gaotianliuyun/gao@master:js.json",
-    "luotong1995/gao@master:js.json",
-    "BartleySun/tvList@master:0825.json",
     "aiwu12/tBox:配置.json",
     "muzili0712/tBox:安卓配置.json",
-    "qist/tvbox@master:jsm.json",       # 收录 150+ 站点，救命源
+    "gaotianliuyun/gao@master:js.json",
+    "luotong1995/gao@master:js.json",
+    "gaotianliuyun/gao:jsm.json",      # 已知连不上，放最后（失败成本最低）
+]
+
+# 单个上游镜像的读超时（秒）。原来固定 15s，一个连不上的仓库要白等 4×15=60s。
+UPSTREAM_TIMEOUT = int(os.environ.get("OKTV_UPSTREAM_TIMEOUT", "10"))
+
+# 直连上游（不是 GitHub 镜像），由 core/upstream.py 统一解析各种形态
+# （标准 JSON / JS 注释 / 图片藏配置 / 加密配置 / 跳转页）。
+#
+# 【2026-10-22 全部 6 条逐个真连复核】
+#   饭太硬        http://www.xn--sss604efuw.cc/tv          200 / 20083B / 图片藏配置   ★
+#   王二小        http://tvbox.xn--4kq62z5rby2qupq9ub.top/ 200 / 19893B / 63 站点      ★
+#   江苏福建专用  .../repos/xxooo/in/raw/in.bmp            200 / 20083B / 图片藏配置   ★
+#                  （名字叫 .bmp，实测是 JPEG；内容与饭太硬 .cc 逐字节相同 = 同一份配置的镜像）
+#   南风          jsdelivr XC.json                         64681B / **hex+$#248#$+AES 加密** ★
+#                  （端上 ApiConfig+AES 就是这么解的，按同一规则解出 88 站点/1 直播/7 解析）
+#   巧技          http://cdn.qiaoji8.com/tvbox.json         ✗ 站方没了：CDN 子域只剩
+#                  CNAME 到七牛 cdn-qiaoji8-com-idvpply.qiniudns.com 且已 NXDOMAIN；
+#                  主域 qiaoji8.com 仍解析到 134.175.246.163 但 80/443 全不通（本机+服务器双测）
+#   饭太硬备用    http://fty.xxooo.cf/tv                   ✗ xxooo.cf 整个域 NXDOMAIN
+#                  ⇒ 该位改用它的内容镜像 in.bmp（上面那条），一条不丢
+#
+# 结构：name 给人看，urls 按序试（多镜像），dead 只展示不抓。
+UPSTREAM_FEEDS = [
+    # `nav` = 这条 feed 对应「饭太硬导航页」里的哪些站名（可多条）。
+    # 导航页是作者换域名/换接口路径的第一发布台，`navwatch` 会把快照里的
+    # 地址排到候选最前面。写死的 `urls` 反而永远是滞后的那一份。
+    # 不写 `nav` 时退回「名字互相包含」的猜测，但会串（饭太硬 vs 饭太硬备用）。
+    {"name": "饭太硬", "nav": ["饭太硬"], "urls": ["http://www.xn--sss604efuw.cc/tv"]},
+    {"name": "王二小", "nav": ["王二小"], "urls": ["http://tvbox.xn--4kq62z5rby2qupq9ub.top/"]},
+    {"name": "饭太硬备用（江苏福建）", "nav": ["备用", "江苏福建专用"],
+     "urls": ["https://cdn09022024.gitlink.org.cn/api/v1/repos/xxooo/in/raw/in.bmp"]},
+    {"name": "南风", "nav": ["南风"],
+     "urls": ["https://fastly.jsdelivr.net/gh/yoursmile66/TVBox@main/XC.json",
+              "https://cdn.jsdelivr.net/gh/yoursmile66/TVBox@main/XC.json",
+              "https://gh-proxy.net/https://raw.githubusercontent.com/yoursmile66/TVBox/refs/heads/main/XC.json"]},
+    {"name": "巧技", "nav": ["巧技"], "urls": ["http://cdn.qiaoji8.com/tvbox.json"], "dead": True,
+     "why": "站方 CDN 域名已删（七牛 CNAME NXDOMAIN），源站 134.175.246.163 端口全不通"},
+    # ── 补充源：巧技死后顶上来的一批（2026-10-22 逐个实测）──
+    {"name": "菜妮丝", "urls": ["https://tv.xn--yhqu5zs87a.top"]},                    # 37 站点
+    {"name": "俊佬", "urls": ["http://home.jundie.top:81/top98.json"]},                # 24 站点
+    {"name": "小盒子4K", "urls": ["http://xhztv.top/4k.json"]},                        # 30KB，字符串含未转义控制符
+]
+
+# 兼容老代码：平铺出全部可抓地址
+UPSTREAM_URLS = [u for f in UPSTREAM_FEEDS if not f.get("dead") for u in f["urls"]]
+
+# 【UA 硬门槛 —— 2026-10-22 实测】
+# 上面两个站**按 UA 分流**：给 okhttp/* 发真配置，给浏览器 UA 发公告页
+# （王二小 936B GBK 文本「大家好！我是唐三…」/ 饭太硬 12KB 导航页 HTML）。
+# 用浏览器 UA 去抓，永远只能拿到公告 —— 这也是「上游一直是 0」的一个隐藏原因。
+# 所以直连上游统一先用设备 UA，解析失败再退回浏览器 UA。
+UPSTREAM_UA = os.environ.get("OKTV_UPSTREAM_UA", "okhttp/5.0.0-alpha.14")
+
+# 已知存在但当前抓不到的源，只用于维护页展示，不参与抓取
+# （死源也留档：以后想复查「是不是又活了」直接看这里，不用重新翻证据）
+UPSTREAM_DEAD = [
+    {"name": f["name"], "url": f["urls"][0], "why": f.get("why", "")}
+    for f in UPSTREAM_FEEDS if f.get("dead")
+] + [
+    {"name": "巧技(旧CDN)", "url": "http://qiaoji8.com/tvbox.json",
+     "why": "主域仍解析到 134.175.246.163，但 80/443 全 timeout（本机与服务器双测）"},
+    {"name": "饭太硬备用(旧域)", "url": "http://fty.xxooo.cf/tv",
+     "why": "xxooo.cf 整域 NXDOMAIN，内容已由 in.bmp 镜像承接"},
 ]
 
 # 通用域名采集源：这些社区的配置里散落着各站点当前域名，
 # 直接正则扫出所有 URL，再按关键词归到对应 TAG（host 匹配，避免误收）。
 # 上游 jsm.json 停更时，这里往往还有人在维护最新域名。
 HARVEST_SOURCES = [
+    "https://fastly.jsdelivr.net/gh/qist/tvbox@master/jsm.json",
+    "https://fastly.jsdelivr.net/gh/cluntop/tvbox@main/jsm.json",
+    "https://fastly.jsdelivr.net/gh/BartleySun/tvList@master/0825.json",
     "https://fastly.jsdelivr.net/gh/pkujf/TVBOX@main/jsm.json",
     "https://fastly.jsdelivr.net/gh/angelo0o0/tv@main/jsm.json",
     "https://fastly.jsdelivr.net/gh/gaotianliuyun/gao@master/js.json",
-    "https://fastly.jsdelivr.net/gh/BartleySun/tvList@master/0825.json",
     "https://fastly.jsdelivr.net/gh/aiwu12/tBox@main/配置.json",
     "https://fastly.jsdelivr.net/gh/muzili0712/tBox@main/安卓配置.json",
-    "https://fastly.jsdelivr.net/gh/qist/tvbox@master/jsm.json",
 ]
 
 # TAG 关键词别名：采集到的 host 命中任一关键词即归入该 TAG
@@ -269,13 +393,27 @@ SEED_DOMAINS = {
     "WOGG": ["http://wogg.888484.xyz/", "https://wogg.link/", "http://wogg.rr.nu/",
              "https://www.weixine.link/", "https://woggpan.888484.xyz/",
              "https://www.wogg.one/", "https://www.wogg.xyz/", "https://wogg.xyz/"],
-    "MOGG": ["http://123.666291.xyz/", "http://mogg.top/", "https://666.666291.xyz/",
-             "https://www.muou.site/"],
+    # 2026-10-22 用户给的新域名：muoua.top / 333 / 666（旧 muou.site、muou.asia
+    # 月中到期弃用，见 RETIRED_DOMAINS）
+    "MOGG": ["http://123.666291.xyz/", "https://www.muoua.top/",
+             "https://333.333291.xyz/", "https://666.666291.xyz/",
+             "http://mogg.top/"],
     "WOBG": ["https://wobge.run.goorm.io/", "https://tv.yydsys.top/"],
     "LABI": ["https://www.fmcf.fun/", "https://xiaocgege.shop/",
              "https://duopan.fun/"],
     "XIAOMI": ["https://mihdr.top/", "https://www.mucpan.cc/"],
     "TUDOU": ["https://tudou.lvdoui.top/"],
+}
+
+# ── 已弃用域名（用户确认、到期停用）──
+# 为什么单独列一张表、而不是直接从域名池里删掉：
+#   ① 删了挡不住下一轮上游采集 —— 上游配置里还带着旧域名，会被 harvest 重新
+#      抓回来，然后某天被人抢注复活、探到 q3，就又被写进下发配置；
+#   ② 需要留档说明「为什么不探了」，否则维护页只显示一坨死域名看不懂。
+# 语义：**永不写回配置、永不参与巡检、永不计入可用数**。
+# 按 TAG 记主机名，比较时两边都去过 www.（见 sources.is_retired）。
+RETIRED_DOMAINS = {
+    "MOGG": ["www.muou.site", "www.muou.asia"],   # 2026-10 月中到期弃用
 }
 
 # 内容质量判定 —— 光看字节数不够：DNSPod「域名已过期」停放页约 25KB，

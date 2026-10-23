@@ -90,7 +90,7 @@
 <body>
 <div class="wrap">
   <h1>OK影视 <span>· 接口中枢</span></h1>
-  <div class="sub">OKTV-HUB &nbsp;/&nbsp; 接口地址池 + 健康巡检 + 上游热同步 + 网关反代</div>
+  <div class="sub">OKTV-HUB &nbsp;/&nbsp; 接口地址池 + 健康巡检 + 上游热同步 + 网关反代 &nbsp;/&nbsp; <span style="color:var(--purple)">CK 同步已移除</span></div>
 
   <div class="cards" id="cards"></div>
 
@@ -135,89 +135,12 @@
   </div>
 
   <div class="panel">
-    <h2>网盘 CK · 一处保存，局域网多端自动生效</h2>
-    <div class="flex" style="margin-bottom:10px">
-      <input id="ckval" placeholder="粘贴 CK / Cookie / 链接 / tokenm.json，自动识别渠道" style="flex:1;min-width:280px"/>
-      <select id="ckch" style="width:150px">
-        <option value="">自动识别</option>
-        <option value="quark">夸克网盘</option>
-        <option value="uc">UC网盘</option>
-        <option value="baidu">百度网盘</option>
-        <option value="115">115网盘</option>
-        <option value="aliyun">阿里云盘</option>
-        <option value="thunder">迅雷云盘</option>
-        <option value="yd">移动云盘</option>
-        <option value="pikpak">PikPak</option>
-        <option value="pan123">123云盘</option>
-        <option value="pan189">天翼云盘</option>
-        <option value="guangya">光雅网盘</option>
-      </select>
-      <button onclick="saveCk()">▸ 保存</button>
-      <button onclick="recheckCk()" class="pp">⟳ 重新校验</button>
-      <a href="/ck" target="_blank" style="color:var(--purple);font-size:12px;align-self:center">手机捕获台 ↗</a>
-      <a href="/live" target="_blank" style="color:var(--green);font-size:12px;align-self:center">同步监视台 ↗</a>
-    </div>
-    <div class="muted" style="margin-bottom:8px" id="ckmeta">加载中…</div>
-    <table>
-      <thead><tr><th>渠道</th><th>状态</th><th>值</th><th>来源</th><th>播放命中</th><th>更新时间</th><th></th></tr></thead>
-      <tbody id="ckrows"></tbody>
-    </table>
-    <div class="muted" style="margin-top:10px;line-height:1.7">
-      保存在这里的 CK 会被写进 <code>./lib/tokenm.json</code>（59 个网盘站共用这一个文件），
-      局域网任何设备下次加载配置即自动生效；真实 CK <b>只回局域网来源</b>，公网只拿到空模板。
-    </div>
-  </div>
-
-  <div class="panel">
-    <h2>客户端台账 · 谁连过这个包、有没有把 CK 送回来</h2>
-    <div class="muted" id="devmeta" style="margin-bottom:10px">加载中…</div>
-    <table>
-      <thead><tr><th>客户端</th><th>类型</th><th>最近活跃</th><th>请求数</th><th>写入</th><th>贡献 CK</th><th>UA</th></tr></thead>
-      <tbody id="devrows"></tbody>
-    </table>
-    <div class="muted" style="margin-top:10px;line-height:1.7">
-      「写入」= 该设备向中枢发过非 GET 请求；「贡献 CK」= 中枢从它的请求里真的识别出了网盘凭据。
-      全 0 就说明 CK 还留在设备自己身上 —— 打开 <a href="/live" target="_blank" style="color:var(--green)">同步监视台 ↗</a>
-      盯着，再去 OK影视 的「网盘及弹幕配置」里保存一次，就能看到它有没有连回来。
-    </div>
-  </div>
-
-  <div class="panel">
-    <h2>外部中转 · 把网盘凭据换取请求引到中枢</h2>
-    <div class="muted" id="relayHead" style="margin-bottom:10px">加载中…</div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
-      <button id="relayBtn" class="pp" onclick="toggleRelayRW()">…</button>
-      <a href="/live" target="_blank" style="color:var(--green);font-size:12px;align-self:center">同步监视台 ↗</a>
-    </div>
-    <table>
-      <thead><tr><th>路由</th><th>上游</th><th>说明</th><th>状态</th></tr></thead>
-      <tbody id="relayRows"></tbody>
-    </table>
-    <div class="muted" style="margin-top:10px;line-height:1.7">
-      PG 的 <code>tokenm.json</code> 里 <code>open_api_url</code> 指向「网盘换 token 的接口」，
-      端扫码/刷新得到的凭据会 <b>POST</b> 到那里 —— 直连第三方，中枢看不见（这正是扫码后监视台无反应的原因）。<br/>
-      改写开启后该地址指向 <code>/gw/ali/token</code>：<b>原样透传上游</b>（端的功能不受影响），
-      同时把凭据截留入库 → 其余设备下一轮拉配置即自动生效。
-    </div>
-  </div>
-
-  <div class="panel">
-    <h2>WebDAV 端点 · 端主动备份 / 恢复通道</h2>
-    <div class="muted" id="davHead" style="margin-bottom:10px">加载中…</div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
-      <code id="davUrl" style="color:var(--green);font-size:12px"></code>
-      <button class="pp" onclick="refreshDav()">↻ 刷新</button>
-      <a href="/live" target="_blank" style="color:var(--green);font-size:12px">同步监视台 ↗</a>
-    </div>
-    <table>
-      <thead><tr><th>文件</th><th>大小</th><th>更新时间</th></tr></thead>
-      <tbody id="davFiles"></tbody>
-    </table>
-    <div class="muted" style="margin-top:10px;line-height:1.7">
-      在 OK影视 的「网盘及弹幕配置 → <b>WEBDAV 缓存网盘信息</b>」里把地址填成上面这个
-      （账号密码随便填，中枢不校验，只按来源网段放行）。<br/>
-      端会把 <b>影巢 / 栖影 / 123开放 / 光雅 / YouTube / B站</b> 这几类账号凭据 PUT 到中枢；
-      它点「恢复」时再 GET 回去 —— 这就是 PG 原生、<b>由端主动发起</b>的双向通道。
+    <h2>影视接口维护更新（已独立成页）</h2>
+    <div class="muted" style="line-height:1.8">
+      网盘 CK 同步与监视已<b>全部移除</b>（实测端对网盘凭据只取不送，中枢注入反而会覆盖端上刚登录好的状态，
+      详见维护页说明）。现在只专注两件事：<b>接口保活</b> 与 <b>PG 包更新</b>。<br/>
+      <a href="/live" target="_blank" style="color:var(--green)">→ 打开「影视接口维护更新」</a>
+      &nbsp;·&nbsp; 站点状态 / 域名修复 / 入口地址增删 / 上游源 / PG 包上传与回滚
     </div>
   </div>
 
@@ -272,124 +195,6 @@ async function refresh(){
     </tr>`).join('')||'<tr><td colspan="5" class="muted">加载中…</td></tr>';
   const logs=await api('/api/logs?n=80');
   $('#logs').innerHTML=logs.map(l=>`<div><i>${l.ts}</i> <b>${esc(l.kind)}</b> ${esc(l.msg)}</div>`).join('')||'<div class="muted">暂无</div>';
-  refreshCk();
-  refreshDevices();
-  refreshRelay();
-  refreshDav();
-}
-
-async function refreshDav(){
-  let d;try{ d=await api('/api/dav?n=1'); }catch(e){ return }
-  const st=d.stats||{}, files=d.files||[];
-  $('#davUrl').textContent = location.origin + (st.url||'/gw/dav');
-  $('#davHead').innerHTML = (st.puts
-    ? '<b style="color:var(--green)">已收到端备份 '+st.puts+' 次</b>'
-    : '<b style="color:var(--purple)">尚未收到备份</b> —— 端还没把 WebDAV 地址指向中枢')
-    + ' &nbsp;|&nbsp; 交互 '+st.total+' 次 &nbsp;|&nbsp; 恢复(GET) '+st.gets
-    + ' &nbsp;|&nbsp; 含凭据 '+st.with_cred
-    + (st.last? ' &nbsp;|&nbsp; 最近 '+esc(st.last) : '')
-    + (st.public? '' : ' &nbsp;|&nbsp; <span class="muted">仅局域网可写</span>');
-  $('#davFiles').innerHTML = files.length? files.map(f=>`
-    <tr><td><b style="color:var(--green)">${esc(f.rel)}</b></td>
-        <td>${f.size} B</td><td class="muted">${ts(f.mtime)}</td></tr>`).join('')
-    : '<tr><td colspan="3" class="muted">暂无文件</td></tr>';
-}
-
-async function refreshRelay(){
-  let d;try{ d=await api('/api/relay?n=1'); }catch(e){ return }
-  const st=d.stats||{}, rs=d.routes||{};
-  const on=!!st.rewrite;
-  $('#relayHead').innerHTML = on
-    ? '<b style="color:var(--green)">改写已开启</b> —— tokenm 里的外发地址指向中枢，端下一轮拉取即生效'
-    : '<b style="color:var(--purple)">改写未开启</b> —— 端仍在直连第三方，凭据不会经过中枢';
-  const btn=$('#relayBtn');
-  btn.className=on?'on':'pp';
-  btn.textContent=on?'■ 关闭地址改写':'▶ 开启地址改写（引到中枢）';
-  const keys=Object.keys(rs);
-  $('#relayRows').innerHTML = keys.length? keys.map(k=>{
-    const c=rs[k]||{};
-    return '<tr>'
-      + '<td><b style="color:var(--green)">'+esc(k)+'</b>'
-      +   '<div class="muted">字段 '+esc(c.field||'-')+' · 渠道 '+esc(c.channel||'-')+'</div></td>'
-      + '<td style="font-size:11.5px">'+esc(c.upstream||'-')+'</td>'
-      + '<td class="muted">'+esc(c.label||'')+'</td>'
-      + '<td>'+(c.enabled===false?'<span style="color:var(--dim)">停用</span>':'<span style="color:var(--green)">启用</span>')
-      +   (st.total?'<div class="muted">已中转 '+st.total+' 次 · 含凭据 '+st.with_cred+'</div>':'')+'</td>'
-      + '</tr>';
-  }).join('') : '<tr><td colspan="4" class="muted">无路由</td></tr>';
-}
-
-async function toggleRelayRW(){
-  let d;try{ d=await api('/api/relay?n=1'); }catch(e){ return }
-  const on=!!((d.stats||{}).rewrite);
-  if(!confirm(on
-    ? '关闭「地址改写」？\n\n端会回到直连第三方换取 token，中枢将不再收到凭据。'
-    : '开启「地址改写」？\n\n会把 tokenm.json 里的 open_api_url 指向中枢 /gw/ali/token，\n并原样透传给真正的上游（api.extscreen.com）。\n端下一轮拉取配置后生效（约 15~30 秒）。'))
-    return;
-  await fetch('/api/relay',{method:'POST',headers:{'Content-Type':'application/json'},
-                            body:JSON.stringify({rewrite:!on})});
-  refreshRelay();
-}
-
-async function refreshDevices(){
-  let d,pr;
-  try{ d=await api('/api/devices'); }catch(e){ return }
-  try{ pr=await api('/api/probe?n=1'); }catch(e){ pr=null }
-  const st=(pr&&pr.stats)||{};
-  $('#devmeta').innerHTML=`共 <b>${d.count}</b> 台客户端（局域网 ${d.lan}）· 贡献过 CK 的 <b>${(d.contributors||[]).length}</b> 台 · `
-    +`探针：写入 <b>${st.writes||0}</b> 次，带 CK <b>${st.with_ck||0}</b> 次`
-    +`<span class="muted"> — ${esc(st.verdict||'')}</span>`;
-  $('#devrows').innerHTML=(d.devices||[]).slice(0,25).map(x=>`<tr>
-    <td class="tag">${esc(x.ip)}</td>
-    <td>${x.lan?'局域网':'公网'}${x.online?' <span class="dot ok"></span>':''}${x.kind==='contributor'?' <b style="color:var(--green)">贡献者</b>':''}</td>
-    <td class="muted">${ts(x.last)}<div class="muted">${x.age<60?'刚刚':Math.floor(x.age/60)+' 分钟前'}</div></td>
-    <td>${x.reqs||0}</td>
-    <td>${x.writes||0}</td>
-    <td>${x.ck_in||0}</td>
-    <td class="muted">${esc((x.ua||'').slice(0,40))}</td>
-  </tr>`).join('')||'<tr><td colspan="7" class="muted">还没有客户端连过（或台账刚建立）</td></tr>';
-}
-
-const CKST={valid:'有效',invalid:'已失效',unverified:'待验证',empty:'未配置'};
-async function refreshCk(){
-  let d;try{d=await api('/api/ck')}catch(e){return}
-  $('#ckmeta').innerHTML=`版本 <b>v${d.version}</b> · 已配置 ${d.configured} · 有效 ${d.valid} · `
-    +`注入字段 ${d.injected_fields} · 自动嗅探 ${d.autosniff?'开':'关'} · 公网下发真实CK ${d.public_ck?'开（注意安全）':'关'} `
-    +`<span class="muted">（当前来源 ${esc(d.client_ip)}${d.is_lan?' · 局域网':' · 公网'}）</span>`;
-  $('#ckrows').innerHTML=(d.rows||[]).map(r=>`<tr>
-    <td>${esc(r.label)}<div class="muted">${esc(r.channel)}</div></td>
-    <td><span class="dot ${r.state==='valid'?'ok':(r.state==='invalid'?'bad':'unk')}"></span>${esc(CKST[r.state]||r.state)}
-      ${r.note?`<div class="muted">${esc(r.note)}</div>`:''}</td>
-    <td class="url">${esc(r.masked||'—')}</td>
-    <td class="muted">${esc((r.source||'—').slice(0,28))}</td>
-    <td>${r.hits||0}</td>
-    <td class="muted">${r.updated?ts(r.updated):'—'}</td>
-    <td>${r.state==='empty'?'':`<span class="rm" onclick="dropCk('${esc(r.channel)}')">删除</span>`}</td>
-  </tr>`).join('');
-}
-async function saveCk(){
-  const raw=$('#ckval').value.trim();if(!raw)return alert('先粘贴 CK');
-  const ch=$('#ckch').value;
-  busy('保存 CK…');
-  const body=ch?{channel:ch,value:raw}:{raw};
-  const r=await fetch('/api/ck/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  const d=await r.json().catch(()=>({ok:false}));
-  busy('');
-  if(d.ok){$('#ckval').value='';refreshCk();}
-  else alert('保存失败：'+(d.error||'未知'));
-}
-async function recheckCk(){
-  busy('校验网盘登录态…');
-  const r=await fetch('/api/ck/check',{method:'POST'});
-  const d=await r.json().catch(()=>({}));
-  busy('');
-  refreshCk();
-  if(d.results)alert(d.results.map(x=>`${x.channel} → ${x.state} ${x.note||''}`).join('\n')||'无可校验渠道');
-}
-async function dropCk(ch){
-  if(!confirm('确定删除 '+ch+' 的 CK？'))return;
-  await fetch('/api/ck/drop?ch='+encodeURIComponent(ch),{method:'POST'});
-  refreshCk();
 }
 
 function ts(t){if(!t)return '—';const d=new Date(t*1000);

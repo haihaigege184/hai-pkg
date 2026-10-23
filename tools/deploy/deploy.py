@@ -19,7 +19,9 @@
 中枢与插件代码脱节了很久，表现是「机器人命令发了毫无反应」，排查绕了很远。
 所以把插件部署并进主流程，且默认重启 bot（改完不重启等于没改）。
 """
+import hashlib
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -41,7 +43,13 @@ FRAMEWORK_DST = "/adapters/base-adapter.js"
 PATCH_MARK = "userPermission: permissionLevel"
 
 
-EXCLUDES = {"data", "logs", "dist", "__pycache__", ".venv", "_work"}
+# 【为什么 baseline 也排除 —— 2026-10-22 踩过】
+# baseline/manifest.json 是「原版清单」，**换包后会被 pkgupdate.apply 重算**。
+# 而本机这份是上次拉回来的旧清单：一旦连 baseline 一起推上去，服务器上的
+# 新清单就被旧清单覆盖 → /api/verify 立刻 hash_diff 3 / size_diff 3 →
+# core_ok=False（"不精简原版"这条红线当场报警），而且看起来像是包被改坏了。
+# 正确方向是「服务器 → 本机」：解包后再把远程 baseline 拉回来。
+EXCLUDES = {"data", "logs", "dist", "__pycache__", ".venv", "_work", "backups", "staging", "baseline"}
 
 
 def make_tar(with_assets=True):
@@ -77,6 +85,45 @@ def run(cli, cmd, timeout=600):
     err = stderr.read().decode("utf-8", "replace")
     code = stdout.channel.recv_exit_status()
     return code, out, err
+
+
+def sync_baseline(c):
+    """baseline 以**服务器**为准，方向固定为「服务器 → 本机」。
+
+    换包会重算 manifest（core/pkgupdate.py 第 ⑦ 步），本机那份随即过期。
+    * 服务器有 manifest  → 拉回本机（本机旧文件先备份到 backups/）
+    * 服务器没有（首次部署）→ 把本机 baseline 推上去
+    """
+    remote_man = f"{REMOTE}/baseline/manifest.json"
+    local_man = os.path.join(LOCAL, "baseline", "manifest.json")
+    code, o, _ = run(c, f"test -f {remote_man} && echo HAS || echo NONE")
+    sftp = c.open_sftp()
+    try:
+        if "HAS" in o:
+            code, o2, _ = run(c, f"md5sum {remote_man} | cut -d' ' -f1")
+            remote_hash = o2.strip().split()[0] if o2.strip() else ""
+            local_hash = ""
+            if os.path.exists(local_man):
+                with open(local_man, "rb") as f:
+                    local_hash = hashlib.md5(f.read()).hexdigest()
+            if remote_hash and remote_hash == local_hash:
+                print("      baseline 已同步（服务器=本机）")
+                return
+            if os.path.exists(local_man):
+                bak = os.path.join(LOCAL, "backups",
+                                   "baseline-local-" + time.strftime("%Y%m%d-%H%M%S"))
+                os.makedirs(bak, exist_ok=True)
+                shutil.copy2(local_man, bak)
+            os.makedirs(os.path.dirname(local_man), exist_ok=True)
+            sftp.get(remote_man, local_man)
+            print("      baseline <- 服务器（本机旧清单已备份到 backups/baseline-local-*）")
+        else:
+            os.makedirs(os.path.join(LOCAL, "baseline"), exist_ok=True)
+            run(c, f"mkdir -p {REMOTE}/baseline")
+            sftp.put(local_man, remote_man)
+            print("      baseline -> 服务器（首次部署，推送本机清单）")
+    finally:
+        sftp.close()
 
 
 def deploy_sea(c, restart=True):
@@ -159,11 +206,13 @@ def main():
                         f"ls {REMOTE}")
     print("      " + o.strip().replace("\n", " "))
 
+    sync_baseline(c)
+
     print("[5/7] 建 venv + 依赖…")
     code, o, e = run(c, f"cd {REMOTE} && "
                         f"(test -d .venv || python3 -m venv .venv) && "
                         f"./.venv/bin/pip install -q --upgrade pip && "
-                        f"./.venv/bin/pip install -q flask requests urllib3 && "
+                        f"./.venv/bin/pip install -q flask requests urllib3 pycryptodome && "
                         f"./.venv/bin/python -c \"import flask,requests;print('deps ok')\"",
                      timeout=900)
     print("      " + (o or e).strip()[-200:])

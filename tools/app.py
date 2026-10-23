@@ -13,6 +13,7 @@
     python app.py sync      # 只跑一次上游同步
     python app.py render    # 只重新生成一次配置
 """
+import gzip as _gzip
 import hashlib
 import json
 import os
@@ -20,14 +21,16 @@ import sys
 import threading
 import time
 
-from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory
+from flask import (Blueprint, Flask, Response, g, jsonify, request,
+                   send_from_directory)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import config as C          # noqa: E402
-from core import (absbase, ckvault, dav, devices, gateway, health,  # noqa: E402
-                  libfill, notify, patch, probe, relay, report,
-                  sources as S, store, sync, verify)
+from core import (absbase, checkin_ck, ckvault, dav, devices, endpoints, epbench,  # noqa: E402
+                  gateway, health, libfill, navwatch, notify, patch, pkgupdate, probe,
+                  relay, renderbase, report, siteorder, sources as S, store, sync,
+                  verify)
 
 app = Flask(__name__, static_folder=None)
 bp = Blueprint("oktv", __name__)
@@ -86,12 +89,70 @@ def _is_lan(ip=None):
     return ip.startswith(_LAN_PREFIX)
 
 
+@app.before_request
+def _mark_start():
+    g._t0 = time.time()
+
+
+# 可以压缩的响应类型。json 是主力（jsm.json 42KB → 约 8KB），
+# 其次是 lib/*.json 与 js/*.js（douban.json 22KB、youtube.json 39KB、drpy2.min.js 500KB）。
+_GZIP_MIMES = ("application/json", "text/", "application/javascript",
+               "application/x-javascript", "application/xml", "image/svg")
+_GZIP_MIN = 900            # 小响应压了反而更大，直接放过
+_GZIP_MAX = 3 * 1024 * 1024  # 超过 3MB 不做（pg.jar 之类本来就不该压）
+
+
+@app.after_request
+def _gzip_resp(resp):
+    """按需 gzip —— 客户端明明在请求头里声明了 gzip，我们却一直发原文。
+
+    【为什么值得做 —— 2026-10-22 实测】
+    电视端 795 次请求里 795 次带 `Accept-Encoding: gzip`，服务端**一次都没压**。
+    jsm.json 42.5KB 原文、tokenm.json 2.9KB × 每次启动 8 次、lib/*.json 最大 39KB。
+    走 CF/FRP 出口时这些都是纯等待时间；压完体积降到 ~20%。
+    """
+    try:
+        if resp.status_code != 200 or resp.headers.get("Content-Encoding"):
+            return resp
+        if "gzip" not in (request.headers.get("Accept-Encoding") or "").lower():
+            return resp
+        if request.headers.get("Range"):
+            return resp
+        mt = (resp.mimetype or "").lower()
+        if not any(mt.startswith(t) or t in mt for t in _GZIP_MIMES):
+            return resp
+        # send_file 的响应默认 direct_passthrough（流式），要先落地成 bytes 才能压。
+        if resp.direct_passthrough:
+            try:
+                clen = int(resp.headers.get("Content-Length") or 0)
+            except Exception:
+                clen = 0
+            if clen > _GZIP_MAX:
+                return resp
+            resp.direct_passthrough = False
+        data = resp.get_data()
+        if len(data) < _GZIP_MIN or len(data) > _GZIP_MAX:
+            return resp
+        cz = _gzip.compress(data, 5)
+        if len(cz) >= len(data):
+            return resp
+        resp.set_data(cz)
+        resp.headers["Content-Encoding"] = "gzip"
+        resp.headers["Content-Length"] = str(len(cz))
+        resp.headers.add("Vary", "Accept-Encoding")
+    except Exception:
+        pass
+    return resp
+
+
 @app.after_request
 def _access_log(resp):
-    """把每个请求的「来源 IP / UA / 关键头」记下来。
+    """把每个请求的「来源 IP / UA / 关键头 / 耗时」记下来。
 
     电视机「配置获取失败」这类问题，光看服务端 200 是分不清
     「客户端没连上」和「客户端拿到但解析失败」的——这条日志能直接分辨。
+    `ms` 是 2026-10-22 补的：复盘「打开很慢」时必须知道**哪一个请求**慢，
+    没有耗时就只能靠猜。
     """
     try:
         os.makedirs(C.LOG_DIR, exist_ok=True)
@@ -103,12 +164,17 @@ def _access_log(resp):
             nbytes = -1 if resp.direct_passthrough else len(resp.get_data())
         except Exception:
             nbytes = -1
+        try:
+            ms = int((time.time() - getattr(g, "_t0", time.time())) * 1000)
+        except Exception:
+            ms = -1
         rec = {
             "t": time.strftime("%Y-%m-%d %H:%M:%S"),
             "ip": _client_ip(),
             "m": request.method, "p": request.path,
             "q": request.query_string.decode("utf-8", "ignore")[:1000],
             "s": resp.status_code,
+            "ms": ms,
             "ua": (request.headers.get("User-Agent") or "")[:160],
             "ae": request.headers.get("Accept-Encoding") or "",
             "range": request.headers.get("Range") or "",
@@ -179,6 +245,9 @@ def _access_log(resp):
 POOL = {}                 # { TAG: {tag, api, proxy, rules, name, domains:[...]} }
 REGISTRY = {}
 _last_render = {"ts": 0, "jsm": None}
+# 接口顺序/显隐的编辑锁：move 需要「读当前顺序 → 改 → 重渲染」原子完成，
+# 否则连点两下箭头会各自基于旧顺序计算，第二次把第一次的移动吞掉。
+_SITEORDER_LOCK = threading.RLock()
 F_HEALTH_STATE = C.F_HEALTH_STATE          # 兼容旧引用：{TAG: {alive, ts, streak, notified_offline}}
 
 # ----------------------------------------------------------------------------
@@ -364,6 +433,12 @@ def do_sync():
     stat = sync.sync_pool(POOL, REGISTRY)
     _flush()
     do_render()
+    # 手动同步也要留档：维护页「上游源」读的是 state，只存 last_daily_stat
+    # 的话，点「上游同步」之后页面还是显示上一次巡检的数字（甚至空的）。
+    try:
+        store.set_state(last_sync_stat=stat, last_sync=int(time.time()))
+    except Exception:
+        pass
     return stat
 
 
@@ -387,7 +462,9 @@ def do_repair(reason="manual"):
         "elapsed": round(time.time() - t0, 1),
         "sync": {"sources": len(sync_stat.get("sources", [])),
                  "new_domains": sync_stat.get("new_domains", 0),
-                 "harvested": sync_stat.get("harvested", 0)},
+                 "harvested": sync_stat.get("harvested", 0),
+                 "pkg_added": sync_stat.get("pkg_added", 0),
+                 "detail": sync_stat.get("source_detail", [])},
         "checked": check_stat["checked"],
         "alive": check_stat["alive"],
         "fixed": fixed,
@@ -444,6 +521,8 @@ def do_repair_bg(reason="api"):
             "sources": len(sync_stat.get("sources", [])),
             "new_domains": sync_stat.get("new_domains", 0),
             "harvested": sync_stat.get("harvested", 0),
+            "pkg_added": sync_stat.get("pkg_added", 0),
+            "detail": sync_stat.get("source_detail", []),
         })
 
         _repair_set(stage="check", step=2, note="全池巡检（逐个地址探测可用性）")
@@ -491,9 +570,10 @@ def do_daily():
             {"tags": len(POOL), "alive": st["domains_usable"],
              "total": st["domains_total"], "alive_all": st["domains_alive"],
              "full": st["domains_full"],
-             "usable_tags": sum(1 for t in _tag_alive().values() if t > 0),
+            "usable_tags": sum(1 for t in _tag_alive().values() if t > 0),
              "sync_sources": stat["sync"]["sources"],
              "new_domains": stat["sync"]["new_domains"] + stat["sync"]["harvested"],
+             "pkg_added": stat["sync"].get("pkg_added", 0),
              "fixed": len(recovered)},
             offline, recovered), dedup_key="daily", dedup_sec=3600 * 20)
     store.set_state(last_daily=int(time.time()), last_daily_stat=stat)
@@ -510,10 +590,34 @@ def do_render(mode=None):
 
 
 def get_config(force=False):
-    """取当前配置：超过 60s 或强制时重新生成"""
-    if force or not _last_render["jsm"] or time.time() - _last_render["ts"] > 60:
+    """取当前配置。
+
+    【2026-10-22 改为 stale-while-revalidate】
+    原来是「超过 60s 就在**这次请求里**重新渲染」，实测首次渲染 378ms ——
+    设备空闲超过 60s 后必然吃这一下；走 CF/FRP 时还要叠加隧道 RTT，
+    表现为「刚打开 App 那一下特别慢」。
+    现在渲染交给后台线程（_render_keeper），请求路径只读内存里的成品：
+    哪怕它比 60s 旧一点，也远好过让客户端干等 378ms。
+    """
+    if force or not _last_render["jsm"]:
         do_render()
     return _last_render["jsm"]
+
+
+def _render_keeper():
+    """后台保持配置常新：只要有成品，请求路径就再也不渲染。
+
+    每 45s 检查一次（比原来 60s 的过期窗口更密），渲染成本 0.38s，
+    折算 CPU 占用 <1%，换来设备侧「零等待」。
+    """
+    time.sleep(3)
+    while True:
+        try:
+            if time.time() - _last_render["ts"] >= 45:
+                do_render()
+        except Exception as e:
+            store.log_event("error", f"后台重渲染失败: {type(e).__name__}: {e}")
+        time.sleep(5)
 
 
 # ----------------------------------------------------------------------------
@@ -531,11 +635,40 @@ def scheduler():
                 do_check()
             if now - st.get("last_sync", 0) >= C.SYNC_INTERVAL:
                 do_sync()
+            if now - st.get("last_epbench", 0) >= C.EPB_INTERVAL:
+                do_epbench()
             if _due_daily():
                 do_daily()
         except Exception as e:
             store.log_event("error", f"调度异常: {type(e).__name__}: {e}")
         time.sleep(60)
+
+
+def do_epbench(reason="定时"):
+    """定时测速入口地址，并让渲染口径按当前档位决定要不要换。
+
+    刻意**串行**（epbench.run 内部就是串的）：并发会自己把出口挤爆，
+    测出来的全是假延迟 —— 与 health.check_all 的教训同源。
+    """
+    try:
+        bench = epbench.run()
+        dec = renderbase.decide(bench)
+        store.set_state(last_epbench=int(time.time()))
+        rows = [x for x in (bench.get("rows") or []) if x.get("ok")]
+        if rows:
+            store.log_event("endpoints",
+                            "入口测速（%s）：%s" % (
+                                reason, "；".join(
+                                    "%s %sms/%sms" % (x.get("label") or x.get("kind"),
+                                                      x.get("jsm_ms"), x.get("big_ms"))
+                                    for x in rows)))
+        if dec.get("changed"):
+            store.log_event("render", "渲染口径已切换：%s" % dec.get("reason"))
+            do_render()      # 口径变了，重渲染让下一次下发就带上
+        return {"ok": True, "bench": bench, "decide": dec}
+    except Exception as e:
+        store.log_event("error", f"入口测速失败: {type(e).__name__}: {e}")
+        return {"ok": False, "error": str(e)}
 
 
 def _due_daily():
@@ -574,7 +707,7 @@ def _jsm_body(req, tail):
     jsm = get_config()
     suffix = ""
     if getattr(C, "ABS_PATHS", True):
-        base, pfx = absbase.site_base(req, C.PUBLIC_BASE or "")
+        base, pfx = absbase.site_base(req, renderbase.current() or "")
         if base:
             suffix = base
             jsm = absbase.absolutize(jsm, base, prefix=pfx)
@@ -623,8 +756,10 @@ def hai_index():
     return jsonify({
         "package": C.PKG_NAME,
         "version": st.get("version", "1.0.0"),
-        "config": f"{C.PUBLIC_BASE}/hai/jsm.json" if C.PUBLIC_BASE else "/hai/jsm.json",
-        "jar": f"{C.PUBLIC_BASE}/hai/pg.jar" if C.PUBLIC_BASE else "/hai/pg.jar",
+        "config": (f"{renderbase.current()}/hai/jsm.json"
+                    if renderbase.current() else "/hai/jsm.json"),
+        "jar": (f"{renderbase.current()}/hai/pg.jar"
+                 if renderbase.current() else "/hai/pg.jar"),
         "sites": len(get_config().get("sites", [])),
         "last_health": st.get("last_health", 0),
         "last_daily": st.get("last_daily", 0),
@@ -650,7 +785,10 @@ def hai_lib(p):
     if p.replace("\\", "/").lower() == "tokenm.json":
         return _tokenm(p)
     d = os.path.join(_pkg_dir(), "lib")
-    return _safe_send(d, p)
+    # max_age：包内 lib 资源是静态的（换包才变），给 5 分钟缓存能让设备
+    # 重新打开时直接命中本地缓存，少一轮往返。tokenm.json 走上面的动态分支，
+    # 不受影响（它是 CK/代理的载体，必须每次现取）。
+    return _safe_send(d, p, max_age=300)
 
 
 # ----------------------------------------------------------------------------
@@ -832,9 +970,11 @@ def _tokenm(p):
                             "hint": "原始报文已记入 logs/probe.jsonl"})
 
     # ---- 读取路径 ----
-    base, pfx = absbase.site_base(request, C.PUBLIC_BASE or "")
+    # 回落用渲染口径；正常情况 absbase 自己能从请求 Host 推出正确 base
+    base, pfx = absbase.site_base(request, renderbase.current() or "")
     # 中枢根（不含配置根目录）：/gw/<tag>/<path> 是绝对路由，不能用 base 拼
-    hub = (absbase.base_from_request(request, C.PUBLIC_BASE or "") + C.PREFIX).rstrip("/")
+    hub = (absbase.base_from_request(request, renderbase.current() or "")
+           + C.PREFIX).rstrip("/")
     lan = C.CK_PUBLIC or _is_lan()
     body = ckvault.render_text(lan=lan, base=base, prefix=pfx, hub=hub)
     etag = '"ck-%d-%s"' % (ckvault.version(), hashlib.md5(body.encode()).hexdigest()[:10])
@@ -843,15 +983,33 @@ def _tokenm(p):
                                              "X-CK-Version": str(ckvault.version())})
     if request.method == "HEAD":
         return Response("", 200, headers={
+            "Cache-Control": _tokenm_cache_ctl(),
             "ETag": etag, "X-CK-Version": str(ckvault.version()),
             "X-CK-Scope": "lan" if lan else "public-masked"})
     return Response(body, mimetype="application/json; charset=utf-8", headers={
-        "Cache-Control": "no-cache, must-revalidate",
+        "Cache-Control": _tokenm_cache_ctl(),
         "ETag": etag,
         "X-CK-Version": str(ckvault.version()),
         "X-CK-Scope": "lan" if lan else "public-masked",
         "Access-Control-Allow-Origin": "*",
     })
+
+
+def _tokenm_cache_ctl():
+    """tokenm.json 的缓存策略。
+
+    【为什么按开关切换 —— 2026-10-22】CK 注入与外部中转都关掉之后，
+    render_text() 返回的就是**模板原样**（实测 102/102 字段零差异），内容只随
+    host 变、不随请求变。但老策略一律 `no-cache`，于是端每启动一次要**现取 8 次**
+    tokenm.json（实测 345 次 / 一段时间），每次都是一趟 CF 往返 ≈0.9s —— 这是
+    「打开 App 半天不出数据」的主要可控项。改成 max-age 后首次之后的 7 次全走
+    设备本地缓存，零往返。
+
+    一旦重新开启 CK 注入 / 中转改写，内容就变成动态的，立刻退回 no-cache。
+    """
+    if getattr(C, "CK_SYNC_ENABLED", False) or getattr(C, "RELAY_REWRITE", False):
+        return "no-cache, must-revalidate"
+    return "public, max-age=300"
 
 
 def _check_ck_source():
@@ -871,7 +1029,10 @@ def tokenm_dynamic():
 @bp.route("/hai/js/<path:p>")
 def hai_js(p):
     d = os.path.join(_pkg_dir(), "js")
-    return _safe_send(d, p)
+    # js/*.js 只有换包才变，给 5 分钟缓存：端一次启动会重复取同一批脚本，
+    # 有 max-age 后 okhttp 直接吃本地缓存，不再走 CF 往返（实测端从不发
+    # If-None-Match，所以光有 ETag 不会产生 304，必须给 max-age）。
+    return _safe_send(d, p, max_age=300)
 
 
 @bp.route("/hai/pg.jar")
@@ -879,15 +1040,18 @@ def hai_jar():
     f = os.path.join(_pkg_dir(), "pg.jar")
     if not os.path.exists(f):
         return "not found", 404
+    # 4.6MB，每次启动都全量拉一遍太浪费；换包后最多 5 分钟内端才拿到新版，
+    # 而换包本身要求端重启 App 才生效，不冲突。
     return send_from_directory(_pkg_dir(), "pg.jar",
-                               mimetype="application/java-archive")
+                               mimetype="application/java-archive",
+                               max_age=300)
 
 
-def _safe_send(d, p):
+def _safe_send(d, p, max_age=0):
     full = os.path.normpath(os.path.join(d, p))
     if not full.startswith(os.path.normpath(d)):
         return "forbidden", 403
-    return send_from_directory(d, p)
+    return send_from_directory(d, p, max_age=max_age)
 
 
 @bp.route("/lib/<path:p>")
@@ -898,7 +1062,7 @@ def lib_assets(p):
     full = os.path.normpath(os.path.join(d, p))
     if not full.startswith(os.path.normpath(d)):
         return "forbidden", 403          # 目录穿越防护
-    return send_from_directory(d, p)
+    return send_from_directory(d, p, max_age=300)
 
 
 @bp.route("/js/<path:p>")
@@ -907,7 +1071,7 @@ def js_assets(p):
     full = os.path.normpath(os.path.join(d, p))
     if not full.startswith(os.path.normpath(d)):
         return "forbidden", 403
-    return send_from_directory(d, p)
+    return send_from_directory(d, p, max_age=300)
 
 
 # ----------------------------------------------------------------------------
@@ -974,7 +1138,7 @@ def api_status():
         "pool": s,
         "tags": len(POOL),
         "sources": len(REGISTRY),
-        "public_base": C.PUBLIC_BASE,
+        "public_base": renderbase.current(),
         "pkg_dir": C.PKG_DIR,
         "pkg_ok": os.path.isdir(C.PKG_DIR),
         "notify_enabled": notify.enabled(),
@@ -1004,6 +1168,7 @@ def api_sites():
     查询参数：
       ?status=offline   只看失效的
       ?brief=1          只返回汇总 + 地址，不要明细（消息短）
+      ?order=status     老口径（失效优先）；默认按**实时接口顺序**（下行顺序）
     """
     only = (request.args.get("status") or "").strip()
     # 用**实际下发的那一份**（get_config 就是渲染后写进 hai 包的内容）算明细，
@@ -1012,12 +1177,172 @@ def api_sites():
         cur = get_config()
     except Exception:
         cur = None
-    rep = report.sites_report(POOL, jsm=cur if cur else None)
+    rep = report.sites_report(POOL, jsm=cur if cur else None,
+                              order_by=(request.args.get("order") or "config"))
     if request.args.get("brief") in ("1", "true", "yes"):
         rep.pop("items", None)
     elif only:
         rep["items"] = [x for x in rep["items"] if x["status"] == only]
     return jsonify(rep)
+
+
+def _tail_lines(path, max_bytes=512 * 1024):
+    """只读文件尾部若干字节并切行 —— access.jsonl 可以很大，不能整份读。"""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if size > max_bytes:
+                f.seek(-max_bytes, os.SEEK_END)
+                f.readline()          # 丢掉被切断的半行
+            data = f.read()
+        return data.decode("utf-8", "ignore").splitlines()
+    except Exception:
+        return []
+
+
+@bp.route("/api/clientpull")
+def api_clientpull():
+    """电视/盒子「最后一次拉配置」的时间 —— 判断改完顺序到底生效没有。
+
+    为什么非要有这个：端（FongMi 壳）**不做任何 HTTP 缓存**，
+    `VodConfig.load()` 每次都走 `Decoder.getJson(url, TAG)` 真发请求，
+    也不发 If-None-Match。真正拦住新版的是 `BaseConfig.ensureLoaded()`
+    里的 `if (isLoaded()) return;`：进程活着、sites 非空，就再也不会拉。
+    所以「电视有没有拿到新顺序」唯一的判据就是**它有没有来请求**。
+    """
+    rows = []
+    for line in reversed(_tail_lines(F_ACCESS)):
+        if "/hai/jsm.json" not in line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        ip = str(rec.get("ip") or "")
+        ua = str(rec.get("ua") or "")
+        # 排除本机自检（服务器自己会以 127.0.0.1 + okhttp 拉一遍）
+        if ip.startswith("127.") or ip in ("::1", ""):
+            continue
+        if ua.lower().startswith(("python", "curl", "wget")):
+            continue
+        rows.append({"t": rec.get("t"), "ip": ip, "ua": ua[:40],
+                     "s": rec.get("s"), "ms": rec.get("ms"), "len": rec.get("len")})
+        if len(rows) >= 12:
+            break
+    last = rows[0] if rows else None
+    ago = 0
+    if last:
+        try:
+            ago = int(time.time() - time.mktime(
+                time.strptime(str(last["t"]), "%Y-%m-%d %H:%M:%S")))
+        except Exception:
+            ago = 0
+    return jsonify({"ok": True, "now": int(time.time()), "last": last,
+                    "ago": ago, "recent": rows,
+                    "note": "端不做 HTTP 缓存，每次加载都是真请求；App 进程没重启就不会再拉。"})
+
+
+@bp.route("/api/siteorder", methods=["GET", "POST"])
+def api_siteorder():
+    """接口顺序与显隐的手动编辑（维护页「接口明细」卡片的编辑模式）。
+
+    GET   返回当前生效顺序（含隐藏项）+ 配置摘要
+    POST  动作：
+      {"action":"move","key":"xxx","dir":"up|down"}   上移/下移一位
+      {"action":"hide","key":"xxx"}                   隐藏（不再下发）
+      {"action":"show","key":"xxx"}                   恢复显示
+      {"action":"order","keys":[...]}                 整体覆盖顺序
+      {"action":"reset","what":"all|order|hidden"}    重置
+
+    每次动作都会**立即重渲染**再返回（用户要求「完成编辑后实时更新」），
+    所以客户端下一次拉 jsm.json 就是新顺序；已经加载过的设备要重启 App
+    才会重新拉配置（端侧缓存，见 memory 第 32 条）。
+    """
+    global _last_render
+    if request.method == "GET":
+        return jsonify(_siteorder_snapshot())
+
+    body = request.get_json(silent=True) or {}
+    act = str(body.get("action") or "").strip()
+    key = str(body.get("key") or "").strip()
+    msg = ""
+
+    with _SITEORDER_LOCK:
+        if act == "move":
+            direction = "up" if str(body.get("dir")) in ("up", "1", -1) else "down"
+            cur = [str(s.get("key") or "") for s in (get_config() or {}).get("sites") or []]
+            if not cur:
+                return jsonify({"ok": False, "error": "当前配置为空，先渲染一次"}), 409
+            new = siteorder.move(key, direction, cur)
+            if new is None:
+                return jsonify({"ok": False, "error": "接口不在当前列表里：%s" % key}), 404
+            msg = "已%s移一位" % ("上" if direction == "up" else "下")
+        elif act in ("hide", "show"):
+            if not key:
+                return jsonify({"ok": False, "error": "缺少 key"}), 400
+            if act == "hide":
+                siteorder.hide(key)
+                msg = "已隐藏，客户端接口列表中不再出现"
+            else:
+                siteorder.show(key)
+                msg = "已恢复显示"
+        elif act == "order":
+            keys = [str(k) for k in (body.get("keys") or [])]
+            if not keys:
+                return jsonify({"ok": False, "error": "keys 不能为空"}), 400
+            siteorder.set_order(keys)
+            msg = "顺序已保存"
+        elif act == "reset":
+            what = str(body.get("what") or "all")
+            siteorder.reset(what)
+            msg = "已重置（%s），可点「撤销上次重置」恢复" % what
+        elif act == "undo":
+            r = siteorder.undo()
+            if not r:
+                return jsonify({"ok": False, "error": "没有可撤销的记录"}), 404
+            msg = "已撤销，恢复到 顺序 %d 项 / 隐藏 %d 项" % (
+                len(r.get("order") or []), len(r.get("hidden") or []))
+        else:
+            return jsonify({"ok": False, "error": "未知 action：%s" % act}), 400
+
+        # 立即重渲染 —— 「实时更新在线接口排序和状态」
+        try:
+            do_render()
+        except Exception as e:
+            return jsonify({"ok": False, "error": "重渲染失败：%s: %s"
+                            % (type(e).__name__, e)}), 500
+
+    snap = _siteorder_snapshot()
+    snap.update({"ok": True, "message": msg})
+    return jsonify(snap)
+
+
+def _siteorder_snapshot():
+    """当前生效的顺序 + 隐藏名单 + 每条的展示信息（前端一次拿够）"""
+    cur = []
+    try:
+        cur = (get_config() or {}).get("sites") or []
+    except Exception:
+        cur = []
+    keys = [str(s.get("key") or "") for s in cur]
+    d = siteorder.load()
+    hk = set(d["hidden"])
+    rep = report.sites_report(POOL, jsm={"sites": cur} if cur else None)
+    return {
+        "ok": True,
+        "total": len(keys),
+        "hidden_count": len(hk),
+        "order_count": len(d["order"]),
+        "updated": d["updated"],
+        "order": d["order"],
+        "hidden": d["hidden"],
+        "history": siteorder.history(),
+        "current": [{"key": x.get("key"), "name": x.get("name"),
+                     "hidden": bool(x.get("hidden")), "status": x.get("status"),
+                     "latency": x.get("latency") or 0, "tag": x.get("tag") or "",
+                     "usable": x.get("usable") or 0, "total": x.get("total") or 0}
+                    for x in (rep.get("items") or [])],
+    }
 
 
 @bp.route("/api/pool")
@@ -1399,7 +1724,47 @@ def live_page():
     if not os.path.exists(p):
         return "live page missing", 404
     with open(p, encoding="utf-8") as f:
-        return Response(f.read(), mimetype="text/html; charset=utf-8")
+        resp = Response(f.read(), mimetype="text/html; charset=utf-8")
+    # 监控页必须实时：禁止浏览器/代理缓存旧页面
+    # （踩过的坑：卡片明明上线了，浏览器吃缓存 ⇒ 用户以为没上线）
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+# ----------------------------------------------------------------------------
+# 路由：签到一条龙 · CK 提交与体检
+# ----------------------------------------------------------------------------
+# 【2026-10-23 归位到源码树】这三条路由原来是用补丁脚本打上去的
+# （/opt/oktv-hub/tools/patch_checkin_ck.py），而部署会整体覆盖 app.py
+# ⇒ 每部署一次就丢一次，表现为「签到列表一直读取中…」（前端 fetch 404）。
+# 现在进源码树，部署即携带。
+
+
+@bp.route("/api/checkin/sites")
+def api_checkin_sites():
+    """签到站点清单（是否已配置 + 脱敏预览）"""
+    return jsonify({"sites": checkin_ck.sites_payload()})
+
+
+@bp.route("/api/checkin/save", methods=["POST"])
+def api_checkin_save():
+    """保存某站点 CK 到 DailyCheckIn 配置（/opt/dailycheckin/config/config.json）"""
+    data = request.get_json(silent=True) or {}
+    try:
+        return jsonify(checkin_ck.save_ck(data.get("key", ""),
+                                          data.get("value", "")))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@bp.route("/api/checkin/verify")
+def api_checkin_verify():
+    """CK 体检：?key=TIEBA 单站，否则全部"""
+    key = request.args.get("key")
+    if key:
+        return jsonify(checkin_ck.verify_one(key))
+    return jsonify({"results": checkin_ck.verify_all()})
 
 
 @bp.route("/api/libcheck")
@@ -1433,6 +1798,285 @@ def api_verify():
     """
     deep = request.args.get("deep") in ("1", "true", "yes")
     return jsonify(verify.run(deep=deep))
+
+
+@bp.route("/api/endpoints", methods=["GET", "POST"])
+def api_endpoints():
+    """对外入口地址清单（内网 → FRP → CF）+ 测速 + 渲染口径。
+
+    GET  → {lan, list:[…], bench:{…}, render:{…}}
+    POST → {action: add|remove|reset|set_lan|render_base|bench}
+
+    **三条链路必须分清，别再混**：
+      · `list`    清单 = 「客户端该填哪个地址」→ 决定电视拉包快慢
+      · `bench`   测速 = 「现在哪条最快」的实测
+      · `render`  渲染口径 = 「jsm.json 里 /gw/<TAG>/ 用哪个域名」
+        它**只影响 gateway/dual 模式**，当前 mode=direct 下发配置里一个
+        /gw/ 都没有，所以对客户端速度零影响（详见 core/renderbase.py）。
+    """
+    if request.method == "GET":
+        rows = endpoints.list_ordered()
+        bench = None
+        if request.args.get("bench") in ("1", "true", "yes"):
+            bench = epbench.latest()
+        else:
+            bench = store.load(C.F_EPBENCH, None)
+        return jsonify({
+            "ok": True,
+            "list": rows,
+            "count": len(rows),
+            "file": endpoints.F_ENDPOINTS,
+            "bench": bench,
+            "render": renderbase.info(),
+            "render_base": renderbase.current(),
+            "render_bases": list(getattr(C, "PUBLIC_BASES", []) or []),
+        })
+
+    body = request.get_json(silent=True) or {}
+    act = str(body.get("action") or "add").lower()
+    if act == "add":
+        res = endpoints.add(body.get("url"), kind=str(body.get("kind") or ""),
+                            label=str(body.get("label") or ""))
+    elif act in ("remove", "del", "delete"):
+        res = endpoints.remove(body.get("url"))
+    elif act == "set_lan":
+        res = endpoints.set_lan(body.get("url"))
+    elif act == "reset":
+        res = endpoints.reset()
+    elif act == "render_base":
+        # url 空 = 交回自动/默认；mode: 0关闭 1仅故障切换 2最快优先
+        before = renderbase.current()
+        res = renderbase.set_manual(body.get("url"), reason="维护页手动设置")
+        if res.get("ok") and body.get("mode") is not None:
+            d = renderbase.load()
+            d["mode"] = int(body.get("mode") or 0)
+            renderbase.save(d)
+            res["state"] = d
+        if res.get("ok") and renderbase.current() != before:
+            # 口径一改立刻重渲染，让下一次下发就带上（direct 模式下内容不变，
+            # 但 gateway/dual 下必须重渲染，否则要等 45s 后台线程兜底）
+            do_render()
+        res["render"] = renderbase.info()
+    elif act == "bench":
+        rounds = body.get("rounds")
+        res = {"ok": True, "bench": epbench.run(
+            rounds=int(rounds) if rounds else None)}
+        res["render"] = renderbase.info()
+    elif act == "render_decide":
+        # 手动触发一次「按测速结果决定要不要切」
+        bench = epbench.run()
+        res = {"ok": True, "decide": renderbase.decide(bench), "bench": bench}
+    else:
+        return jsonify({"ok": False, "error": "未知 action：%s" % act}), 400
+    if res.get("ok"):
+        store.log_event("endpoints", "入口地址变更（%s）：%s" % (act, body.get("url") or ""))
+    return jsonify(res), (200 if res.get("ok") else 400)
+
+
+@bp.route("/api/upstream")
+def api_upstream():
+    """上游源体检：源清单 + 最近一次同步的「单源贡献度」。
+
+    用户问「为什么一直没有新接口进来」时，答案必须可查 ——
+    这张表能直接看出：哪个源还活着、覆盖几个 TAG、本次带来几个新域名。
+    """
+    st = store.get_state()
+    # 上游里「PG 没有的站点」登记表（只登记不注入，见 sync.collect_new_sites）
+    new_sites = {}
+    try:
+        p = os.path.join(C.DATA_DIR, "new_sites.json")
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                new_sites = json.load(f)
+    except Exception:
+        new_sites = {}
+    # 手动同步（/api/sync）写 last_sync_stat；每日巡检写 last_daily_stat.sync。
+    # 两者都要认，否则「刚点完同步却看到空表」。
+    lss = dict(st.get("last_sync_stat")
+               or (st.get("last_daily_stat") or {}).get("sync") or {})
+    # 字段名对不上会静默出空表：后端叫 source_detail，页面读的是 detail。
+    # 两个都给，避免以后再踩。
+    if "source_detail" in lss and "detail" not in lss:
+        lss["detail"] = lss["source_detail"]
+
+    # 饭太硬导航页快照 + 各直连源接口地址变化（站源域名 / 接口地址有无更新）
+    nav_sum, feed_st = {}, {}
+    try:
+        nav_sum = navwatch.summary()
+    except Exception as e:
+        nav_sum = {"error": "%s: %s" % (type(e).__name__, e)}
+    try:
+        feed_st = navwatch.feed_state()
+    except Exception as e:
+        feed_st = {"error": "%s: %s" % (type(e).__name__, e)}
+
+    return jsonify({
+        "ok": True,
+        "repos": list(getattr(C, "UPSTREAM_REPOS", []) or []),
+        "feeds": [{"name": f.get("name"), "urls": f.get("urls") or [],
+                   "dead": bool(f.get("dead")), "why": f.get("why", "")}
+                  for f in (getattr(C, "UPSTREAM_FEEDS", []) or [])],
+        "urls": list(getattr(C, "UPSTREAM_URLS", []) or []),
+        "dead": list(getattr(C, "UPSTREAM_DEAD", []) or []),
+        "harvest_sources": list(getattr(C, "HARVEST_SOURCES", []) or []),
+        "pkg_mirrors": list(getattr(C, "UPSTREAM_PKG_MIRRORS", []) or []),
+        "last_sync": st.get("last_sync", 0),
+        "last_sync_source": st.get("last_sync_source", ""),
+        "last_sync_stat": lss,
+        "new_sites": new_sites,
+        "nav": nav_sum,
+        "feed_state": feed_st,
+        "timeout": getattr(C, "UPSTREAM_TIMEOUT", 10),
+    })
+
+
+@bp.route("/api/pkg/status")
+def api_pkg_status():
+    """当前线上包是谁、什么时候换的、有没有备份可回滚"""
+    return jsonify(pkgupdate.status())
+
+
+@bp.route("/api/pkg/history")
+def api_pkg_history():
+    return jsonify(pkgupdate.history(int(request.args.get("limit") or 20)))
+
+
+@bp.route("/api/pkg/compare", methods=["POST"])
+def api_pkg_compare():
+    """只读比对：新包 vs 当前 baseline（不碰线上任何文件）
+
+    body: {"path": "/root/pg-inbox/pg.xxx.zip"} 或 {"url": "https://..."}
+    """
+    body = request.get_json(silent=True) or {}
+    path = str(body.get("path") or "").strip()
+    url = str(body.get("url") or "").strip()
+
+    if url and not path:
+        path = _pkg_fetch_url(url)
+        if not path:
+            return jsonify({"ok": False, "error": "下载失败"}), 502
+
+    if not path:
+        return jsonify({"ok": False, "error": "缺少 path 或 url"}), 400
+    if not pkgupdate.allowed_path(path):
+        return jsonify({"ok": False, "error": "路径不在允许范围（只读 /root/pg-inbox 等）"}), 403
+    if not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "文件不存在：%s" % path}), 404
+
+    return jsonify(pkgupdate.compare(path))
+
+
+@bp.route("/api/pkg/update", methods=["POST"])
+def api_pkg_update():
+    """执行更新：全量解压覆盖 + 重算清单 + 重渲染 + core_ok 闸门 + 失败自动回滚
+
+    body: {"path": "/root/pg-inbox/pg.xxx.zip", "force": false, "reason": "tg:群名"}
+    """
+    g = _pkg_guard()
+    if g:
+        return g
+
+    body = request.get_json(silent=True) or {}
+    path = str(body.get("path") or "").strip()
+    if not path:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    if not pkgupdate.allowed_path(path):
+        return jsonify({"ok": False, "error": "路径不在允许范围"}), 403
+    if not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "文件不存在：%s" % path}), 404
+
+    res = pkgupdate.apply(path, reason=str(body.get("reason") or ""),
+                          force=bool(body.get("force")), pool=POOL)
+    code = 200 if res.get("ok") else 500
+    return jsonify(res), code
+
+
+@bp.route("/api/pkg/rollback", methods=["POST"])
+def api_pkg_rollback():
+    """回滚到某个备份快照"""
+    g = _pkg_guard()
+    if g:
+        return g
+    body = request.get_json(silent=True) or {}
+    bid = str(body.get("backup") or "").strip()
+    if not bid:
+        return jsonify({"ok": False, "error": "缺少 backup（用 /api/pkg/status 查）"}), 400
+    rb = pkgupdate._restore(bid)
+    if rb.get("ok"):
+        try:
+            pkgupdate.libfill.fill()
+            patch.regenerate(POOL)
+        except Exception as e:
+            rb["render_error"] = "%s: %s" % (type(e).__name__, e)
+        store.log_event("pkg", "已回滚 pg 包到快照 %s" % bid)
+    return jsonify(rb), (200 if rb.get("ok") else 500)
+
+
+@bp.route("/api/pkg/upload", methods=["POST"])
+def api_pkg_upload():
+    """手动兜底通道：网页直传 zip（TG 完全不通时用）
+
+    multipart 字段名 file；带 auto=1 时校验通过即直接更新。
+    """
+    g = _pkg_guard()
+    if g:
+        return g
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"ok": False, "error": "没有收到文件（字段名 file）"}), 400
+
+    from werkzeug.utils import secure_filename
+    inbox = "/root/pg-inbox"
+    os.makedirs(inbox, exist_ok=True)
+    name = secure_filename(os.path.basename(f.filename)) or "upload.zip"
+    dst = os.path.join(inbox, name)
+    f.save(dst)
+    size = os.path.getsize(dst)
+
+    ins = pkgupdate.inspect(dst)
+    out = {"ok": ins["ok"], "path": dst, "size": size,
+           "size_text": pkgupdate._human(size), "inspect": ins}
+    if not ins["ok"]:
+        return jsonify(out), 400
+
+    if request.form.get("auto") in ("1", "true", "yes"):
+        res = pkgupdate.apply(dst, reason="web-upload", pool=POOL)
+        out["update"] = res
+        out["ok"] = bool(res.get("ok"))
+        return jsonify(out), (200 if out["ok"] else 500)
+    return jsonify(out)
+
+
+def _pkg_fetch_url(url):
+    """把 http(s) 链接下到 /root/pg-inbox（只允许 http/https，5 分钟超时）"""
+    if not url.lower().startswith(("http://", "https://")):
+        return None
+    import requests
+    inbox = "/root/pg-inbox"
+    os.makedirs(inbox, exist_ok=True)
+    name = url.split("?")[0].rstrip("/").split("/")[-1] or ("pkg-%d.zip" % int(time.time()))
+    if not name.lower().endswith(".zip"):
+        name += ".zip"
+    dst = os.path.join(inbox, name)
+    try:
+        r = requests.get(url, timeout=300, stream=True, headers={"User-Agent": C.UA})
+        r.raise_for_status()
+        with open(dst, "wb") as fp:
+            for chunk in r.iter_content(1 << 20):
+                if chunk:
+                    fp.write(chunk)
+        return dst
+    except Exception as e:
+        store.log_event("error", "下载更新包失败 %s: %s: %s" % (url, type(e).__name__, e))
+        return None
+
+
+def _pkg_guard():
+    """高危操作的来源校验：只允许局域网 / 本机（/api 公网入口已被 CF 拦，这是第二道）"""
+    ip = _client_ip()
+    if not _is_lan(ip):
+        return jsonify({"ok": False, "error": "仅允许局域网/本机调用（来源 %s）" % ip}), 403
+    return None
 
 
 @bp.route("/api/access")
@@ -1498,6 +2142,8 @@ def main():
     else:
         t = threading.Thread(target=scheduler, daemon=True)
         t.start()
+        # 配置渲染常驻后台：请求路径不再承担 378ms 的渲染成本
+        threading.Thread(target=_render_keeper, daemon=True).start()
         store.log_event("boot", f"HTTP 服务监听 {C.HOST}:{C.PORT}")
         _serve()
 

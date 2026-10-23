@@ -202,6 +202,10 @@ class HaiPackagePlugin extends BasePlugin {
             `接口 ${j.total} 个 ｜ 正常 ${j.ok} ｜ 失效 ${j.offline}`
                 + ` ｜ 观察 ${j.watch} ｜ 存疑 ${j.guard || 0}`
                 + ` ｜ 未巡检 ${j.unknown || 0}`,
+            (j.hidden
+                ? `🚫 已隐藏 ${j.hidden} 个（维护页手动隐藏，客户端「接口选择」里不出现；`
+                  + `下发 ${j.visible} 个）`
+                : `下发 ${j.visible || j.total} 个（与客户端接口列表一致）`),
             `域名池 ${pool.domains_alive}/${pool.domains_total} 存活`
                 + `（可用 ${pool.domains_usable}）`,
             `上次巡检：${this._ts(this._lastCheck(j))}`,
@@ -318,7 +322,7 @@ class HaiPackagePlugin extends BasePlugin {
                 : `正常 ${j.ok} ｜ 失效 ${j.offline} ｜ 观察 ${j.watch}`
                     + ` ｜ 存疑 ${j.guard || 0} ｜ 未巡检 ${j.unknown || 0}`
                     + ` ｜ 内置 ${j.local_sites}`,
-            kw ? '' : '排序：失效 → 观察 → 存疑 → 正常（有远程域名的接口）',
+            kw ? '' : '排序：与客户端「接口选择」页一致（维护页可手动调整）',
             '───────────────',
         ].filter((x) => x !== '').join('\n');
 
@@ -380,7 +384,7 @@ class HaiPackagePlugin extends BasePlugin {
             extra = `域名 ${x.usable}/${x.total}`;
             if (x.streak) extra += `（已 ${x.streak} 轮无可用）`;
         }
-        return `${icon} ${label} · ${extra}${x.stale_mark ? ' · 🔖标注过期' : ''}`;
+        return `${icon} ${label} · ${extra}${x.hidden ? ' · 🚫已隐藏' : ''}${x.stale_mark ? ' · 🔖标注过期' : ''}`;
     }
 
     // ------------------------------ 修复（后台 + 分阶段进度）------------------------------

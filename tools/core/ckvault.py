@@ -32,6 +32,7 @@ import urllib.parse
 from . import absbase
 from . import ckcheck
 from . import config as C
+from . import renderbase
 from . import store
 
 # ------------------------------------------------------------------ 渠道定义
@@ -603,10 +604,11 @@ def write_tokenm():
         if os.path.isdir(lib):
             p = os.path.join(lib, "tokenm.json")
             tmp = p + ".tmp"
-            # 公网入口把 /hai 挂在根下，所以资源根是 PUBLIC_BASE + /hai
-            base = (C.PUBLIC_BASE + "/hai") if C.PUBLIC_BASE else ""
+            # 公网入口把 /hai 挂在根下，所以资源根是渲染口径 + /hai
+            base0 = renderbase.current()
+            base = (base0 + "/hai") if base0 else ""
             with open(tmp, "w", encoding="utf-8") as f:
-                f.write(render_text(True, base=base, prefix="", hub=C.PUBLIC_BASE))
+                f.write(render_text(True, base=base, prefix="", hub=base0))
             os.replace(tmp, p)
             return p
     except Exception as e:

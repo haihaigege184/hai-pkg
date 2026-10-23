@@ -16,6 +16,7 @@ import urllib3
 
 from . import config as C
 from . import health
+from . import renderbase
 
 urllib3.disable_warnings()
 
@@ -118,7 +119,11 @@ def _rewrite_location(loc, base, tag):
         p = urllib.parse.urlparse(loc)
         if not p.netloc:
             return loc
-        pre = C.PUBLIC_BASE
+        # 用实际进来那个请求的 base（app.py 传的是 request 的 Host 推导值），
+        # 而不是全局 PUBLIC_BASE —— 客户端从哪条入口进，跳转就该回到哪条，
+        # 否则在 CF 入口下发的 Location 会指向 gost，跨隧道跟丢。
+        # 拿不到 base 时才回落渲染口径。
+        pre = (base or "").rstrip("/") or renderbase.current()
         if not pre:
             return loc
         tail = p.path.lstrip("/")

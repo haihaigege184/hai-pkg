@@ -10,6 +10,8 @@
 import re
 import urllib.parse
 
+from . import config as C
+
 SPLIT = "$$$"
 # TAG 是 ext 尾部用来区分站点的标识：大写串（WOGG）、小写串（hdhaven）、含数字（4KZN）都出现过。
 _TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]{1,15}$")
@@ -155,6 +157,25 @@ def _strip_www(h):
     return h[4:] if h.startswith("www.") else h
 
 
+def is_retired(tag, url):
+    """该地址是否已被用户判为弃用（见 config.RETIRED_DOMAINS）
+
+    比较口径与 same_site 一致：两边主机名都去掉 www. 后全等。
+    返回 True 的地址一律 **不探测、不算可用、不写回配置**。
+    """
+    hosts = (getattr(C, "RETIRED_DOMAINS", {}) or {}).get(str(tag or ""))
+    if not hosts:
+        return False
+    host = _strip_www(norm_host(url))
+    if not host:
+        return False
+    for h in hosts:
+        hh = _strip_www(norm_host(h if "//" in str(h) else "//" + str(h)))
+        if hh and hh == host:
+            return True
+    return False
+
+
 def build_sources(baseline_jsm):
     """从基线 jsm.json 抽取出所有「带远程地址」的接口源，按 TAG 归档。
 
@@ -181,12 +202,19 @@ def build_sources(baseline_jsm):
 
 
 def merge_domains(pool_entry, candidates, origin="unknown"):
-    """把候选域名并入域名池条目，返回新增列表。已存在（含同站不同后缀）则跳过。"""
+    """把候选域名并入域名池条目，返回新增列表。已存在（含同站不同后缀）则跳过。
+
+    用户已判弃用的域名（config.RETIRED_DOMAINS）**直接拒收** —— 上游配置里
+    往往还留着旧域名，不拦就会被每轮采集重新灌回池里。
+    """
     added = []
+    tag = pool_entry.get("tag") or ""
     known = [d["url"] for d in pool_entry.get("domains", [])]
     for c in candidates:
         nb = norm_base(c)
         if not nb:
+            continue
+        if is_retired(tag, nb):
             continue
         if any(same_site(nb, k) for k in known):
             continue

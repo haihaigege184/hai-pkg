@@ -103,12 +103,25 @@ def run(deep=False):
     out["sites"] = {
         "original": len(o_keys),
         "now": len(n_keys),
+        # 用户主动隐藏的站点不计入「缺失」——否则维护页一点「隐藏」就会让
+        # core_ok 变成 false（missing_keys 非空）。豁免**只对这张名单生效**：
+        # 名单外的任何缺失照旧报错，红线本身没有放宽。
+        "hidden_keys": [],
         "missing_keys": [k for k in o_keys if k not in nm],
         "added_keys": [k for k in n_keys if k not in set(o_keys)],
         "renamed": renamed,
         "api_changed": api_changed,
         "type_changed": type_changed,
     }
+    try:
+        from . import siteorder
+        hid = siteorder.hidden_keys()
+        if hid:
+            miss_all = out["sites"]["missing_keys"]
+            out["sites"]["hidden_keys"] = sorted(k for k in miss_all if k in hid)
+            out["sites"]["missing_keys"] = [k for k in miss_all if k not in hid]
+    except Exception as e:
+        out["site_order_error"] = f"{type(e).__name__}: {e}"
 
     # ---- 4. ext 里的 baseURL 改写（预期的修复动作）----
     rewritten = []
@@ -180,6 +193,9 @@ def run(deep=False):
     )
     out["verdict"] = "与原版逐项一致（仅按需替换了失效域名）" if core_ok else "存在差异，见明细"
     out["core_ok"] = core_ok
+    out["user_hidden"] = len(out["sites"].get("hidden_keys") or [])
+    if out["user_hidden"]:
+        out["verdict"] += "；另有 %d 个接口是用户主动隐藏（不下发，不算精简）" % out["user_hidden"]
     out["hint"] = ("直播源 lives 属原版内容，本工程从不改写；"
                    "其中 29/36 条 url 指向 127.0.0.1:10079 与 35456，"
                    "那是 pg.jar 与播放壳在设备上起的本地服务，只有在设备端 jar 正常加载时才可用。")

@@ -15,6 +15,7 @@ import os
 from . import config as C
 from . import health
 from . import order as O
+from . import renderbase as RENDER
 from . import sources as S
 from . import store
 
@@ -27,7 +28,10 @@ def load_baseline():
 
 
 def gateway_base(tag):
-    pub = C.PUBLIC_BASE
+    # 走 renderbase 而不是直接读 C.PUBLIC_BASE：只有这一处是「渲染口径」的
+    # 唯一权威来源。默认（OKTV_RENDER_PICK=0 且未手动 pin）返回的仍是
+    # PUBLIC_BASE 第一项，行为与引入该模块前逐字一致。
+    pub = RENDER.current()
     if not pub:
         return None
     return f"{pub}/gw/{tag}/"
@@ -82,10 +86,15 @@ def build(pool, mode="dual", public_base=None):
     """生成修复后的 jsm.json 内容（dict）
 
     mode: direct | gateway | dual
+
+    public_base: 一次性指定渲染口径（= renderbase 的手动 pin）。
+        当前没有任何调用方传它；保留是为了外部脚本仍能覆盖渲染口径，
+        但**改走 renderbase.set_manual**，不再直接改写 C.PUBLIC_BASE 全局
+        —— 否则「页面显示的渲染口径」与「实际渲染用的」会对不上。
     """
     jsm = load_baseline()
     if public_base:
-        C.PUBLIC_BASE = public_base.rstrip("/")
+        RENDER.set_manual(public_base, reason="build(public_base=...) 传入")
 
     hstate = _health_state()
     need = max(1, int(getattr(C, "OFFLINE_CONFIRM_ROUNDS", 2)))
@@ -124,6 +133,10 @@ def build(pool, mode="dual", public_base=None):
             continue
 
         keep = applied.get(tag)
+        # 上一轮写过的地址可能后来被用户判弃用（RETIRED_DOMAINS），此时不能再用它
+        # 兜底 —— 否则「保持上次修复」会把一个已到期弃用的域名继续下发。
+        if keep and S.is_retired(tag, keep):
+            keep = None
         target = None
         if best:
             # 两条「尽量贴近原版」的守则，顺序不能反：

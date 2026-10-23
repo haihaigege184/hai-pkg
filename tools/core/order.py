@@ -14,8 +14,15 @@ App 的「接口选择」页面按 `jsm.json` 里 `sites` 数组的先后顺序�
 
 不改任何站点内容，只重排数组顺序。`verify.py` 的 `core_ok` 判定按 key 集合比较
 （`missing_keys` / `api_changed` / `type_changed`），与顺序无关，所以重排不破红线。
+
+【2026-10-22 增加手动覆盖层】维护页可以上移/下移、可以隐藏某几个接口，见
+`core/siteorder.py`。执行顺序固定为：
+    自动排序（下面这套规则）→ 剔除 hidden → 套用手动 order
+手动顺序**只部分指定也算数**：没被手动点过的接口按自动顺序插在它前一个手动项
+之后（浮点插值），所以新出现的站点不会因为「没写进手动名单」就跑到末尾。
 """
 from . import config as C
+from . import siteorder
 from . import sources as S
 from . import store
 
@@ -62,6 +69,37 @@ def _pin_index(site, table):
     return -1
 
 
+def _apply_manual(sites, manual):
+    """按手动顺序重排；manual 里没有的按「前一个手动项之后」插空。
+
+    为什么用浮点插值而不是「手动项排前面、其余追加」：
+      后者会让换包后新增的站点全部堆到末尾，而它们其实是该按延迟排在中间的；
+      插值能让新站点落在它自动顺序上的邻居附近，视觉上最不突兀。
+    """
+    if not manual or not sites:
+        return sites
+    rank = {k: i for i, k in enumerate(manual)}
+    keys = [str(s.get("key") or "") for s in sites]
+    n = len(keys)
+    pos = {}
+    for i, k in enumerate(keys):
+        if k in rank:
+            pos[i] = float(rank[k])
+            continue
+        p = None
+        for j in range(i - 1, -1, -1):          # 往前找最近的手动项
+            if keys[j] in rank:
+                p = float(rank[keys[j]]) + 0.0001 * (i - j)
+                break
+        if p is None:                            # 前面没有 → 往后找
+            for j in range(i + 1, n):
+                if keys[j] in rank:
+                    p = float(rank[keys[j]]) - 0.0001 * (j - i)
+                    break
+        pos[i] = p if p is not None else (len(manual) + 0.0001 * i)
+    return [sites[i] for i in sorted(range(n), key=lambda i: (pos[i], i))]
+
+
 def apply(jsm, pool, pins_top=None, pins_next=None):
     """就地重排 jsm["sites"]，返回统计信息"""
     sites = jsm.get("sites") or []
@@ -98,8 +136,30 @@ def apply(jsm, pool, pins_top=None, pins_next=None):
 
     before = [s.get("key") for s in sites]
     ordered = [s for _, s in sorted(enumerate(sites), key=sort_key)]
+
+    # ① 用户隐藏的接口不下发（客户端「接口选择」页就看不到）
+    hidden = set()
+    manual = []
+    try:
+        so = siteorder.load()
+        hidden = set(so.get("hidden") or [])
+        manual = list(so.get("order") or [])
+    except Exception as e:                       # 文件坏了就当没配过，不能因此不出配置
+        store.log_event("error", "读取 site_order.json 失败: %s: %s" % (type(e).__name__, e))
+    dropped = []
+    if hidden:
+        keep = []
+        for s in ordered:
+            if str(s.get("key") or "") in hidden:
+                dropped.append(str(s.get("key") or ""))
+            else:
+                keep.append(s)
+        ordered = keep
+    # ② 套用用户手动顺序（覆盖延迟排序）
+    ordered = _apply_manual(ordered, manual)
+
     jsm["sites"] = ordered
-    after = [s.get("key") for s in ordered]
+    after = [str(s.get("key") or "") for s in ordered]
 
     pinned = sum(1 for s in ordered if _pin_index(s, top) >= 0 or _pin_index(s, nxt) >= 0)
     with_lat = sum(1 for s in ordered if lat_of(s) is not None)
@@ -126,4 +186,5 @@ def apply(jsm, pool, pins_top=None, pins_next=None):
                        {"head": head_after, "ts": int(__import__("time").time())})
         except Exception:
             pass
-    return {"enabled": True, "moved": moved, "pinned": pinned, "with_latency": with_lat}
+    return {"enabled": True, "moved": moved, "pinned": pinned, "with_latency": with_lat,
+            "manual": len(manual), "hidden": len(hidden), "dropped": dropped}
