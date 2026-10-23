@@ -256,14 +256,27 @@
 </div>
 <div class="scroll" style="max-height:320px"><div id="nslist"><div class="empty">读取中…</div></div></div>
 <div class="warn">
+  <b>「加入」按钮：</b>点一下就把这个站源加进 PG 包，端上「接口选择」页里能直接用。
+  加入要过<b>三道闸</b>，任何一道不过就不加：<br/>
+  ① <b>能力闸</b>（静态）—— 本包 <code>pg.jar</code> 里必须有对应的解析类
+  （<code>csp_XXX</code> → <code>com.github.catovid.spider.XXX</code>）。
+  实测上游登记的 307 个新站源里<b>只有 28 条</b>的解析类在本包里，
+  其余加进去端上只会多出一堆「解析器不存在」的死条目；<br/>
+  ② <b>探测闸</b>（动态）—— 真连一次确认接口有响应。探测不通会先问你
+  「仍要强行加入吗」，不点就不加；<br/>
+  ③ <b>落盘闸</b> —— 通过后写进 <code>data/added_sites.json</code>，由
+  <code>patch.build()</code> 注入配置（<b>不改 baseline 母本</b>，换包也不丢）。<br/>
+  新加入的站点用<b>独立 TAG</b>（<code>ADD_xxx</code>），不与原版站点共用 TAG ——
+  上游常见「多个不同站共用一个解析类」（<code>csp_TTian</code> 同时是「追剧」和「天天」），
+  共用 TAG 会让 A 站的地址被 B 站的域名顶掉。<br/>
+  <b>端上要彻底退出 App 再打开才会看到新接口</b>（App 只在启动时拉一次配置）。<br/>
   <b>为什么「新增一直是 0」：</b>实测 8 个社区源里能找到的域名与池内<b>完全重合</b> ——
   这些网盘聚合站（玩偶/木偶/蜡笔/盘Ta…）根本不进公开 TVBox 配置，社区里翻来覆去就是同一份地址；
   且 8 个源里只有 <code>qist/tvbox</code> 还在每天更新（其余最近一次推送是 2024 年）。<br/>
   ⇒ 真正会带来新地址的是两条：<b>① 包内采集</b>（作者发新版时把各站当前域名写进
   <code>js/*.js</code>、<code>lib/*.json</code>，每次同步与每次换包都会扫）；
   <b>② 换 PG 包</b>（新包自带作者在用的域名）。<br/>
-  <b>新站源只登记、不注入</b>：直接往 jsm.json 塞会改变下发内容（且每轮重建会被冲掉），
-  这里先摊出来让你看，挑中的再单独加。判定按 <b>key / api / 归一化站名</b> 三维去重，
+  判定按 <b>key / api / 归一化站名</b> 三维去重，
   所以「玩偶→Wogg 换个写法」不会被误报成新站。
 </div>
 
@@ -862,25 +875,122 @@ function renderNewSites(d){
   const ns = d.new_sites || {};
   const list = ns.sites || [];
   const dead = d.dead || [];
+  const cand = d.newsite || {};
+  const citems = cand.items || [];
+  const byKey = {};
+  for(const it of citems){ byKey[it.key] = it; }
+  const addedList = cand.added || [];
   $('nsverdict').className = 'big ' + (list.length ? 'hit' : 'miss');
   $('nsverdict').textContent = '＋ ' + list.length + ' 个 PG 里没有的站源'
     + (ns.at ? '（' + ts2t(ns.at) + ' 抓的）' : '');
+  let jarTxt = '';
+  if(cand.jar){
+    jarTxt = ' · 本包 jar 解析类 <b>'+(cand.jar.spider_classes||0)+'</b> 个';
+  }
+  const canAdd = citems.filter(x=>x.ok && !x.added).length;
+  const dupAdd = citems.filter(x=>x.kind==='dup').length;
   $('nsstat').innerHTML = '已排除 ' + (ns.known||0) + ' 个已有 key / ' + (ns.known_api||0) + ' 个已有 api'
     + ' · 判定：key、api、归一化站名 任一命中即算已有'
-    + (dead.length ? ' · 连不上/解不开的源 ' + dead.length + ' 个' : '');
+    + (dead.length ? ' · 连不上/解不开的源 ' + dead.length + ' 个' : '')
+    + jarTxt
+    + ' · <b style="color:var(--green)">可加入 ' + canAdd + '</b> 个'
+    + (dupAdd ? ' · 与原版重复 ' + dupAdd + ' 个' : '')
+    + (addedList.length ? ' · 已加入 <b style="color:var(--green)">'+addedList.length+'</b> 个' : '');
   if(!list.length){
     $('nslist').innerHTML = '<div class="empty">暂无（点上方「上游同步」重新抓一次）</div>';
     return;
   }
-  let h = '<table><thead><tr><th>key</th><th>站名</th><th>api</th><th>域名</th><th>来源</th></tr></thead><tbody>';
+  let h = '<table><thead><tr><th>key</th><th>站名</th><th>api</th><th>域名</th><th>来源</th><th>可加性</th><th>操作</th></tr></thead><tbody>';
   for(const s of list){
+    const it = byKey[s.key] || {};
     h += '<tr><td class="tag">'+esc(s.key)+'</td>'
       + '<td>'+esc(s.name||'')+'</td>'
       + '<td class="kv">'+esc(s.api||'')+'</td>'
       + '<td class="url">'+esc((s.base||'').slice(0,42))+'</td>'
-      + '<td class="kv">'+esc((s.source||'').replace(/^https?:\/\//,'').slice(0,34))+'</td></tr>';
+      + '<td class="kv">'+esc((s.source||'').replace(/^https?:\/\//,'').slice(0,30))+'</td>'
+      + '<td class="kv">'+nsCell(it)+'</td>'
+      + '<td>'+nsBtn(s.key, it)+'</td></tr>';
   }
   $('nslist').innerHTML = h+'</tbody></table>';
+}
+
+/* 新站源的「可加性」单元格 */
+function nsCell(it){
+  if(!it || !it.ok && !it.added && !it.reason) return '<span class="kv">—</span>';
+  if(it.added) return '<span class="m ok">✓ 已加入</span>';
+  if(it.ok){
+    let w = '';
+    if(it.warnings && it.warnings.length) w = ' <span class="m warn" title="'+esc(it.warnings.join('\n'))+'">注意 '+it.warnings.length+'</span>';
+    return '<span class="m ok">✓ 可加入</span>'+w;
+  }
+  if(it.kind==='dup') return '<span class="m bad" title="'+esc(it.reason||'')+'">重复</span>';
+  return '<span class="m bad" title="'+esc(it.reason||'')+'">✗ 不可加</span>';
+}
+
+/* 新站源的「加入 / 移除」按钮 */
+function nsBtn(key, it){
+  if(it && it.added){
+    return '<button class="d" style="height:20px;font-size:10.5px;padding:0 7px" '
+      + 'onclick="nsRemove(\''+esc(key)+'\')">移除</button>';
+  }
+  if(it && it.ok === false){
+    return '<button disabled title="'+esc(it.reason||'不可加入')+'" '
+      + 'style="height:20px;font-size:10.5px;padding:0 7px">加入</button>';
+  }
+  return '<button class="p" style="height:20px;font-size:10.5px;padding:0 7px" '
+    + 'onclick="nsAdd(\''+esc(key)+'\')">加入</button>';
+}
+
+/* 一键加入 PG 包：过能力闸 + 探测闸，通过后立刻重渲染 */
+async function nsAdd(key, force){
+  const btn = (typeof event!=='undefined' && event && event.target) ? event.target : null;
+  if(btn){ btn.disabled = true; btn.textContent = '…'; }
+  try{
+    const r = await (await fetch('/api/newsite/add', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({key:key, force:!!force})
+    })).json();
+    if(r.ok){
+      const warn = (r.warnings && r.warnings.length)
+        ? '<div class="kv">注意：'+esc(r.warnings.join('；'))+'</div>' : '';
+      msg('<div class="card"><div class="big hit">✅ 已加入 '
+        + esc(r.site && r.site.name ? r.site.name : key)
+        + '</div><div class="kv">'+esc((r.probe && r.probe.reason)||'')
+        + ' · TAG '+esc(r.tag||'')+'</div>'+warn
+        + '<div class="kv">端上需彻底退出 App 再打开才会看到新接口。</div></div>');
+    }else{
+      // 探测不过但允许强行加入 → 追问一次
+      if(r.can_force && !force){
+        if(confirm('探测结果：' + (r.error||'') + '\n\n仍要强行加入吗？强行加入后如果接口确实不通，端上会点不开。')){
+          await nsAdd(key, true);
+          return;
+        }
+        msg('<div class="card"><div class="big miss">⏹ 已取消：'+esc(r.error||'')+'</div></div>');
+      }else{
+        msg('<div class="card"><div class="big miss">✗ 加入失败：'+esc(r.error||'')+'</div></div>');
+      }
+    }
+  }catch(e){
+    msg('<div class="card"><div class="big miss">✗ 请求失败：'+esc(e.message)+'</div></div>');
+  }
+  loadUp();
+  loadSites();
+}
+
+async function nsRemove(key){
+  try{
+    const r = await (await fetch('/api/newsite/remove', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({key:key})
+    })).json();
+    msg(r.ok
+      ? '<div class="card"><div class="big hit">🗑 已移除 '+esc(key)+'</div></div>'
+      : '<div class="card"><div class="big miss">✗ 移除失败：'+esc(r.error||'')+'</div></div>');
+  }catch(e){
+    msg('<div class="card"><div class="big miss">✗ 请求失败：'+esc(e.message)+'</div></div>');
+  }
+  loadUp();
+  loadSites();
 }
 
 /* ---------------- PG 包 ---------------- */

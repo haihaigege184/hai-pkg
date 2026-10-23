@@ -231,6 +231,7 @@ device 请求 http://10.0.0.11:8099/hai/jsm.json
 | **渲染口径择优** | 可选「最快优先 / 仅故障切换」自动挑入口（`core/renderbase.py`，默认关） |
 | **PG 包自动更新** | TG 群 / TG 手动转发 / 网页上传触发，八步流水线 + **失败自动回滚** |
 | **上游变动告警** | 监控饭太硬导航里各站源的新增 / 消失 / 换域名 / 路径变化 |
+| **新站源一键加入** | 维护页「上游新站源」列表每条带「加入」按钮，过**三道闸**后写进 PG 包配置 |
 
 ### QQ 命令（SEA 机器人插件）
 
@@ -357,6 +358,10 @@ CF_API_TOKEN=xxx python3 tools/deploy/cf_public_ingress.py --apply
 | **`/api/endpoints`** | 对外入口清单 + **测速结果** + **渲染口径**状态；`POST action=bench\|render_base\|render_decide` |
 | **`/api/siteorder`** | 接口顺序与显隐：`POST action=move\|hide\|show\|order\|reset\|undo` |
 | **`/api/upstream`** | 上游源现状 + 饭太硬导航变动 + 各源地址变化 |
+| **`/api/newsite`** | 上游新站源清单 + 每条的「能不能加入」静态判定（能力闸，秒回不联网） |
+| **`/api/newsite/add` `POST`** | 加入一个上游新站源（`{"key":"..."}`），过能力闸 + 探测闸 + 落盘闸 |
+| **`/api/newsite/remove` `POST`** | 移除已加入的新站源（连域名池条目一起清） |
+| **`/api/newsite/probe` `POST`** | 只探测不加入 —— 返回 `static` / `probe` / `can_add` 三个字段 |
 | **`/api/clientpull`** | 设备最后拉取 `jsm.json` 的时间 / IP / UA（排查「改了没生效」） |
 | `/api/repair` `POST` | 一键检测修复（插件调它） |
 | `/api/check` `/api/sync` `/api/render` `POST` | 单独跑巡检/同步/生成 |
@@ -451,6 +456,73 @@ CF_API_TOKEN=xxx python3 tools/deploy/cf_public_ingress.py --apply
 
 ---
 
+## 六点六、上游新站源「一键加入」PG 包（2026-10-23 新增）
+
+维护页「上游里的新站源（PG 没有的）」列表，**每条后面都有一个「加入」按钮** ——
+点一下就把那个站源写进 PG 包配置，端上「接口选择」页就能看到它。
+
+### 三道闸
+
+| 闸 | 检查什么 | 不过会怎样 |
+| --- | --- | --- |
+| ① 能力闸 | `csp_XXX` 的解析类在**本包 `pg.jar`** 里存在吗？`ext` 引用的文件在包里吗？ | 直接拒：「本包 jar 里没有 csp_XXX 这个解析类」 |
+| ② 探测闸 | 真连一次接口，HTTP 有没有响应 | 拒，但提示「仍要强行加入吗」（用户可坚持） |
+| ③ 落盘闸 | 写进 `data/added_sites.json`，由 `patch.build()` 注入 | 任一步失败自动回滚，配置保持原样 |
+
+### 为什么必须有第一道闸（实测数据）
+
+上游 16 个源登记出 **307 个**新站源，去重后 217 个不同的 `csp_` 解析类，
+**只有 20 个**在本包 `pg.jar` 里（线上 jar 共 454 个 spider 类）。
+也就是说 **90% 的站源就算域名活着，加进来也是空壳** —— 端上一打开就报
+「解析器不存在」。所以静态判定必须放在**加入之前**，而不是加完再看端上报错。
+
+> `csp_XXX` → `com.github.catvod.spider.XXX` 是 TVBox 的固定映射。
+> `pg.jar` 只含 `classes.dex`（没有 `.class`），用正则从 dex 里抓类型描述符即可，
+> 不必反编译 —— 一次全扫 11MB dex 约 1~2 秒，按 `mtime:size` 指纹缓存到
+> `data/jar_index.json`。
+
+### 独立 TAG，不与原版共用
+
+新增站点一律用 `ADD_<md5前8位>` 作 TAG。原因：上游常见**多个不同站点共用一个解析类**
+（`csp_TTian` 同时是「追剧」和「天天」，`csp_BiliGuard` 同时是「少儿教育/小学课堂/初中课堂」）。
+按 `api` 归 TAG 会让 A 站的地址被 B 站的域名顶掉。独立 TAG 之后实测：
+
+```
+追剧 → ADD_5b23de3d (app.kzjtv.com)
+天天 → ADD_eafa867f (op.ysdqjs.cn)     ← 互不干扰
+```
+
+### 三条判定路径必须口径一致
+
+`/api/newsite`（清单）、`/api/newsite/probe`（探测）、`/api/newsite/add`（加入）
+三处都要判重 + 判能力，用的是同一套 `addsite.dup_check()` / `addsite.static_check()`。
+踩过的坑：
+
+- 清单按 key 单键索引 → 同一个 key 在 4 个上游源里 api 不同时会**张冠李戴**，
+  拿 A 源的 api 配 B 源的 ext，判定全错。**必须按源隔离 + key+api 配对**。
+- `probe` 路由漏了判重 → 清单说「重复」，probe 说「可以加」，用户点下去被拒。
+- `libfill` 派生文件（`tokenm.json` ← `tokentemplate.json`）本地没有磁盘文件，
+  但线上一定有 —— 判定要认这条派生关系，否则本地比线上严，两边结论对不上。
+
+### 不破红线
+
+`core_ok` 的六条判定里**不含 `added_keys`** ⇒ 新增站点不破坏红线（实测
+`added_keys=['Wo4k']` 时 `core_ok=True`）。但**新增文件会破**
+（`unexpected_extra` 非空），所以加入只改配置内容，不往包里塞文件。
+
+### 加入后端上要做什么
+
+端**只在 App 进程启动时拉一次 `jsm.json`** ⇒ 调完顺序/加入新站后，
+必须**彻底退出 App 再打开**才会看到。
+
+### 移除要连域名池一起清
+
+TAG 是按 key 算的，站点移出 `added_sites.json` 后就查不到 key → TAG 的对应关系。
+所以 `remove()` 会**先把 TAG 返回出来**，调用方拿它清域名池；另有
+`prune_orphan_pool()` 在启动时清理历史残留。
+
+---
+
 ## 七、目录结构
 
 ```
@@ -484,6 +556,8 @@ tools/
     epbench.py                ← 入口测速（jsm 可用性 + pg.jar 带宽）
     renderbase.py             ← 渲染口径状态机（自动择优 / 故障切换）
     checkin_ck.py             ← 一条龙签到 CK 管理（/opt/dailycheckin）
+    jarinfo.py                ← PG 包内容索引（jar 解析类清单 + 包内文件清单）
+    addsite.py                ← 上游新站源「一键加入」（能力闸 / 探测闸 / 落盘闸）
   baseline/                   ← 原始基线（不带任何修复）
   data/ck.json                ← 保险库数据（运行时生成）
   web/index.html              ← 管理界面

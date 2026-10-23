@@ -135,6 +135,15 @@ def _load_jsm():
     return {}, "none"
 
 
+def _added_keys():
+    """用户主动加入的新站源的 key 集合（用于在明细里标出来）"""
+    try:
+        from . import addsite
+        return set(addsite.added_keys())
+    except Exception:
+        return set()
+
+
 def _site_item(s, pool, hstate, need, mark_enabled, manual_keys, hidden_keys):
     """把一个 jsm.sites 条目算成明细行（站点视角）。
 
@@ -147,8 +156,14 @@ def _site_item(s, pool, hstate, need, mark_enabled, manual_keys, hidden_keys):
     ext = s.get("ext")
     info = S.parse_ext(ext) if isinstance(ext, str) else None
     base = (info or {}).get("base") or ""
+    # 统一走 sources.tag_of() —— 它会先查「新增站点覆盖表」，所以用户加入的
+    # 新站源在这里拿到的也是独立 TAG，与 patch / order 完全一致。
     tag = S.tag_of(s, info)
-    tag_src = ("ext" if (info or {}).get("tag") else "api") if tag else ""
+    if tag:
+        tag_src = ("added" if str(key or "") in _added_keys() else
+                   ("ext" if (info or {}).get("tag") else "api"))
+    else:
+        tag_src = ""
     ent = pool.get(tag) if tag else None
 
     det = health.pick_best_detail(ent) if ent else None
@@ -200,6 +215,7 @@ def _site_item(s, pool, hstate, need, mark_enabled, manual_keys, hidden_keys):
         "key": key,
         "name": name,
         "hidden": hidden,           # 用户主动隐藏（不在下发列表里）
+        "added": str(key or "") in _added_keys(),   # 用户从上游新站源加入的
         "manual": str(key or "") in manual_keys,   # 顺序被用户手动排过
         "pinned": _is_pinned(s),
         "marked": marked,           # 配置里是否已被打上失效标注

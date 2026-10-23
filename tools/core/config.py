@@ -66,6 +66,12 @@ NAV_WATCH = [
 F_NAV_STATE = os.path.join(DATA_DIR, "nav_state.json")
 F_FEED_STATE = os.path.join(DATA_DIR, "feed_state.json")
 
+# 用户从「上游新站源」列表里**主动加入**的站点（core/addsite.py）。
+#   与 baseline 完全分离：baseline 是原版母本，绝不改动；
+#   patch.build() 会在渲染时把这些站点追加进 sites 数组。
+#   换 PG 包（严格镜像只作用包目录）不会丢 —— data/ 不在镜像范围。
+F_ADDED_SITES = os.path.join(DATA_DIR, "added_sites.json")
+
 # 入口地址测速（core/epbench.py）与动态渲染口径（core/renderbase.py）
 #   【为什么分开存】epbench 只回答「哪条快」，renderbase 只回答「现在用哪条」。
 #   前者是观测，后者是生效状态，必须能各自独立回退。

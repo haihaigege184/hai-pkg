@@ -27,7 +27,7 @@ from flask import (Blueprint, Flask, Response, g, jsonify, request,
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import config as C          # noqa: E402
-from core import (absbase, checkin_ck, ckvault, dav, devices, endpoints, epbench,  # noqa: E402
+from core import (absbase, addsite, checkin_ck, ckvault, dav, devices, endpoints, epbench,  # noqa: E402
                   gateway, health, libfill, navwatch, notify, patch, pkgupdate, probe,
                   relay, renderbase, report, siteorder, sources as S, store, sync,
                   verify)
@@ -266,6 +266,13 @@ def bootstrap():
         POOL.update(saved)
     # 基线 + 内置历史域名知识库播种（已有条目的域名做并集）
     sync.seed_pool_from_baseline(POOL, REGISTRY)
+    # 用户主动加入的新站源：并入域名池（独立 TAG），参与巡检与自动修复
+    _added = len(addsite.added_keys())
+    _orph = addsite.prune_orphan_pool(POOL)
+    if _added:
+        store.log_event("boot", "已加入的新站源 %d 个，并入域名池" % _added)
+    if _orph:
+        store.log_event("boot", "清理域名池里的孤儿新增条目 %d 个" % len(_orph))
     dropped = _prune_pool()
     _seed_last_alive()
     gateway.set_pool(POOL)
@@ -1910,6 +1917,14 @@ def api_upstream():
     except Exception as e:
         feed_st = {"error": "%s: %s" % (type(e).__name__, e)}
 
+    # 新站源的「能不能加入」静态判定（能力闸，秒回，不联网）
+    # 与 /api/newsite 同源 —— 页面一次拉齐，不必再发一次请求
+    try:
+        newsite = addsite.candidates()
+    except Exception as e:
+        newsite = {"items": [], "added": [], "jar": {},
+                   "error": "%s: %s" % (type(e).__name__, e)}
+
     return jsonify({
         "ok": True,
         "repos": list(getattr(C, "UPSTREAM_REPOS", []) or []),
@@ -1924,10 +1939,111 @@ def api_upstream():
         "last_sync_source": st.get("last_sync_source", ""),
         "last_sync_stat": lss,
         "new_sites": new_sites,
+        "newsite": newsite,
         "nav": nav_sum,
         "feed_state": feed_st,
         "timeout": getattr(C, "UPSTREAM_TIMEOUT", 10),
     })
+
+
+@bp.route("/api/newsite")
+def api_newsite():
+    """上游新站源清单 + 每条的「能不能加入」判定
+
+    加入要过三道闸（见 core/addsite.py）：
+      ① 能力闸 —— 本包 jar 里有没有对应的解析类（实测 217 个上游 csp_ 类
+         只有 20 个在本包里，没有的加进去端上必然报「解析器不存在」）；
+      ② 探测闸 —— 接口现在通不通；
+      ③ 落盘闸 —— 写进 data/added_sites.json，由 patch.build() 注入。
+    这里只做**静态**判定（不联网），点了「加入」才真连一次。
+    """
+    try:
+        d = addsite.candidates()
+    except Exception as e:
+        return jsonify({"ok": False, "error": "%s: %s" % (type(e).__name__, e)}), 500
+    return jsonify({"ok": True, "items": d.get("items") or [],
+                    "added": d.get("added") or [],
+                    "jar": d.get("jar") or {}})
+
+
+@bp.route("/api/newsite/add", methods=["POST"])
+def api_newsite_add():
+    """把一个上游新站源加入 PG 包（过三道闸）
+
+    body: {"key": "...", "force": false}
+    force=true 用于「探测失败但仍想强行加入」（探测不通时返回 can_force=true）
+    """
+    body = request.get_json(silent=True) or {}
+    key = str(body.get("key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "缺少 key"}), 400
+    try:
+        res = addsite.add(key, force=bool(body.get("force")))
+    except Exception as e:
+        return jsonify({"ok": False, "error": "%s: %s" % (type(e).__name__, e)}), 500
+    if res.get("ok"):
+        # 立刻并入域名池并重渲染 —— 否则端上要等到下一轮巡检才看到新站
+        addsite.seed_pool(POOL)
+        _flush()
+        do_render()
+        res["rendered"] = True
+    return jsonify(res), (200 if res.get("ok") else 400)
+
+
+@bp.route("/api/newsite/remove", methods=["POST"])
+def api_newsite_remove():
+    """把已加入的新站源移出（不动原版，也不改包目录）"""
+    body = request.get_json(silent=True) or {}
+    key = str(body.get("key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "缺少 key"}), 400
+    try:
+        res = addsite.remove(key)
+    except Exception as e:
+        return jsonify({"ok": False, "error": "%s: %s" % (type(e).__name__, e)}), 500
+    if res.get("ok"):
+        # remove() 会把 TAG 一起返回 —— 站点移出 added_sites.json 后就查不到
+        # key → TAG 的对应关系了，池子里的条目必须靠这个 TAG 清
+        addsite.drop_pool(POOL, tags=[res.get("tag")])
+        _flush()
+        do_render()
+        res["rendered"] = True
+    return jsonify(res), (200 if res.get("ok") else 400)
+
+
+@bp.route("/api/newsite/probe", methods=["POST"])
+def api_newsite_probe():
+    """只做连通性探测，不加入（用户在点「加入」前先探一下）
+
+    判定口径必须与 /api/newsite 清单一致 —— 清单说「不可加」而这里说
+    「可以加」，用户点下去只会被拒。所以判重、能力闸、探测闸三步都走
+    addsite 的公共函数，不在这里另写一套。
+    """
+    body = request.get_json(silent=True) or {}
+    key = str(body.get("key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "缺少 key"}), 400
+    cand = None
+    for s in (addsite._new_sites() or []):
+        if str(s.get("key") or "") == key:
+            cand = s
+            break
+    if not cand:
+        return jsonify({"ok": False, "error": "上游清单里没有这个站点"}), 404
+    api = str(cand.get("api") or "")
+    dkind, dreason = addsite.dup_check(key, api)
+    if dkind:
+        return jsonify({"ok": True, "static": {"ok": False, "kind": "dup",
+                                               "reason": dreason, "warnings": []},
+                        "probe": {}, "can_add": False, "dup": True})
+    site = addsite.resolve_site(cand)
+    if not site:
+        return jsonify({"ok": False, "error": "拿不到这个站点的完整定义，先重跑一次「上游同步」"}), 404
+    site = addsite._rewrite_token(site)
+    chk = addsite.static_check(site)
+    pr = addsite.probe_site(site)
+    return jsonify({"ok": True, "static": chk, "probe": pr,
+                    "can_add": bool(chk.get("ok") and pr.get("ok"))})
 
 
 @bp.route("/api/pkg/status")

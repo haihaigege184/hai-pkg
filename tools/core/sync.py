@@ -507,3 +507,10 @@ def seed_pool_from_baseline(pool, registry):
     for tag, doms in C.SEED_DOMAINS.items():
         e = pool.setdefault(tag, {"tag": tag, "domains": []})
         S.merge_domains(e, doms, origin="seed")
+    # 用户主动加入的新站源：并入域名池（独立 TAG），使其参与巡检与自动修复。
+    # 放在这里而不是各自散落，是为了让「启动 / 同步 / 巡检」三条路径行为一致。
+    try:
+        from . import addsite
+        addsite.seed_pool(pool)
+    except Exception as e:
+        store.log_event("error", "播种新增站源到域名池失败: %s: %s" % (type(e).__name__, e))

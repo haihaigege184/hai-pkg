@@ -7,6 +7,8 @@
   - parts[1] 是本接口的「站点根地址」，也是失效后需要替换的字段
   - 末尾一个全大写标识符是 TAG（同一 jar 类通过 TAG 区分不同站点与解析规则）
 """
+import json
+import os
 import re
 import urllib.parse
 
@@ -18,6 +20,45 @@ _TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_]{1,15}$")
 # 这些是 ext 里的固定关键字/占位符，不是 TAG
 _TAG_STOP = {"proxy", "noproxy", "null", "user", "pass", "password",
              "username", "db", "http", "https", "api", "token", "json"}
+
+# ---------------------------------------------------------------------------
+# 新增站点的独立 TAG 覆盖表
+# ---------------------------------------------------------------------------
+# 用户从「上游新站源」列表里主动加入的站点需要**独立 TAG**（不与原版共用），
+# 否则上游常见的「多个不同站点共用一个解析类」（csp_TTian 同时是「追剧」和
+# 「天天」）会让 A 站的地址被 B 站的域名顶掉。
+#
+# 覆盖表由 core/addsite.py 写入 `data/added_sites.json`，这里**只读**。
+# 不让 sources 去 import addsite —— addsite 依赖 sources，会成环。
+# 「同一数据不能有两套 TAG 规则」这条红线在这里落地：全工程只认 tag_of()。
+_TAG_OVERRIDE_CACHE = {"fp": "", "map": {}}
+
+
+def _added_tag_map():
+    """{key: 独立 TAG} —— 按文件指纹缓存，改完即时生效"""
+    path = getattr(C, "F_ADDED_SITES", "")
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        st = os.stat(path)
+        fp = "%d:%d" % (int(st.st_mtime), int(st.st_size))
+    except OSError:
+        return {}
+    if _TAG_OVERRIDE_CACHE["fp"] == fp:
+        return _TAG_OVERRIDE_CACHE["map"]
+    out = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        for k, rec in ((d.get("sites") or {}) if isinstance(d, dict) else {}).items():
+            t = (rec or {}).get("tag")
+            if t:
+                out[str(k)] = str(t)
+    except Exception:
+        return {}
+    _TAG_OVERRIDE_CACHE["fp"] = fp
+    _TAG_OVERRIDE_CACHE["map"] = out
+    return out
 
 
 def parse_ext(ext):
@@ -82,7 +123,15 @@ def tag_of(site, info):
     这些站点在池里叫 csp_Moli / csp_EightEight（走 api 兜底）。凡是只认
     `info["tag"]` 的地方都会把它们整片漏掉 —— 表现为「本地」、不参与失效
     判定、域名死了也不换。用同一套规则推导即可全部接回。
+
+    【2026-10-23】先问「新增站点覆盖表」：用户主动加入的新站源一律用独立
+    TAG，不与原版共用 —— 否则共用解析类的两个站会互相顶掉域名。
     """
+    ov = _added_tag_map()
+    if ov:
+        t = ov.get(str((site or {}).get("key") or ""))
+        if t:
+            return t
     if not info:
         return ""
     return str(info.get("tag") or site.get("api") or site.get("key") or "")

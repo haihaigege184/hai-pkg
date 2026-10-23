@@ -96,6 +96,11 @@ def build(pool, mode="dual", public_base=None):
     if public_base:
         RENDER.set_manual(public_base, reason="build(public_base=...) 传入")
 
+    # 先注入用户主动加入的新站源 —— 必须在下面的改写循环**之前**，
+    # 否则它们享受不到「域名漂移自动修复」，也进不了失效判定。
+    # 它们在域名池里用独立 TAG（ADD_xxx），与原版互不干扰。
+    jsm, added_n = _inject_added(jsm)
+
     hstate = _health_state()
     need = max(1, int(getattr(C, "OFFLINE_CONFIRM_ROUNDS", 2)))
     applied = _applied_bases()
@@ -216,7 +221,7 @@ def build(pool, mode="dual", public_base=None):
             store.log_event("error", f"bases 落盘失败: {type(e).__name__}: {e}")
 
     stat = {"changed": changed, "offline": offline, "clones": len(clone_sites),
-            "order": ostat}
+            "order": ostat, "added": added_n}
     return jsm, stat
 
 
@@ -229,6 +234,43 @@ def _apply_overrides(jsm):
         if not any(s.get("key") == extra.get("key") for s in jsm.get("sites", [])):
             jsm["sites"].append(extra)
     return jsm
+
+
+def _inject_added(jsm):
+    """把用户主动加入的新站源追加进配置。
+
+    【为什么不直接改 baseline】baseline/jsm.json 是原版母本，绝不改动；
+    而且 build() 每轮都从 baseline 重建，直接塞进去会被下一轮冲掉。
+    新增站点只存在于 data/added_sites.json（core/addsite.py 维护），
+    每次 build 时追加 —— 换包也不丢（pkgupdate 的严格镜像只作用包目录）。
+
+    【为什么不破红线】verify.core_ok 的 `added_keys` 本来就不参与判定，
+    所以多出这些站点不影响「与原版逐项一致」的结论。
+
+    【顺序】追加在原版之后、排序之前 —— core/order.py 会把它们按延迟插到
+    合适位置（详见该模块的「钉在末尾」规则）。
+    """
+    try:
+        from . import addsite
+        added = addsite.injected_sites()
+    except Exception as e:
+        store.log_event("error", "读取已加入站点失败: %s: %s" % (type(e).__name__, e))
+        return jsm, 0
+    if not added:
+        return jsm, 0
+    have = set(str(s.get("key") or "") for s in (jsm.get("sites") or []))
+    n = 0
+    for s in added:
+        k = str(s.get("key") or "")
+        if not k or k in have:
+            continue
+        jsm.setdefault("sites", []).append(s)
+        have.add(k)
+        n += 1
+    if n:
+        store.log_event("render", "注入用户加入的新站源 %d 个：%s"
+                        % (n, "、".join(str(s.get("key")) for s in added[:12])))
+    return jsm, n
 
 
 def write_dist(jsm):

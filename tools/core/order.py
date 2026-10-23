@@ -28,6 +28,7 @@ from . import store
 
 _NO_LATENCY = 10 ** 9      # 没有存活地址：排最后
 _GROUP_GW = 3              # dual 模式的「·网关」克隆统一排最后
+_GROUP_ADDED = 2.5         # 用户加入的新站源：排在原版之后、网关克隆之前
 
 
 def _latency(ent):
@@ -75,16 +76,24 @@ def _apply_manual(sites, manual):
     为什么用浮点插值而不是「手动项排前面、其余追加」：
       后者会让换包后新增的站点全部堆到末尾，而它们其实是该按延迟排在中间的；
       插值能让新站点落在它自动顺序上的邻居附近，视觉上最不突兀。
+
+    【新增站源例外】用户主动加入的站点（added 集合）不在 manual 名单里时，
+    固定钉在末尾 —— 否则浮点插值会把它塞进手动名单中间，等于「加一个站
+    就打乱一次用户排好的顺序」。
     """
     if not manual or not sites:
         return sites
     rank = {k: i for i, k in enumerate(manual)}
     keys = [str(s.get("key") or "") for s in sites]
     n = len(keys)
+    added = _added_keys()
     pos = {}
     for i, k in enumerate(keys):
         if k in rank:
             pos[i] = float(rank[k])
+            continue
+        if k in added:
+            pos[i] = float(len(manual)) + 0.5 + 0.0001 * i
             continue
         p = None
         for j in range(i - 1, -1, -1):          # 往前找最近的手动项
@@ -100,6 +109,19 @@ def _apply_manual(sites, manual):
     return [sites[i] for i in sorted(range(n), key=lambda i: (pos[i], i))]
 
 
+def _added_keys():
+    """用户主动加入的新站源的 key 集合
+
+    这些站点排在原版之后 —— 原版的 79 条顺序是用户精心排过的，
+    新加的东西不该把它们顶到前面去（那等于每次加站都打乱一次）。
+    """
+    try:
+        from . import addsite
+        return set(addsite.added_keys())
+    except Exception:
+        return set()
+
+
 def apply(jsm, pool, pins_top=None, pins_next=None):
     """就地重排 jsm["sites"]，返回统计信息"""
     sites = jsm.get("sites") or []
@@ -108,6 +130,7 @@ def apply(jsm, pool, pins_top=None, pins_next=None):
 
     top = list(C.SITE_PIN_TOP if pins_top is None else pins_top)
     nxt = list(C.SITE_PIN_NEXT if pins_next is None else pins_next)
+    added = _added_keys()
 
     lat_cache = {}
 
@@ -131,6 +154,9 @@ def apply(jsm, pool, pins_top=None, pins_next=None):
         j = _pin_index(site, nxt)
         if j >= 0:
             return (1, j, i)
+        # 用户加入的新站源：排在原版之后，但仍在网关克隆之前
+        if k in added:
+            return (_GROUP_ADDED, i, i)
         lat = lat_of(site)
         return (2, _NO_LATENCY if lat is None else lat, i)
 
