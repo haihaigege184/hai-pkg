@@ -357,7 +357,28 @@ def collect_play(title: str, year: str):
 # 详情
 # ---------------------------------------------------------------------------
 
-def _plays(title: str, year: str):
+def _with_push(play: str) -> str:
+    """给「第1集$https://pan.xxx/s/yyy」这种分集串里的**地址部分**加 push://
+
+    panwall 交出来的已经是 `名称$地址`（多集用 # 分隔）格式，不能直接
+    在整串前面拼前缀 —— 那样会变成 `push://第1集$https://...`。
+    只处理 http(s) 开头的地址；采集站兜底的 m3u8 是真视频，不要进来。
+    """
+    out = []
+    for seg in str(play or "").split("#"):
+        if "$" in seg:
+            name, url = seg.split("$", 1)
+            if url.startswith("http"):
+                url = "push://" + url
+            out.append(name + "$" + url)
+        elif seg.startswith("http"):
+            out.append("push://" + seg)
+        else:
+            out.append(seg)
+    return "#".join(out)
+
+
+def _plays(title: str, year: str, push: bool = False):
     """播放源：**网盘优先**（花卷/玩偶/木偶），一个都拿不到才兜底采集站。
 
     电视上采集站又慢又卡，所以只在前者全灭时启用，避免「干脆啥都没有」。
@@ -366,6 +387,12 @@ def _plays(title: str, year: str):
     panwall 返回的是 `花卷·夸克` 这种带站点的名字，直接塞给 app 会变成一长排
     「花卷·夸克·网盘」「玩偶·夸克·网盘」，电视上一行放不下、也看不出区别。
     同一网盘最多留两条（不同站给的常是不同分享，互为备份），第二条加后缀 2。
+
+    `push=True` 时给网盘分享链接加 `push://` 前缀 —— 2026-10-29 定位到：
+    app 的 dex 里没有一处 quark/pan.quark.cn 字样，网盘转存全在 pg.jar 的
+    spider 内部。type=1 站点把夸克链接当普通视频喂播放器必然失败，只有
+    `push://` 这种自定义 scheme 才会被 app 拦截后交给网盘模块。
+    采集站兜底的 m3u8 是真正的视频地址，**不能**加前缀。
     """
     pan = []
     try:
@@ -380,7 +407,8 @@ def _plays(title: str, year: str):
             seen[pname] = seen.get(pname, 0) + 1
             if seen[pname] > 2:
                 continue
-            out.append((pname if seen[pname] == 1 else f"{pname}{seen[pname]}", u))
+            out.append((pname if seen[pname] == 1 else f"{pname}{seen[pname]}",
+                        _with_push(u) if push else u))
         return out
     if PULL_MODE == "0":
         return []
@@ -393,11 +421,13 @@ def _as_int(v, default: int = 1) -> int:
     except (TypeError, ValueError):
         return default
 
-def detail(vid: str, with_plays: bool = True) -> dict:
+def detail(vid: str, with_plays: bool = True, push: bool = False) -> dict:
     """站点详情。
 
     `with_plays=False` 用于只要元数据的场景（海报墙 hero、网页侧栏）——
     省掉三站聚合的那 5 秒，列表页才不会被拖慢。
+
+    `push=True` 只给 app 接口用（网盘链接要 push:// 前缀），网页端保持原样。
     """
     kind, tid = _parse_vid(vid)
     if not kind:
@@ -419,7 +449,7 @@ def detail(vid: str, with_plays: bool = True) -> dict:
         return item
 
     out = dict(item)
-    plays = _plays(item["vod_name"], item["vod_year"])
+    plays = _plays(item["vod_name"], item["vod_year"], push=push)
     out["vod_play_from"] = "$$$".join(n for n, _ in plays)
     out["vod_play_url"] = "$$$".join(u for _, u in plays)
     return out
@@ -490,8 +520,11 @@ def _classes():
             for t, n, _, _ in CLASSES]
 
 
-def handle(args: dict) -> dict:
-    """苹果CMS V10：ac=list / ac=videolist / ac=detail"""
+def handle(args: dict, push: bool = False) -> dict:
+    """苹果CMS V10：ac=list / ac=videolist / ac=detail
+
+    `push=True` 由 app 接口路由传入（网盘链接加 push://），网页端不传。
+    """
     ac = str(args.get("ac") or "").lower()
     page = args.get("pg") or args.get("page") or 1
 
@@ -509,7 +542,7 @@ def handle(args: dict) -> dict:
         raw_ids = str(args.get("ids") or args.get("id") or "").strip()
         if raw_ids:
             ids = [x.strip() for x in raw_ids.split(",") if x.strip()]
-            items = [x for x in (detail(i) for i in ids[:20]) if x]
+            items = [x for x in (detail(i, push=push) for i in ids[:20]) if x]
             body.update({"page": 1, "pagecount": 1, "limit": 20,
                          "total": len(items), "list": items})
             return body

@@ -1,0 +1,4 @@
+{
+  "name": "TMDB海报墙",
+  "api": "http://10.0.0.11:8099/hai/tmdb/api.php/provide/vod/"
+}

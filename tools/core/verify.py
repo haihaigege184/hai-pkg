@@ -23,7 +23,14 @@ from . import config as C
 _SEQ_KEYS = ("lives", "rules", "parses", "proxy", "hosts", "doh", "flags")
 
 # 包内非原版自带、由本工程生成的文件（校验时豁免）
-_IGNORE_EXTRA = {"jsm.json", "VERSION", "README.txt"}
+#
+# lib/tmdb.js 是「TMDB海报墙」的 drpy 源（2026-10-29 新增）：
+#   app 的 dex 里没有一处 quark/pan.quark.cn，网盘转存全在 pg.jar 的 spider
+#   内部；type=1 接口给的夸克分享链接 app 只会当普通视频地址 → 必然播放失败。
+#   只有走 spider 通道（站点 type=3 + api 指向 .js）才有机会进网盘模块，
+#   所以必须往包里新增这一个 JS 文件。**只增不改，原版 87 个文件逐个不动**。
+_IGNORE_EXTRA = {"jsm.json", "VERSION", "README.txt",
+                 "lib/tmdb.js", "lib/tmdb.json"}
 
 
 def _dumps(x):

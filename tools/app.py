@@ -887,7 +887,7 @@ def hai_tmdb_vod():
     jar 受 manifest 哈希红线保护 —— 只能另起一个原生站点替代它。
     """
     try:
-        body = tmdbwall.handle({k: v for k, v in request.args.items()})
+        body = tmdbwall.handle({k: v for k, v in request.args.items()}, push=True)
     except Exception as exc:                       # 绝不让 500 把 app 的搜索打断
         app.logger.warning("tmdbwall handle failed: %s", exc)
         body = {"code": 1, "msg": "数据列表", "page": 1, "pagecount": 0,
