@@ -384,11 +384,30 @@ def detail(vid: str, with_plays: bool = True) -> dict:
     if not kind:
         return {}
 
-    ck = f"detail:{kind}:{tid}:{1 if with_plays else 0}"
-    hit = _cache_get(ck)
-    if hit is not None:
-        return hit
+    # 只缓存 TMDB 元数据（海报/简介/演职员），**播放源不进这个缓存**。
+    # 原因：panwall 是「木偶先回、花卷/玩偶后台补齐」，如果连播放源一起缓存
+    # 12 小时，第一次算出来的「只有木偶」就被钉死了 —— 后台补到 5 组也永远
+    # 不会出现在详情页。播放源交给 panwall 自己的缓存，每次读最新。
+    mkey = f"meta:{kind}:{tid}"
+    item = _cache_get(mkey)
+    if item is None:
+        item = _build_meta(vid, kind, tid)
+        if not item:
+            return {}
+        _cache_set(mkey, item, _TTL_DETAIL)
 
+    if not with_plays:
+        return item
+
+    out = dict(item)
+    plays = _plays(item["vod_name"], item["vod_year"])
+    out["vod_play_from"] = "$$$".join(n for n, _ in plays)
+    out["vod_play_url"] = "$$$".join(u for _, u in plays)
+    return out
+
+
+def _build_meta(vid: str, kind: str, tid: str) -> dict:
+    """纯 TMDB 元数据（不含播放源），可安全长缓存"""
     d = _tmdb(f"/{kind}/{tid}", append_to_response="credits") or {}
     if not d:
         return {}
@@ -424,12 +443,7 @@ def detail(vid: str, with_plays: bool = True) -> dict:
     if extra:
         content = content + "\n\n" + "\n".join(extra)
 
-    plays = _plays(name, year) if with_plays else []
-    froms = "$$$".join(n for n, _ in plays)
-    urls = "$$$".join(u for _, u in plays)
-
-    item = {
-        "vod_id": vid,
+    item = {        "vod_id": vid,
         "vod_name": name,
         "vod_pic": _img(d.get("poster_path"), "w780"),
         "vod_pic_slide": _img(d.get("backdrop_path"), "w1280"),
@@ -441,10 +455,9 @@ def detail(vid: str, with_plays: bool = True) -> dict:
         "vod_content": content,
         "vod_remarks": _remark_of(d),
         "type_name": genres or ("电影" if kind == "movie" else "剧集"),
-        "vod_play_from": froms,
-        "vod_play_url": urls,
+        "vod_play_from": "",
+        "vod_play_url": "",
     }
-    _cache_set(ck, item, _TTL_DETAIL)
     return item
 
 

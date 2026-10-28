@@ -86,6 +86,21 @@ PROVIDERS = [
     ("115.com", "115", 7),
     ("115cdn.com", "115", 7),
 ]
+# 组名形如「木偶·夸克·网盘」，中间那段就是网盘名 —— 用它决定排序权重
+_PNAME_RANK = {name: rank for _, name, rank in PROVIDERS}
+
+
+def _sorted(out):
+    """按「夸克 → 阿里/UC → 百度/115」重排，同权重保留原顺序（木偶在前）。
+
+    后台补齐是「追加」进来的，不重排就会出现「木偶·UC 排在 花卷·夸克 前面」，
+    而电视上夸克明显更稳，用户点第一个就踩到慢源。
+    """
+    def key(pair):
+        parts = pair[0].split("·")
+        pname = parts[1] if len(parts) >= 2 else parts[-1]
+        return _PNAME_RANK.get(pname, 8)
+    return sorted(out, key=key)
 
 _PAN_RE = re.compile(
     r"https?://(?:[a-z0-9-]+\.)*(?:pan\.quark\.cn|alipan\.com|aliyundrive\.com|"
@@ -301,6 +316,7 @@ def _merge(key: str, extra: list[tuple[str, str]]) -> None:
         names = {n for n, _ in extra}
         cur = [(n, u) for n, u in cur if n not in names]
         cur.extend(extra)
+        cur = _sorted(cur)
         _cache[key] = (time.time() + _TTL, cur)
 
 
@@ -344,7 +360,7 @@ def collect(title: str, year: str = "") -> list[tuple[str, str]]:
         if res:
             out.extend(res)
     if out:
-        out = out[:4]
+        out = _sorted(out)[:4]
         _cache_set(key, out)
         first_name = "|".join(n for n, _ in out)
         threading.Thread(target=_bg_fill, args=(key, title, first_name),
@@ -361,7 +377,7 @@ def collect(title: str, year: str = "") -> list[tuple[str, str]]:
             out.extend(res)
             if len(out) >= 3:
                 break
-    out = out[:4]
+    out = _sorted(out)[:4]
     if out:                                   # 空结果不缓存，下次还能再试
         _cache_set(key, out)
     return out
