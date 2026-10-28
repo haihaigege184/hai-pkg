@@ -328,6 +328,8 @@ CF_API_TOKEN=xxx python3 tools/deploy/cf_public_ingress.py --apply
 | --- | --- |
 | `/hai/jsm.json` | 成品配置（播放器用这个） |
 | `/hai/pg.jar` · `/hai/js/*` · `/hai/lib/*` | 包内资源 |
+| **`/hai/tmdb/api.php/provide/vod/`** | **「TMDB 海报墙」数据源**（苹果CMS V10：`ac=list` / `ac=videolist` / `ac=detail` / `wd=`），app 里配成 `type=1` 站点即原生渲染 |
+| **`/hai/poster/`** · **`/hai/poster/d/<vid>`** | **豪华海报墙网页**（暗色霓虹，服务端渲染，老 WebView 也能开） |
 | **`/hai/lib/tokenm.json`** | **动态：模板 + 保险库里的网盘 CK**（`GET` 取、`PUT/POST` 回传） |
 | `/hai/version.json` | 版本 / 站点数 / 上次巡检时间 |
 | `/gw/<TAG>/…` | 网关反代（域名漂移免疫） |
@@ -520,6 +522,69 @@ CF_API_TOKEN=xxx python3 tools/deploy/cf_public_ingress.py --apply
 TAG 是按 key 算的，站点移出 `added_sites.json` 后就查不到 key → TAG 的对应关系。
 所以 `remove()` 会**先把 TAG 返回出来**，调用方拿它清域名池；另有
 `prune_orphan_pool()` 在启动时清理历史残留。
+
+---
+
+## 六点七、TMDB 海报墙：给电视一个深色的影视首页（2026-10-28 新增）
+
+### 为什么要另起一个站点
+
+电视端点豆瓣影片时，app 用自己的 WebView 直连
+`https://movie.douban.com/subject/<id>/`，并注入一段 CSS：
+`#wrapper>*:not(#content){display:none!important}` + `html,body{background:#fff!important}`。
+URL、桌面 UA、注入样式**全部硬编码在 `pg.jar` 的 `DoubanSubjectWebView` 里**，
+而 jar 受 manifest 哈希红线保护 —— 那一页的白色底和排版，中枢侧**改不了**。
+
+（2026-10-28 实测补充：电视上扫码登录豆瓣后，登录 Cookie 会让瑞数验证直接放行
+——`DoubanSubjectWebView` 内置 `seedCookies`，管 movie/book/www 三个域。
+即「登录能解决打不开」，但**解决不了白底**。）
+
+于是另起一个 app 原生渲染的站点：**海报墙由 app 自己画（深色），数据由中枢供**。
+
+### 数据从哪来
+
+| 用途 | 来源 | 说明 |
+|---|---|---|
+| 海报 / 背景图 / 评分 / 演员 / 简介 | **TMDB** | key 复用包内 `lib` 同款（光鸭社区在用），`zh-CN` |
+| 播放地址 | **暴风 / 量子 / 非凡** | 三个公共苹果CMS站，按片名+年份匹配，**并发搜**，谁先回用谁 |
+| 网页版海报墙 | 中枢自己渲染 | `/hai/poster/`，暗色霓虹，服务端渲染 |
+
+### 站点怎么配
+
+写进 `data/added_sites.json`（`core/addsite.py` 的存储），`patch.build()` 每轮自动注入：
+
+```json
+{"sites": {"TMDBWall": {"site": {
+  "key": "TMDBWall", "name": "TMDB海报墙", "type": 1,
+  "api": "http://10.0.0.11:8099/hai/tmdb/api.php/provide/vod/",
+  "searchable": 1, "changeable": 1, "timeout": 60,
+  "style": {"type": "rect", "ratio": 1.5}
+}, "tag": "ADD_tmdbwall"}}}
+```
+
+* `type=1` = 苹果CMS JSON 接口，app 原生渲染（**不经过 WebView**）
+* 排序：插进 `data/site_order.json` 的 `order` 第 2 位（「网盘配置」之后），
+  否则按「新增站点钉末尾」规则会排到 73 个站的最后
+* 分类：热门电影 / 热门剧集 / 高分电影 / 正在上映 / 高分剧集 / 华语剧集 / 日本动画 / 即将上映
+
+### 中枢自己不进域名池
+
+自建站点的 `api` 指向中枢自己的地址，`core/addsite._ext_base()` 现在会过滤
+`OKTV_SELF_HOSTS`（默认 `10.0.0.11`）/ `LAN_BASE` / `PUBLIC_BASES` 的 host，
+避免巡检去探自己、面板多出一条噪音记录。
+
+### 缓存与超时
+
+列表 30 分钟 / 详情 12 小时 / 搜索 2 小时（**进程内**缓存，重启即清）。
+列表只打 TMDB 一个接口（8s 超时）；详情允许慢一点（三站并发各 6s，总上限 9s），
+任一源超时都只丢那一源，不会把详情页打空。
+
+### 效果
+
+* app 里：站点列表第 2 项「TMDB海报墙」→ 分类海报墙（海报带 ⭐ 评分角标）→
+  点影片进原生深色详情页，底部是暴风/量子/非凡 三组播放源
+* 浏览器里：`http://10.0.0.11:8099/hai/poster/`（或公网 `/hai/poster/`）
+  —— 大图 hero + 海报墙 + 详情页，纯 CSS 无 JS，老 WebView 也不塌版
 
 ---
 

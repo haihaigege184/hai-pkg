@@ -129,6 +129,13 @@ PUBLIC_BASE = PUBLIC_BASES[0] if PUBLIC_BASES else ""
 # 局域网可达基址（只用于「接口状态」这类展示：告诉用户电视机该填哪个地址）。
 # 留空则自动探测本机局域网 IP。
 LAN_BASE = os.environ.get("OKTV_LAN_BASE", "").rstrip("/")
+
+# 中枢自己的 host（自建站点会把中枢地址写进 api，这些地址不是「上游站源」，
+# 不能进域名池、不参与巡检，否则面板会多出一条探自己的噪音记录）。
+# 默认值就是本机局域网 IP；换服务器时用 OKTV_SELF_HOSTS 覆盖（逗号分隔）。
+SELF_HOSTS = [h.strip().lower() for h in
+              re.split(r"[,;]+", os.environ.get("OKTV_SELF_HOSTS", "10.0.0.11"))
+              if h.strip()]
 # 反向代理挂载前缀，如 hub 挂在 https://host/oktv 下则填 /oktv（默认无前缀）
 PREFIX = os.environ.get("OKTV_PREFIX", "").rstrip("/")
 
@@ -561,6 +568,6 @@ MARK_NAMES = os.environ.get("OKTV_MARK_NAMES", "0") == "1"
 SITE_ORDER_ENABLED = os.environ.get("OKTV_SITE_ORDER", "1") == "1"
 # 置顶表：可写 key / api / 池 TAG 的完整值，或 name 的子串（中英文都顺手）
 SITE_PIN_TOP = [x.strip() for x in os.environ.get(
-    "OKTV_SITE_PIN_TOP", "csp_Config,网盘配置").split(",") if x.strip()]
+    "OKTV_SITE_PIN_TOP", "csp_Config,网盘配置,TMDBWall").split(",") if x.strip()]
 SITE_PIN_NEXT = [x.strip() for x in os.environ.get(
     "OKTV_SITE_PIN_NEXT", "Wogg,玩偶哥哥,Mogg,木偶哥哥").split(",") if x.strip()]

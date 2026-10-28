@@ -153,7 +153,16 @@ def _local_refs(site):
 
 def _is_local_host(url):
     host = S.norm_host(url)
-    return host in _LOCAL_HOSTS or host.startswith("127.")
+    if host in _LOCAL_HOSTS or host.startswith("127."):
+        return True
+    # 中枢自己的地址（自建站点的 api 就写的中枢）同样不算远端站源
+    own = set(getattr(C, "SELF_HOSTS", []) or [])
+    for base in [getattr(C, "LAN_BASE", "")] + list(getattr(C, "PUBLIC_BASES", []) or []):
+        if base:
+            h = S.norm_host(base)
+            if h:
+                own.add(h)
+    return host in own
 
 
 # 上游配置里混着「说明/公告」这类**文档条目**（api 常常也是 csp_XPath，
@@ -294,6 +303,23 @@ def _candidate_urls(site, limit=3):
         if u not in out:
             out.append(u)
     return out[:limit]
+
+
+def _ext_base(site):
+    """站点在域名池里的基址；没有远端地址返回空串。
+
+    与探测闸同一套取址逻辑（`_candidate_urls`）。上游有些站点的 ext 就是
+    一整个地址（如厂长影视 `ext=https://cz01.vip`），`S.parse_ext` 只认带
+    `$$$` 的形态、对这种返回 None —— 早先 seed_pool 会整个漏掉它们，
+    表现为「加得进来、探测也通过，却既不巡检也不参与漂移修复」。
+    本地/私有地址（127.0.0.1 等）规整后是空串，自动排除。
+    **中枢自己的地址同样排除**：自建站点（如 TMDB 海报墙）的 api 指向中枢，
+    那是本站不是上游站源，进了域名池只会让巡检去探自己。
+    """
+    urls = _candidate_urls(site, limit=1)
+    if not urls or _is_local_host(urls[0]):
+        return ""
+    return S.norm_base(urls[0])
 
 
 def probe_url(url, timeout=10):
@@ -677,14 +703,7 @@ def seed_pool(pool):
         tag = str((rec or {}).get("tag") or "")
         if not tag:
             continue
-        base = ""
-        info = S.parse_ext(site.get("ext"))
-        if info:
-            base = S.norm_base(info.get("base") or "")
-        if not base:
-            api = str(site.get("api") or "")
-            if api.startswith("http"):
-                base = S.norm_base(api)
+        base = _ext_base(site)
         if not base:
             continue
         ent = pool.setdefault(tag, {"tag": tag, "name": site.get("name") or key,

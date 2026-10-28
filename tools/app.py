@@ -30,7 +30,7 @@ from core import config as C          # noqa: E402
 from core import (absbase, addsite, checkin_ck, ckvault, dav, devices, endpoints, epbench,  # noqa: E402
                   gateway, health, libfill, navwatch, notify, patch, pkgupdate, probe,
                   relay, renderbase, report, siteorder, sources as S, store, sync,
-                  verify)
+                  tmdbwall, verify, posterweb)
 
 app = Flask(__name__, static_folder=None)
 bp = Blueprint("oktv", __name__)
@@ -785,6 +785,52 @@ def hai_jsm():
 @bp.route("/hai/version.json")
 def hai_version():
     return version_json()
+
+
+@bp.route("/hai/poster/")
+def hai_poster():
+    """豪华海报墙网页（服务端渲染的暗色页面，电视浏览器/手机都能开）"""
+    try:
+        t = int(request.args.get("t") or 1)
+    except ValueError:
+        t = 1
+    try:
+        pg = int(request.args.get("pg") or 1)
+    except ValueError:
+        pg = 1
+    return Response(posterweb.page_home(t, pg),
+                    mimetype="text/html; charset=utf-8",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@bp.route("/hai/poster/d/<vid>")
+def hai_poster_detail(vid):
+    return Response(posterweb.page_detail(vid),
+                    mimetype="text/html; charset=utf-8",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@bp.route("/hai/tmdb/api.php/provide/vod/", methods=["GET", "POST"])
+def hai_tmdb_vod():
+    """「TMDB 海报墙」数据源（苹果CMS V10 兼容）
+
+    app 里配成 type=1 站点即可原生渲染：分类页是海报墙、详情页是深色信息栏，
+    数据来自 TMDB、播放源实时聚合暴风/量子/非凡。
+
+    为什么不改豆瓣那个白色网页：页面 URL/UA/注入 CSS 全在 pg.jar 里硬编码，
+    jar 受 manifest 哈希红线保护 —— 只能另起一个原生站点替代它。
+    """
+    try:
+        body = tmdbwall.handle({k: v for k, v in request.args.items()})
+    except Exception as exc:                       # 绝不让 500 把 app 的搜索打断
+        app.logger.warning("tmdbwall handle failed: %s", exc)
+        body = {"code": 1, "msg": "数据列表", "page": 1, "pagecount": 0,
+                "limit": 20, "total": 0, "list": [],
+                "class": tmdbwall._classes()}
+    payload = json.dumps(body, ensure_ascii=False)
+    return Response(payload, mimetype="application/json; charset=utf-8",
+                    headers={"Cache-Control": "no-cache",
+                             "Access-Control-Allow-Origin": "*"})
 
 
 @bp.route("/hai/lib/<path:p>", methods=list(_WRITE_METHODS))
