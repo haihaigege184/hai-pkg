@@ -17,6 +17,7 @@ app 原生详情页的排版在 pg.jar 里，改不了；豆瓣那个网页的�
 from __future__ import annotations
 
 import html
+import re
 
 from . import tmdbwall as T
 
@@ -105,6 +106,17 @@ def _e(s) -> str:
     return html.escape(str(s or ""))
 
 
+def _pic(u) -> str:
+    """图片地址改成站内相对路径，走中枢 `/hai/img` 代理。
+
+    两个原因：电视/手机直连 images.tmdb.org 慢且容易裂图；网页可能从局域网
+    或公网任意入口打开，绝对地址在另一端就挂。相对路径交给浏览器按当前入口补全。
+    """
+    s = str(u or "")
+    s = re.sub(r"^https?://images\.tmdb\.org/t/p/", "/hai/img/t/p/", s)
+    s = re.sub(r"^https?://[^/]+(/hai/img/.*)$", r"\1", s)
+    return html.escape(s)
+
 def _page(title: str, body: str) -> str:
     return (
         "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
@@ -119,7 +131,7 @@ def _page(title: str, body: str) -> str:
 def _card(it: dict) -> str:
     return (
         f"<a class=\"card\" href=\"/hai/poster/d/{_e(it.get('vod_id'))}\">"
-        f"<div class=\"pic\"><img src=\"{_e(it.get('vod_pic'))}\" loading=\"lazy\" alt=\"\">"
+        f"<div class=\"pic\"><img src=\"{_pic(it.get('vod_pic'))}\" loading=\"lazy\" alt=\"\">"
         f"<span class=\"badge\">{_e(it.get('vod_remarks'))}</span></div>"
         f"<h3>{_e(it.get('vod_name'))}</h3>"
         f"<div class=\"sub\">{_e(it.get('vod_year'))}</div></a>"
@@ -134,7 +146,7 @@ def page_home(type_id: int = 1, page: int = 1) -> str:
     if items:
         top = items[0]
         d = T.detail(top.get("vod_id"), with_plays=False) if top.get("vod_id") else {}
-        bg = (d or {}).get("vod_pic_slide") or top.get("vod_pic") or ""
+        bg = _pic((d or {}).get("vod_pic_slide") or top.get("vod_pic") or "")
         desc = (d or {}).get("vod_content", "").split("\n\n")[0][:180]
         chips = []
         if top.get("vod_remarks"):
@@ -174,7 +186,7 @@ def page_detail(vid: str) -> str:
     if not d:
         return _page("未找到", "<div class=\"brand\"><b>海报墙</b></div>"
                               "<p class=\"desc\">TMDB 没有这条数据。</p>")
-    bg = d.get("vod_pic_slide") or ""
+    bg = _pic(d.get("vod_pic_slide") or "")
     chips = []
     if d.get("vod_remarks"):
         chips.append(f"<span class=\"chip score\">{_e(d['vod_remarks'])}</span>")
@@ -211,7 +223,7 @@ def page_detail(vid: str) -> str:
     body = (
         f"<a class=\"back\" href=\"/hai/poster/\">← 返回海报墙</a>"
         "<div class=\"dtop\">"
-        f"<div class=\"poster\"><img src=\"{_e(d.get('vod_pic'))}\" alt=\"\"></div>"
+        f"<div class=\"poster\"><img src=\"{_pic(d.get('vod_pic'))}\" alt=\"\"></div>"
         "<div class=\"meta\">"
         f"<h1>{_e(d.get('vod_name'))}</h1>"
         f"<div class=\"chips\">{''.join(chips)}</div>"

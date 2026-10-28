@@ -158,6 +158,11 @@ def _tmdb(path: str, **params):
 
 
 def _img(path: str, size: str = "w500") -> str:
+    """海报地址 —— 这里给 TMDB 原始地址。
+
+    改写中枢代理地址由调用方做（app.py 按请求 Host 改、posterweb 改相对路径），
+    因为只有那一层知道端是从局域网还是公网进来的；写死在这里两端必有一端图裂。
+    """
     if not path:
         return ""
     return f"{TMDB_IMG}/{size}{path}"
@@ -205,7 +210,9 @@ def _list_item(it: dict, type_id: int, type_name: str) -> dict:
     return {
         "vod_id": _vid(it),
         "vod_name": _name_of(it),
-        "vod_pic": _img(it.get("poster_path")),
+        # 列表用 w342：海报墙一屏 20 张，尺寸减半后代理拉取快一倍，
+        # 电视上肉眼也看不出差别（详情页才用 w780/w1280）
+        "vod_pic": _img(it.get("poster_path"), "w342"),
         "vod_remarks": _remark_of(it),
         "vod_year": _year_of(it),
         "type_id": type_id,
@@ -354,6 +361,11 @@ def _plays(title: str, year: str):
     """播放源：**网盘优先**（花卷/玩偶/木偶），一个都拿不到才兜底采集站。
 
     电视上采集站又慢又卡，所以只在前者全灭时启用，避免「干脆啥都没有」。
+
+    线路名统一成 app 原生站那种短名（`夸克` / `阿里` / `UC`）：
+    panwall 返回的是 `花卷·夸克` 这种带站点的名字，直接塞给 app 会变成一长排
+    「花卷·夸克·网盘」「玩偶·夸克·网盘」，电视上一行放不下、也看不出区别。
+    同一网盘最多留两条（不同站给的常是不同分享，互为备份），第二条加后缀 2。
     """
     pan = []
     try:
@@ -362,7 +374,14 @@ def _plays(title: str, year: str):
     except Exception:
         pan = []
     if pan:
-        return [(f"{n}·网盘", u) for n, u in pan]
+        out, seen = [], {}
+        for n, u in pan:
+            pname = n.split("·")[1] if "·" in n else n
+            seen[pname] = seen.get(pname, 0) + 1
+            if seen[pname] > 2:
+                continue
+            out.append((pname if seen[pname] == 1 else f"{pname}{seen[pname]}", u))
+        return out
     if PULL_MODE == "0":
         return []
     return collect_play(title, year)
@@ -454,6 +473,7 @@ def _build_meta(vid: str, kind: str, tid: str) -> dict:
         "vod_director": "、".join(directors),
         "vod_content": content,
         "vod_remarks": _remark_of(d),
+        "vod_pubdate": str(d.get("release_date") or d.get("first_air_date") or ""),
         "type_name": genres or ("电影" if kind == "movie" else "剧集"),
         "vod_play_from": "",
         "vod_play_url": "",

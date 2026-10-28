@@ -37,9 +37,11 @@ app 就会用自己那套网盘模块（`lib/tokenm.json` 里的登录态）去�
 """
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -177,6 +179,62 @@ def _share_id(url: str) -> str:
     return url[-24:]
 
 
+# 网盘分享链接有效性缓存：sid → (是否可用, 过期时间)
+_LINK_TTL = 6 * 3600
+_link_cache: dict[str, tuple[bool, float]] = {}
+_LINK_API = {
+    "quark": "https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc",
+    "uc": "https://pc-api.uc.cn/1/clouddrive/share/sharepage/token?pr=UCBrowser&fr=pc",
+}
+
+
+def _share_ok(url: str):
+    """夸克/UC 分享链接还能不能打开。
+
+    2026-10-29 实测出来的硬需求：**木偶站给的夸克链接全是死的**
+    （`404 分享地址已失效` 或 `403 分享者用户封禁链接查看受限`），
+    而花卷/玩偶的是活的。原先按「木偶最快」把它排第一条，
+    用户点下去必然播放失败 —— 这就是「点了直接播还播失败」的真因。
+
+    返回 True 可用 / False 已死 / None 不校验（其他网盘或不认识的形态）。
+    """
+    low = str(url or "").lower()
+    if "pan.quark.cn/s/" in low:
+        kind = "quark"
+    elif "drive.uc.cn/s/" in low:
+        kind = "uc"
+    else:
+        return None                      # 阿里/天翼/115 暂不校验，按可用处理
+
+    sid = _share_id(url)
+    now = time.time()
+    with _lock:
+        hit = _link_cache.get(sid)
+        if hit and hit[1] > now:
+            return hit[0]
+
+    body = json.dumps({"pwd_id": sid, "passcode": ""}).encode()
+    ok = True
+    try:
+        req = urllib.request.Request(_LINK_API[kind], data=body, headers={
+            "Content-Type": "application/json", "User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            d = json.loads(r.read().decode("utf-8", "replace"))
+        # 夸克/UC 成功返回 status=200（也有 0），失败是 404/403/41011 之类
+        ok = d.get("status") in (0, 200) and bool(d.get("data"))
+    except urllib.error.HTTPError as e:
+        ok = False                        # 404 失效 / 403 分享者被封
+    except Exception:
+        return None                       # 网络抖动：别误杀，交给播放器试
+
+    with _lock:
+        if len(_link_cache) > 800:
+            for k in [k for k, (_, e) in _link_cache.items() if e < now]:
+                _link_cache.pop(k, None)
+        _link_cache[sid] = (bool(ok), now + _LINK_TTL)
+    return bool(ok)
+
+
 def _provider_of(url: str) -> tuple[str, int]:
     low = url.lower()
     for key, name, rank in PROVIDERS:
@@ -262,6 +320,30 @@ def _groups(html: str, want: str):
     return out, [u for b in buckets.values() for u in b.values()]
 
 
+def _alive(pairs: list[tuple[str, str]], budget: float = 2.5):
+    """把死链的组剔掉。校验不出来（网络抖动）的**保留**，宁可让播放器试一次。
+
+    并发校验、总预算 2.5 秒 —— 详情页本来就 2 秒左右，加太多就变卡。
+    """
+    if not pairs:
+        return pairs
+    res: list = [None] * len(pairs)
+
+    def work(i: int, pair: tuple[str, str]) -> None:
+        first = pair[1].split("$", 1)[-1].split("#")[0]
+        res[i] = _share_ok(first)
+
+    ths = []
+    for i, p in enumerate(pairs):
+        t = threading.Thread(target=work, args=(i, p), daemon=True)
+        t.start()
+        ths.append(t)
+    end = time.time() + budget
+    for t in ths:
+        t.join(max(0.02, end - time.time()))
+    return [p for i, p in enumerate(pairs) if res[i] is not False]
+
+
 def _one_site(site: dict, title: str, deadline: float):
     """单站：搜索 → 最多两个候选详情 → 命中返回 [(组名, '第1集$url#...')]"""
     if time.time() > deadline:
@@ -295,8 +377,9 @@ def _one_site(site: dict, title: str, deadline: float):
         all_urls.extend(urls)
         _learn(title, urls)
         # 一个站最多两个网盘商，免得详情页线路多到翻页
-        return [(f"{site['name']}·{g}", "#".join(f"{lb}${u}" for lb, u in eps))
-                for g, eps in groups[:2]]
+        pairs = [(f"{site['name']}·{g}", "#".join(f"{lb}${u}" for lb, u in eps))
+                 for g, eps in groups[:2]]
+        return _alive(pairs) or None
     if all_urls:
         _learn(title, all_urls)
     return None
@@ -354,30 +437,25 @@ def collect(title: str, year: str = "") -> list[tuple[str, str]]:
         return hit                            # type: ignore[return-value]
 
     out: list[tuple[str, str]] = []
-    fast = [s for s in SITES if s["name"] == "木偶"] or SITES[:1]
-    for site in fast:
-        res = _one_site(site, title, time.time() + 3.5)
+    tried: list[str] = []
+    # 顺序按「链接质量」排，不按速度排：2026-10-29 实测木偶给的夸克链接
+    # 全是 403 封禁/404 失效，花卷和玩偶的是活的。先拿能播的，再拿快的。
+    end = time.time() + 9.0
+    for name in ("花卷", "木偶", "玩偶"):
+        site = next((s for s in SITES if s["name"] == name), None)
+        if not site or time.time() > end:
+            continue
+        tried.append(name)
+        res = _one_site(site, title, min(end, time.time() + 5.5))
         if res:
             out.extend(res)
+            break                     # 拿到活源先用，剩下的丢后台补
     if out:
         out = _sorted(out)[:4]
         _cache_set(key, out)
-        first_name = "|".join(n for n, _ in out)
-        threading.Thread(target=_bg_fill, args=(key, title, first_name),
+        done = "|".join(f"{n}·" for n in tried)
+        threading.Thread(target=_bg_fill, args=(key, title, done),
                          daemon=True).start()
         return out
-
-    # 木偶没命中：串行兜底，整体 6 秒内收工，能拿到几组算几组
-    deadline = time.time() + 6.0
-    for site in SITES:
-        if time.time() > deadline:
-            break
-        res = _one_site(site, title, deadline)
-        if res:
-            out.extend(res)
-            if len(out) >= 3:
-                break
-    out = _sorted(out)[:4]
-    if out:                                   # 空结果不缓存，下次还能再试
-        _cache_set(key, out)
+    # 全站死链：不缓存，过一会儿还能再试（站方会更新资源）
     return out

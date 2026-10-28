@@ -17,9 +17,11 @@ import gzip as _gzip
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import time
+import urllib.request
 
 from flask import (Blueprint, Flask, Response, g, jsonify, request,
                    send_from_directory)
@@ -36,6 +38,11 @@ app = Flask(__name__, static_folder=None)
 bp = Blueprint("oktv", __name__)
 
 F_ACCESS = os.path.join(C.LOG_DIR, "access.jsonl")
+
+# TMDB 图床代理（见 /hai/img 路由）
+_IMG_HOST = "https://images.tmdb.org"
+_IMG_DIR = os.path.join(C.DATA_DIR, "imgcache")
+_TMDB_IMG = "https://images.tmdb.org"
 
 # 嗅探豁免：/api/ck* 是查询/管理接口，其响应与语义由自己的 handler 负责，
 # 再走一遍通用嗅探只会重复入库。
@@ -810,6 +817,65 @@ def hai_poster_detail(vid):
                     headers={"Cache-Control": "no-cache"})
 
 
+@bp.route("/hai/img/<path:rest>")
+def hai_img(rest):
+    """TMDB 图片代理 —— 电视从局域网取图，别去直连境外图床
+
+    路径与 TMDB 一致：`/hai/img/t/p/w342/xxxx.jpg`。
+    为什么需要：电视端直连 images.tmdb.org 一张海报 300KB、2~3 秒起，
+    海报墙几十张图就卡成一片灰；走中枢代理后是局域网 + 本地缓存，秒开。
+    代理拿不到就 302 回原地址，宁可直接连也别让端上一片空白。
+    """
+    safe = "/".join(x for x in rest.split("/") if x and x not in (".", ".."))
+    if not re.match(r"^t/p/[A-Za-z0-9_]+/[A-Za-z0-9\-_]+\.(jpg|jpeg|png|webp)$", safe or ""):
+        return Response("bad path", status=400)
+
+    ext = safe.rsplit(".", 1)[-1].lower()
+    name = hashlib.sha1(safe.encode("utf-8")).hexdigest()[:20] + "." + ext
+    path = os.path.join(_IMG_DIR, name)
+    if os.path.exists(path):
+        return send_from_directory(_IMG_DIR, name, max_age=2592000)
+
+    try:
+        req = urllib.request.Request(_IMG_HOST + "/" + safe,
+                                     headers={"User-Agent": "oktv-hub/1.0"})
+        with urllib.request.urlopen(req, timeout=12) as r:
+            data = r.read()
+        if not data:
+            raise ValueError("empty body")
+        os.makedirs(_IMG_DIR, exist_ok=True)
+        tmp = path + ".part"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        _img_gc()
+        return Response(data,
+                        mimetype="image/jpeg" if ext in ("jpg", "jpeg") else "image/" + ext,
+                        headers={"Cache-Control": "public, max-age=2592000"})
+    except Exception as exc:                       # noqa: BLE001
+        app.logger.info("img proxy fallback %s: %s", safe, exc)
+        return Response(status=302, headers={"Location": _IMG_HOST + "/" + safe})
+
+
+def _img_gc(limit: int = 3000) -> None:
+    """缓存图片数量上限，超了删最旧的 —— 海报墙翻几页就上千张，别把盘塞满"""
+    try:
+        if not os.path.isdir(_IMG_DIR):
+            return
+        files = [(os.path.getmtime(os.path.join(_IMG_DIR, n)), n)
+                 for n in os.listdir(_IMG_DIR) if n.endswith((".jpg", ".png", ".webp"))]
+        if len(files) <= limit:
+            return
+        files.sort()
+        for _, n in files[:len(files) - limit]:
+            try:
+                os.remove(os.path.join(_IMG_DIR, n))
+            except OSError:
+                pass
+    except Exception:                              # noqa: BLE001
+        pass
+
+
 @bp.route("/hai/tmdb/api.php/provide/vod/", methods=["GET", "POST"])
 def hai_tmdb_vod():
     """「TMDB 海报墙」数据源（苹果CMS V10 兼容）
@@ -827,11 +893,20 @@ def hai_tmdb_vod():
         body = {"code": 1, "msg": "数据列表", "page": 1, "pagecount": 0,
                 "limit": 20, "total": 0, "list": [],
                 "class": tmdbwall._classes()}
+    # 海报改走中枢代理：端直连 images.tmdb.org 一张图 300KB、2~3 秒，
+    # 海报墙几十张就成一片灰。换成「端访问接口时用的那个地址」取图
+    # （请求 Host 就是它），局域网内秒开，也不会在外网入口图裂。
+    host = request.host_url.rstrip("/") + "/hai/img"
+    for it in body.get("list") or []:
+        for k in ("vod_pic", "vod_pic_slide"):
+            v = str(it.get(k) or "")
+            if v.startswith(_TMDB_IMG):
+                it[k] = host + v[len(_TMDB_IMG):]
+
     payload = json.dumps(body, ensure_ascii=False)
     return Response(payload, mimetype="application/json; charset=utf-8",
                     headers={"Cache-Control": "no-cache",
                              "Access-Control-Allow-Origin": "*"})
-
 
 @bp.route("/hai/lib/<path:p>", methods=list(_WRITE_METHODS))
 def hai_lib(p):
