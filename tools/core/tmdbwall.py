@@ -32,6 +32,7 @@ URL、桌面 UA、注入的 CSS（`#wrapper>*:not(#content){display:none}` +
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import urllib.parse
@@ -68,11 +69,17 @@ CLASSES = [
 _CLASS_BY_ID = {c[0]: c for c in CLASSES}
 
 # 采集站（包里已有这三个 type=1 站点，直接复用，不额外引入新源）
+#
+# 2026-10-28 调整：电视实测采集站播放**很卡**（边转码边播，4K 盒子扛不住），
+# 用户明确要求改用网盘源 ⇒ 采集站降级为**兜底**：只有当三个网盘站都拿不到资源
+# 时才用它们，保证「有片可看」而不是「一片空白」。设 OKTV_PLAY_PULL=0 可彻底关闭。
 PULL_SITES = [
-    ("暴风", "https://bfzyapi.com/api.php/provide/vod/"),
-    ("量子", "http://cj.lziapi.com/api.php/provide/vod/"),
-    ("非凡", "http://cj.ffzyapi.com/api.php/provide/vod/"),
+    ("暴风·采集", "https://bfzyapi.com/api.php/provide/vod/"),
+    ("量子·采集", "http://cj.lziapi.com/api.php/provide/vod/"),
+    ("非凡·采集", "http://cj.ffzyapi.com/api.php/provide/vod/"),
 ]
+
+PULL_MODE = os.environ.get("OKTV_PLAY_PULL", "auto").strip().lower()   # auto|1|0
 
 _TTL_LIST = 30 * 60
 _TTL_DETAIL = 12 * 3600
@@ -343,6 +350,30 @@ def collect_play(title: str, year: str):
 # 详情
 # ---------------------------------------------------------------------------
 
+def _plays(title: str, year: str):
+    """播放源：**网盘优先**（花卷/玩偶/木偶），一个都拿不到才兜底采集站。
+
+    电视上采集站又慢又卡，所以只在前者全灭时启用，避免「干脆啥都没有」。
+    """
+    pan = []
+    try:
+        from . import panwall
+        pan = panwall.collect(title, year)
+    except Exception:
+        pan = []
+    if pan:
+        return [(f"{n}·网盘", u) for n, u in pan]
+    if PULL_MODE == "0":
+        return []
+    return collect_play(title, year)
+
+
+def _as_int(v, default: int = 1) -> int:
+    try:
+        return int(str(v).strip() or default)
+    except (TypeError, ValueError):
+        return default
+
 def detail(vid: str, with_plays: bool = True) -> dict:
     """站点详情。
 
@@ -393,7 +424,7 @@ def detail(vid: str, with_plays: bool = True) -> dict:
     if extra:
         content = content + "\n\n" + "\n".join(extra)
 
-    plays = collect_play(name, year) if with_plays else []
+    plays = _plays(name, year) if with_plays else []
     froms = "$$$".join(n for n, _ in plays)
     urls = "$$$".join(u for _, u in plays)
 
@@ -438,11 +469,19 @@ def handle(args: dict) -> dict:
     }
 
     # 详情：?ac=detail&ids=m550,t1399
+    #
+    # 注意：设备实测会发 `?t=1&ac=detail&pg=1` —— 苹果 CMS 里 ac=detail 带 t 就是
+    # **分类浏览**（不是查详情）。早先只按 ids 解析，导致除「推荐」外全部分类空列表。
     if ac == "detail":
-        ids = str(args.get("ids") or "").split(",")
-        items = [x for x in (detail(i.strip()) for i in ids[:20]) if x]
-        body.update({"page": 1, "pagecount": 1, "limit": 20, "total": len(items),
-                     "list": items})
+        raw_ids = str(args.get("ids") or args.get("id") or "").strip()
+        if raw_ids:
+            ids = [x.strip() for x in raw_ids.split(",") if x.strip()]
+            items = [x for x in (detail(i) for i in ids[:20]) if x]
+            body.update({"page": 1, "pagecount": 1, "limit": 20,
+                         "total": len(items), "list": items})
+            return body
+        t = _as_int(args.get("t") or args.get("type_id"), 1)
+        body.update(list_page(t, page))
         return body
 
     # 搜索：?wd=关键词
@@ -451,7 +490,7 @@ def handle(args: dict) -> dict:
         body.update(search(wd, page))
         return body
 
-    # 列表：?ac=videolist&t=1&pg=1  /  ?ac=list
-    t = int(args.get("t") or args.get("type_id") or 1)
+    # 列表：?ac=videolist&t=1&pg=1  /  ?ac=list  /  ?（首页推荐）
+    t = _as_int(args.get("t") or args.get("type_id"), 1)
     body.update(list_page(t, page))
     return body
