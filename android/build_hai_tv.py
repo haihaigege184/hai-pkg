@@ -117,8 +117,11 @@ def step_smali(dec: str):
     print("[2/6] 注入 WebDetailActivity")
     dst = os.path.join(dec, ACT_DIR)
     os.makedirs(dst, exist_ok=True)
-    for fn in ("WebDetailActivity.smali", "WebDetailActivity$1.smali"):
-        shutil.copy2(os.path.join(SMALI_DIR, fn), os.path.join(dst, fn))
+    for fn in ("WebDetailActivity.smali", "WebDetailActivity$1.smali",
+               "SearchActivity.smali"):
+        src = os.path.join(SMALI_DIR, fn)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(dst, fn))
 
     p = os.path.join(dec, VIDEO_ACT)
     s = open(p, encoding="utf-8").read()
