@@ -58,11 +58,30 @@ START_PAT = re.compile(
     re.S)
 
 START_NEW = """.method public static OoOo0oOoO0o0oO0O(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
-    .locals 0
+    .locals 9
 
-    # 海哥影视：改为先进自建的 WebDetailActivity（暗色豪华详情页），
-    # 由页面上的「▶ 播放」按钮再调回 VideoActivity 开始播。
+    # 海哥影视：5 参入口是「点某一部片」统一入口。
+    # 仅 TMDBWall 走自建豪华海报页；其余所有站点（玩偶/花卷/木偶等网盘资源类）
+    # 原样进 PG 原版选集页，绝不劫持，保留原版全部播放能力。
+    const-string v0, "TMDBWall"
+    invoke-virtual {p1, v0}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
+    move-result v0
+    if-eqz v0, :cond_original
+
     invoke-static {p0, p1, p2, p3, p4}, Lcom/fongmi/android/tv/ui/activity/WebDetailActivity;->start(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
+    return-void
+
+    :cond_original
+    const/4 v8, 0x0
+    const/4 v6, 0x0
+    const/4 v5, 0x0
+    const/4 v7, 0x0
+    move-object v0, p0
+    move-object v1, p1
+    move-object v2, p2
+    move-object v3, p3
+    move-object v4, p4
+    invoke-static/range {v0 .. v8}, Lcom/fongmi/android/tv/ui/activity/VideoActivity;->OoOoO0O0oOoO0O0O(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZZ)V
 
     return-void
 .end method"""
