@@ -7,7 +7,8 @@
     manifest 里也没有任何 WebView 容器可以借用。
     ⇒ 想「点开先看简介」，只能自己加一个 Activity。
 
-    改包同时把 applicationId 换成 com.hai.tv，让「海哥影视」和原版**共存**，
+    改包同时把 applicationId 换成 PG 白名单内的空闲包名 com.hisen.android.tv，
+    让「海哥影视」和电视上的 OK影视(com.fongmi.android.tv)**共存**，
     原版不动、随时可用（这一点是海哥明确要求的，别再做「卸载原版」这种操作）。
 
 用法（工作目录必须是纯英文路径 —— aapt2 在中文路径下打不开 res 目录）：
@@ -36,7 +37,11 @@ KEYSTORE = os.environ.get("HAITV_KS", r"F:\tvmod\haitv.keystore")
 KS_PASS = os.environ.get("HAITV_KS_PASS", "haitv123")
 KS_ALIAS = os.environ.get("HAITV_KS_ALIAS", "haitv")
 
-NEW_PKG = "com.hai.tv"
+# 2026-10-30 定稿：包名用 com.hisen.android.tv —— 它是 PG jar 白名单四包名之一
+# （fongmi/hisen/silent/layaboxhmhz），且电视上没装这个包（电视上的 OK影视 2.7.3
+# 用的其实是 com.fongmi.android.tv，pm list 已核实）。用它 = 天生过白名单，
+# 不再依赖 jarpatch；jarpatch 保留作兜底（NEW_NAME 已同步改成同名，等于不打）。
+NEW_PKG = "com.hisen.android.tv"
 OLD_PKG = "com.fongmi.android.tv"
 APP_NAME = "海哥影视"
 

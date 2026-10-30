@@ -11,6 +11,7 @@
 """
 import json
 import os
+import urllib.parse
 
 from . import config as C
 from . import health
@@ -82,6 +83,32 @@ def _applied_bases():
         return {}
 
 
+def _added_keys():
+    """已加入的新站源 key 集合 —— build() 里给「单段 ext」补合成 info 用"""
+    try:
+        from . import addsite
+        return set(addsite.added_keys())
+    except Exception:
+        return set()
+
+
+def _url_path(u):
+    """URL 的路径部分（已去首尾斜杠）；裸域名/本地地址返回空串。
+
+    解析不出东西时返回 "?"（非空）—— 调用方按「有路径」处理，宁可跳过。
+    """
+    try:
+        t = str(u or "").strip()
+        if "://" not in t:
+            t = "http://" + t
+        p = urllib.parse.urlparse(t)
+        if not p.hostname:
+            return "?"
+        return (p.path or "").strip("/")
+    except Exception:
+        return "?"
+
+
 def build(pool, mode="dual", public_base=None):
     """生成修复后的 jsm.json 内容（dict）
 
@@ -107,11 +134,26 @@ def build(pool, mode="dual", public_base=None):
 
     changed, offline, clone_sites = [], [], []
     new_applied = {}
+    added_keys = _added_keys()
     for s in jsm.get("sites", []):
         ext = s.get("ext")
         if not isinstance(ext, str):
             continue
         info = S.parse_ext(ext)
+        single = False
+        if not info:
+            # 「ext 就是一整个地址」的新增站点：`S.parse_ext` 只认带 `$$$` 的
+            # 形态，这种返回 None，会被整片跳过（加得进来、探得过，却既不巡检
+            # 也不换域名）。只给**已加入**的站点补一个合成 info，且仅限不带
+            # 路径的裸域名 —— 带路径的（原版 csp_Market 的 ext 就是
+            # .../json/market.json）换掉会丢路径，宁可继续跳过。
+            # 原版站点一律不碰，core 行为零变化。
+            t = ext.strip()
+            if (t.startswith("http") and str(s.get("key") or "") in added_keys
+                    and not _url_path(t)):
+                info = {"parts": [t], "base": t, "base_idx": 0,
+                        "proxy": "", "tag": "", "rules": ""}
+                single = True
         if not info:
             continue
         # 用与 report.sites_report / sources.build_sources 完全一致的 TAG 推导：
@@ -133,7 +175,9 @@ def build(pool, mode="dual", public_base=None):
         if mode == "gateway":
             gb = gateway_base(tag)
             if gb:
-                s["ext"] = S.set_ext_base(ext, gb)
+                # single=True 时 ext 整个就是地址，直接换（set_ext_base 内部
+                # 靠 parse_ext 定位分段，单段形态会静默不改写）
+                s["ext"] = gb if single else S.set_ext_base(ext, gb)
                 changed.append({"tag": tag, "key": s.get("key"), "to": gb})
             continue
 
@@ -159,7 +203,7 @@ def build(pool, mode="dual", public_base=None):
         if target and S.norm_base(target) != S.norm_base(info["base"]):
             changed.append({"tag": tag, "key": s.get("key"),
                             "from": info["base"], "to": target})
-            s["ext"] = S.set_ext_base(ext, target)
+            s["ext"] = target if single else S.set_ext_base(ext, target)
             new_applied[tag] = target
 
         if best:
@@ -169,7 +213,7 @@ def build(pool, mode="dual", public_base=None):
                     clone = json.loads(json.dumps(s, ensure_ascii=False))
                     clone["key"] = s.get("key", tag) + "_GW"
                     clone["name"] = (s.get("name") or tag) + "·网关"
-                    clone["ext"] = S.set_ext_base(ext, gb)
+                    clone["ext"] = gb if single else S.set_ext_base(ext, gb)
                     clone_sites.append(clone)
         elif alive_any > 0:
             # 有存活地址但质量存疑 —— 保留原地址，也**不判失效、不告警**。
@@ -210,6 +254,19 @@ def build(pool, mode="dual", public_base=None):
 
     # 接口选择页排序：置顶项 + 其余按实测延迟升序（只动顺序，不动内容）
     ostat = O.apply(jsm, pool)
+
+    # 搜索跳过前 N（2026-10-30 海哥）：排序定稿后把最前 N 个站源的
+    # searchable 置 0，端上聚合搜索从第 N+1 个（玩偶）开始出结果。
+    # 只改下发内容这一处，站点定义/verify 判定都不碰。
+    skip_n = max(0, int(getattr(C, "SEARCH_SKIP_N", 0) or 0))
+    if skip_n:
+        skipped = []
+        for s in (jsm.get("sites") or [])[:skip_n]:
+            if s.get("searchable"):
+                s["searchable"] = 0
+                skipped.append(str(s.get("key") or ""))
+        if skipped:
+            ostat["search_skip"] = skipped
 
     # 记下「我们改写过的 base」，供下一轮在没有更好选择时保持（不回退到原版死域名）
     if mode != "gateway":

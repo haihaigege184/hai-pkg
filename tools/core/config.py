@@ -571,3 +571,9 @@ SITE_PIN_TOP = [x.strip() for x in os.environ.get(
     "OKTV_SITE_PIN_TOP", "csp_Config,网盘配置,TMDBWall").split(",") if x.strip()]
 SITE_PIN_NEXT = [x.strip() for x in os.environ.get(
     "OKTV_SITE_PIN_NEXT", "Wogg,玩偶哥哥,Mogg,木偶哥哥").split(",") if x.strip()]
+
+# 搜索跳过前 N（2026-10-30 海哥）：TMDB 详情页的「🔍 搜索」要聚合搜索且
+# 玩偶结果第一顺位。下发的 jsm 里把顺序最前的 N 个站源 searchable 置 0
+# （网盘配置/TMDBWall/豆瓣 —— 它们要么不可搜、要么搜出来播不了），
+# 只影响端上聚合搜索，浏览/点播/选集完全不受影响。0 = 关闭该行为。
+SEARCH_SKIP_N = int(os.environ.get("OKTV_SEARCH_SKIP_N", "3"))

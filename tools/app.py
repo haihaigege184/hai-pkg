@@ -23,7 +23,7 @@ import threading
 import time
 import urllib.request
 
-from flask import (Blueprint, Flask, Response, g, jsonify, request,
+from flask import (Blueprint, Flask, Response, g, jsonify, redirect, request,
                    send_from_directory)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -798,9 +798,10 @@ def hai_version():
 def hai_poster():
     """豪华海报墙网页（服务端渲染的暗色页面，电视浏览器/手机都能开）"""
     try:
-        t = int(request.args.get("t") or 1)
+        # 默认 2（热门电影）：1 是「我的追剧」，刚装好是空的，首页会很难看
+        t = int(request.args.get("t") or 2)
     except ValueError:
-        t = 1
+        t = 2
     try:
         pg = int(request.args.get("pg") or 1)
     except ValueError:
@@ -815,6 +816,110 @@ def hai_poster_detail(vid):
     return Response(posterweb.page_detail(vid),
                     mimetype="text/html; charset=utf-8",
                     headers={"Cache-Control": "no-cache"})
+
+
+@bp.route("/hai/poster/cfg", methods=["GET", "POST"])
+def hai_poster_cfg():
+    """海报墙配置：维护页「海报墙配置」卡的读写口。
+
+    变量：rotate(轮播开关) / interval(换图秒数) / effect(转场) / imgs(图数)。
+    存 data/poster.cfg.json；详情页每次渲染实时读，改完即生效。
+    """
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        cfg = posterweb.save_cfg(data)
+    else:
+        cfg = posterweb.load_cfg()
+    return jsonify(ok=True, cfg=cfg)
+
+
+@bp.route("/hai/poster/play")
+def hai_poster_play():
+    """「▶ 播放」直达站源解析口（2026-10-30 海哥需求）
+
+    详情页打开后由 JS 后台 fetch（不阻塞首屏），拿站源 spider 认的 vod id，
+    把播放按钮的 href 从「haiplay://search?q=」升级成
+    「haiplay://play?site=&id=&name=&pic=」—— app 拦截后直达玩偶选集页。
+    解析不到（站源挂了/没结果）返回 ok=0，播放按钮保持搜索兜底不变。
+    """
+    vid = str(request.args.get("vid") or "").strip()
+    site = str(request.args.get("site") or "玩偶").strip()
+    if not vid:
+        return jsonify(ok=0, error="缺少 vid")
+    d = tmdbwall.detail(vid, with_plays=False)
+    if not d:
+        return jsonify(ok=0, error="未找到影片")
+    try:
+        from core import panwall
+        r = panwall.resolve_vod(site, d.get("vod_name") or "",
+                                d.get("vod_year") or "")
+    except Exception as e:
+        return jsonify(ok=0, error="%s: %s" % (type(e).__name__, e))
+    if not r:
+        return jsonify(ok=0, error="站源搜索无结果")
+    return jsonify(ok=1, site_key="Wogg", site=r["site_name"], id=r["id"],
+                   name=r.get("name") or d.get("vod_name"),
+                   pic=d.get("vod_pic") or "",
+                   title_hit=bool(r.get("title_hit")))
+
+
+@bp.route("/hai/poster/watch", methods=["POST", "GET"])
+def hai_poster_watch():
+    """「一键追剧」按钮的落地页
+
+    用**普通表单 POST + 302 跳回**而不是 fetch/AJAX：电视 WebView 版本老，
+    fetch 不一定有；而且这样点完立刻回到详情页、按钮变成「✓ 已追剧」，
+    不需要额外脚本去刷状态。
+    """
+    from core import watchlist
+
+    vid = str(request.values.get("vid") or "").strip()
+    act = str(request.values.get("act") or "add").strip().lower()
+    back = str(request.values.get("back") or "/hai/poster/").strip()
+    # 只允许跳回本站路径，避免变成开放重定向
+    if not back.startswith("/hai/"):
+        back = "/hai/poster/"
+
+    if vid:
+        try:
+            if act == "del":
+                watchlist.remove(vid)
+            elif act == "toggle":
+                watchlist.toggle(vid, tmdbwall.detail(vid, with_plays=False))
+            else:
+                # 顺手把片名/海报固化进列表：追剧页不依赖 TMDB 也能画
+                watchlist.add(vid, tmdbwall.detail(vid, with_plays=False))
+        except Exception:
+            pass
+    return redirect(back)
+
+
+@bp.route("/hai/watch", methods=["GET", "POST"])
+def hai_watch_api():
+    """追剧列表的 JSON 接口（手机端/自建页面/调试都能用）
+
+    GET  ?act=list
+    GET  ?act=add&vid=m550      / ?act=del&vid=m550   / ?act=toggle&vid=m550
+    """
+    from core import watchlist
+
+    act = str(request.values.get("act") or "list").strip().lower()
+    vid = str(request.values.get("vid") or "").strip()
+    try:
+        if act == "add" and vid:
+            watchlist.add(vid, tmdbwall.detail(vid, with_plays=False))
+        elif act == "del" and vid:
+            watchlist.remove(vid)
+        elif act == "toggle" and vid:
+            watchlist.toggle(vid, tmdbwall.detail(vid, with_plays=False))
+    except Exception:
+        pass
+    return jsonify({
+        "code": 1,
+        "total": len(watchlist.items()),
+        "has": watchlist.has(vid) if vid else False,
+        "list": watchlist.items(),
+    })
 
 
 @bp.route("/hai/img/<path:rest>")

@@ -56,42 +56,91 @@
 
 
 # virtual methods
+# 点「▶ 播放」= 原版列表页点海报，一字不差。
+#
+# 这里**不能**自己拼 VideoActivity 的 Intent —— 原版真正的入口是 9 参静态方法
+# VideoActivity.OoOoO0O0oOoO0O0O(Activity,String,String,String,String,String,ZZZ)，
+# 它在 intent 里除了 key/id/name/pic 还要塞 mark(null) / cast(false) / collect(false)，
+# 走 startActivityForResult(0x3e8)。少这几个 extra，播放器里的「网盘」「弹幕」
+# 设置面板会打不开（实拍反馈），点播放也不再走 PG 的默认播放链路。
+# 所以：只做参数搬运，其余全部交给原版方法自己处理。
 .method public final a(Ljava/lang/String;)V
-    .locals 4
+    .locals 9
 
-    new-instance v0, Landroid/content/Intent;
+    # 海哥影视（2026-10-30 分流定稿）：
+    #   haiplay://play?site=<key>&id=<vodId>&name=&pic= → 跳过搜索页，直达该站源
+    #     的 PG 原版选集页（9 参入口，extra 语义与原版点海报完全一致）。
+    #   haiplay://search?q=片名                        → 原版聚合搜索。
+    invoke-static {p1}, Landroid/net/Uri;->parse(Ljava/lang/String;)Landroid/net/Uri;
+    move-result-object v0
+    const-string v1, "site"
+    invoke-virtual {v0, v1}, Landroid/net/Uri;->getQueryParameter(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v1
+    if-eqz v1, :cond_search
 
-    const-class v1, Lcom/fongmi/android/tv/ui/activity/VideoActivity;
+    # ---- 直达站源选集页 ----
+    const-string v2, "id"
+    invoke-virtual {v0, v2}, Landroid/net/Uri;->getQueryParameter(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v2
+    if-eqz v2, :cond_search
 
-    invoke-direct {v0, p0, v1}, Landroid/content/Intent;-><init>(Landroid/content/Context;Ljava/lang/Class;)V
+    const-string v3, "name"
+    invoke-virtual {v0, v3}, Landroid/net/Uri;->getQueryParameter(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v3
+    if-nez v3, :cond_name_ok
+    iget-object v3, p0, Lcom/fongmi/android/tv/ui/activity/WebDetailActivity;->d:Ljava/lang/String;
+    :cond_name_ok
 
-    const-string v1, "key"
+    const-string v4, "pic"
+    invoke-virtual {v0, v4}, Landroid/net/Uri;->getQueryParameter(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v4
+    if-nez v4, :cond_pic_ok
+    iget-object v4, p0, Lcom/fongmi/android/tv/ui/activity/WebDetailActivity;->e:Ljava/lang/String;
+    :cond_pic_ok
 
-    iget-object v2, p0, Lcom/fongmi/android/tv/ui/activity/WebDetailActivity;->b:Ljava/lang/String;
+    move-object v0, p0
+    const/4 v5, 0x0
+    const/4 v6, 0x0
+    const/4 v7, 0x0
+    const/4 v8, 0x0
+    invoke-static/range {v0 .. v8}, Lcom/fongmi/android/tv/ui/activity/VideoActivity;->OoOoO0O0oOoO0O0O(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZZ)V
+    return-void
 
-    invoke-virtual {v0, v1, v2}, Landroid/content/Intent;->putExtra(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;
+    :cond_search
+    # ---- 聚合搜索：SearchActivity.onResume 预填后调原版搜索执行体 ----
+    const-string v1, "q"
+    invoke-virtual {v0, v1}, Landroid/net/Uri;->getQueryParameter(Ljava/lang/String;)Ljava/lang/String;
+    move-result-object v0
+    if-eqz v0, :cond_search_skip
+    new-instance v1, Landroid/content/Intent;
+    const-class v2, Lcom/fongmi/android/tv/ui/activity/SearchActivity;
+    invoke-direct {v1, p0, v2}, Landroid/content/Intent;-><init>(Landroid/content/Context;Ljava/lang/Class;)V
+    const-string v2, "keyword"
+    invoke-virtual {v1, v2, v0}, Landroid/content/Intent;->putExtra(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;
+    invoke-virtual {p0, v1}, Landroid/app/Activity;->startActivity(Landroid/content/Intent;)V
+    return-void
+    :cond_search_skip
 
-    const-string v1, "id"
+    # 兜底：既无 site 也无 q —— 按当前页面自带的 key/id 进原版选集页（历史行为）。
+    move-object v0, p0
+
+    iget-object v1, p0, Lcom/fongmi/android/tv/ui/activity/WebDetailActivity;->b:Ljava/lang/String;
 
     iget-object v2, p0, Lcom/fongmi/android/tv/ui/activity/WebDetailActivity;->c:Ljava/lang/String;
 
-    invoke-virtual {v0, v1, v2}, Landroid/content/Intent;->putExtra(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;
+    iget-object v3, p0, Lcom/fongmi/android/tv/ui/activity/WebDetailActivity;->d:Ljava/lang/String;
 
-    const-string v1, "name"
+    iget-object v4, p0, Lcom/fongmi/android/tv/ui/activity/WebDetailActivity;->e:Ljava/lang/String;
 
-    iget-object v2, p0, Lcom/fongmi/android/tv/ui/activity/WebDetailActivity;->d:Ljava/lang/String;
+    const/4 v5, 0x0
 
-    invoke-virtual {v0, v1, v2}, Landroid/content/Intent;->putExtra(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;
+    const/4 v6, 0x0
 
-    const-string v1, "pic"
+    const/4 v7, 0x0
 
-    iget-object v2, p0, Lcom/fongmi/android/tv/ui/activity/WebDetailActivity;->e:Ljava/lang/String;
+    const/4 v8, 0x0
 
-    invoke-virtual {v0, v1, v2}, Landroid/content/Intent;->putExtra(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;
-
-    const/16 v1, 0x3e8
-
-    invoke-virtual {p0, v0, v1}, Landroid/app/Activity;->startActivityForResult(Landroid/content/Intent;I)V
+    invoke-static/range {v0 .. v8}, Lcom/fongmi/android/tv/ui/activity/VideoActivity;->OoOoO0O0oOoO0O0O(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZZ)V
 
     return-void
 .end method

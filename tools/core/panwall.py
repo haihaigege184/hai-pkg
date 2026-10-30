@@ -93,15 +93,21 @@ _PNAME_RANK = {name: rank for _, name, rank in PROVIDERS}
 
 
 def _sorted(out):
-    """按「夸克 → 阿里/UC → 百度/115」重排，同权重保留原顺序（木偶在前）。
+    """按「分集数多 → 网盘商权重」重排。
 
-    后台补齐是「追加」进来的，不重排就会出现「木偶·UC 排在 花卷·夸克 前面」，
-    而电视上夸克明显更稳，用户点第一个就踩到慢源。
+    第一优先是**分集数**：2026-10-29 实拍踩到过 —— 某站给「凡人修仙传」挂的
+    夸克分享链接其实是另一部片（FRXX-2026），而且只有孤零零一条「第1集」。
+    按网盘商排序会把它排第一，用户点播放必然「播放地址加载失败」。
+    分集完整的那组（10 集）反而是对的。所以单集的一律往后放；
+    电影本来就只有 1 集，不受影响。
+
+    第二优先才是网盘商（电视上夸克明显更稳）。
     """
     def key(pair):
         parts = pair[0].split("·")
         pname = parts[1] if len(parts) >= 2 else parts[-1]
-        return _PNAME_RANK.get(pname, 8)
+        eps = len([x for x in str(pair[1]).split("#") if x])
+        return (-min(eps, 99), _PNAME_RANK.get(pname, 8))
     return sorted(out, key=key)
 
 _PAN_RE = re.compile(
@@ -162,6 +168,19 @@ def _cache_get(key: str):
         return val
 
 
+def peek(title: str, year: str = "") -> list[tuple[str, str]]:
+    """只读缓存，**绝不发请求**。
+
+    collect() 第一次要 1~5 秒（花卷站慢），详情页渲染拿它当数据源就会卡 3 秒。
+    这里给网页用：缓存里有就显示线路名，没有就返回空，让页面先渲染出来 ——
+    真正的搜索交给「点播放」那一刻，app 那边本来就要等。
+    """
+    title = str(title or "").strip()
+    if not title:
+        return []
+    return _cache_get(f"pan:{title}:{year}") or []
+
+
 def _cache_set(key: str, val):
     with _lock:
         if len(_cache) > 600:
@@ -188,6 +207,54 @@ _LINK_API = {
 }
 
 
+def _share_probe(url: str):
+    """探测分享链接：返回 (是否可用, 分享标题)。
+
+    标题是 2026-10-30 新增的硬需求 —— FRXX-2026 那条毒分享的标题叫「F 凡r」，
+    故意蹭一个「凡」字混进「凡人修仙传」的线路里，光看活性校验拦不住。
+    token 接口响应里本来就带 data.title，顺手续命，零额外请求。
+    """
+    low = str(url or "").lower()
+    if "pan.quark.cn/s/" in low:
+        kind = "quark"
+    elif "drive.uc.cn/s/" in low:
+        kind = "uc"
+    else:
+        return None, ""                   # 阿里/天翼/115 暂不校验，按可用处理
+
+    sid = _share_id(url)
+    now = time.time()
+    with _lock:
+        hit = _link_cache.get(sid)
+        if hit and hit[1] > now:
+            val = hit[0]
+            if isinstance(val, tuple):
+                return val
+            return val, ""                # 旧缓存只有 bool，标题按未知处理
+
+    body = json.dumps({"pwd_id": sid, "passcode": ""}).encode()
+    ok, st = True, ""
+    try:
+        req = urllib.request.Request(_LINK_API[kind], data=body, headers={
+            "Content-Type": "application/json", "User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=8) as r:
+            d = json.loads(r.read().decode("utf-8", "replace"))
+        # 夸克/UC 成功返回 status=200（也有 0），失败是 404/403/41011 之类
+        ok = d.get("status") in (0, 200) and bool(d.get("data"))
+        st = str(((d.get("data") or {}).get("title")) or "")
+    except urllib.error.HTTPError:
+        ok = False                        # 404 失效 / 403 分享者被封
+    except Exception:
+        return None, ""                   # 网络抖动：别误杀，交给播放器试
+
+    with _lock:
+        if len(_link_cache) > 800:
+            for k in [k for k, (_, e) in _link_cache.items() if e < now]:
+                _link_cache.pop(k, None)
+        _link_cache[sid] = ((bool(ok), st), now + _LINK_TTL)
+    return bool(ok), st
+
+
 def _share_ok(url: str):
     """夸克/UC 分享链接还能不能打开。
 
@@ -198,41 +265,23 @@ def _share_ok(url: str):
 
     返回 True 可用 / False 已死 / None 不校验（其他网盘或不认识的形态）。
     """
-    low = str(url or "").lower()
-    if "pan.quark.cn/s/" in low:
-        kind = "quark"
-    elif "drive.uc.cn/s/" in low:
-        kind = "uc"
-    else:
-        return None                      # 阿里/天翼/115 暂不校验，按可用处理
+    ok, _ = _share_probe(url)
+    return ok
 
-    sid = _share_id(url)
-    now = time.time()
-    with _lock:
-        hit = _link_cache.get(sid)
-        if hit and hit[1] > now:
-            return hit[0]
 
-    body = json.dumps({"pwd_id": sid, "passcode": ""}).encode()
-    ok = True
-    try:
-        req = urllib.request.Request(_LINK_API[kind], data=body, headers={
-            "Content-Type": "application/json", "User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            d = json.loads(r.read().decode("utf-8", "replace"))
-        # 夸克/UC 成功返回 status=200（也有 0），失败是 404/403/41011 之类
-        ok = d.get("status") in (0, 200) and bool(d.get("data"))
-    except urllib.error.HTTPError as e:
-        ok = False                        # 404 失效 / 403 分享者被封
-    except Exception:
-        return None                       # 网络抖动：别误杀，交给播放器试
+def _share_title_hit(st: str, want: str) -> bool:
+    """分享标题与目标片名是否对得上（≥2 字公共连续子串即算命中）。
 
-    with _lock:
-        if len(_link_cache) > 800:
-            for k in [k for k, (_, e) in _link_cache.items() if e < now]:
-                _link_cache.pop(k, None)
-        _link_cache[sid] = (bool(ok), now + _LINK_TTL)
-    return bool(ok)
+    「F 凡r」×「凡人修仙传」只有单字「凡」交集 → 挡掉；
+    「凡人修仙传4K合集」「凡修年番」都能正常通过。
+    拿不到标题（其他网盘/请求失败）一律放行，不误杀。
+    """
+    a, b = _norm(st), _norm(want)
+    if not a or not b:
+        return True
+    if a in b or b in a:
+        return True
+    return any(a[i:i + 2] in b for i in range(max(0, len(a) - 1)))
 
 
 def _provider_of(url: str) -> tuple[str, int]:
@@ -320,10 +369,12 @@ def _groups(html: str, want: str):
     return out, [u for b in buckets.values() for u in b.values()]
 
 
-def _alive(pairs: list[tuple[str, str]], budget: float = 2.5):
-    """把死链的组剔掉。校验不出来（网络抖动）的**保留**，宁可让播放器试一次。
+def _alive(pairs: list[tuple[str, str]], budget: float = 2.5, want: str = ""):
+    """把死链/错片的组剔掉。校验不出来（网络抖动）的**保留**，宁可让播放器试一次。
 
     并发校验、总预算 2.5 秒 —— 详情页本来就 2 秒左右，加太多就变卡。
+    want 非空时顺带做片名匹配：分享标题与目标片名对不上的整组剔除
+    （2026-10-30：FRXX-2026 蹭「凡」字混进凡人修仙传线路，播放必出错片）。
     """
     if not pairs:
         return pairs
@@ -331,7 +382,14 @@ def _alive(pairs: list[tuple[str, str]], budget: float = 2.5):
 
     def work(i: int, pair: tuple[str, str]) -> None:
         first = pair[1].split("$", 1)[-1].split("#")[0]
-        res[i] = _share_ok(first)
+        ok, st = _share_probe(first)
+        if ok is False:
+            res[i] = False
+            return
+        if want and st and not _share_title_hit(st, want):
+            res[i] = False
+            return
+        res[i] = True
 
     ths = []
     for i, p in enumerate(pairs):
@@ -379,7 +437,7 @@ def _one_site(site: dict, title: str, deadline: float):
         # 一个站最多两个网盘商，免得详情页线路多到翻页
         pairs = [(f"{site['name']}·{g}", "#".join(f"{lb}${u}" for lb, u in eps))
                  for g, eps in groups[:2]]
-        return _alive(pairs) or None
+        return _alive(pairs, want=title) or None
     if all_urls:
         _learn(title, all_urls)
     return None
@@ -458,4 +516,68 @@ def collect(title: str, year: str = "") -> list[tuple[str, str]]:
                          daemon=True).start()
         return out
     # 全站死链：不缓存，过一会儿还能再试（站方会更新资源）
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 播放直达站源：解析「站源 spider 认的 vod id」（2026-10-30 海哥需求）
+# ---------------------------------------------------------------------------
+
+# app 端 9 参入口要的 id 形态 = 爬虫族 detailContent(id) 里的原始 id。
+# Wogg 系爬虫都是「拿 id 拼 URL」，给完整路径 /voddetail/<n>.html；
+# panwall 自己抓页面用的是纯数字 —— 两种形态别混。真机上如果发现选集页
+# 打不开/挂错片，改这一个字段就行（纯服务端配置，不用重打包 APK）。
+PLAY_ID_FULLPATH = True
+
+
+def resolve_vod(site_name: str, title: str, year: str = "") -> dict:
+    """给「▶ 播放」直达站源选集页解析 vod id。
+
+    csp_Wogg 是 pg.jar 里的爬虫，中枢没法直接问它 —— 但它抓的就是 wogg
+    网页，搜索/详情结构与上面 _one_site 完全一样，直接复用同一套组件：
+    搜索页抓候选 id → 逐个开详情页对片名 → 命中即回。
+    结果进缓存（同 12h TTL）；标题对不上也缓存（带 title_hit=False），
+    避免每按一次播放都重抓一遍。失败不缓存。
+    """
+    title = str(title or "").strip()
+    site = next((s for s in SITES if s["name"] == site_name), None)
+    if not site or not title:
+        return {}
+    key = f"vres:{site_name}:{title}:{year}"
+    hit = _cache_get(key)
+    if hit is not None:
+        return hit or {}
+
+    q = urllib.parse.quote(title)
+    page, base = "", ""
+    for b in site["bases"]:
+        page = _get(b + site["search"].format(q=q))
+        if page:
+            base = b
+            break
+    if not page:
+        return {}
+    nt = _norm(title)
+    out: dict = {}
+    for cid in _candidate_ids(page, site, limit=3):
+        html = _get(base + site["detail"].format(cid))
+        if not html:
+            continue
+        name = _title_of(html)
+        nn = _norm(name)
+        if nt and nn and nt not in nn and nn not in nt:
+            continue                      # 片名对不上，换下一个候选
+        out = {"site_name": site_name, "id": site["detail"].format(cid),
+               "num_id": cid, "name": name or title, "title_hit": True}
+        break
+    if not out:
+        cids = _candidate_ids(page, site, limit=1)
+        if cids:
+            # 没有标题对得上的候选 —— 退回第一个，让用户在选集页自己看
+            out = {"site_name": site_name, "id": site["detail"].format(cids[0]),
+                   "num_id": cids[0], "name": title, "title_hit": False}
+    if out and not PLAY_ID_FULLPATH:
+        out["id"] = out["num_id"]
+    if out:
+        _cache_set(key, out)
     return out
