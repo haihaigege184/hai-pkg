@@ -29,6 +29,51 @@ var CLASSES = [
 
 // 首屏推荐用「热门电影」而不是「我的追剧」——追剧刚装好是空的，首屏空白很怪
 var HOME_TID = 2;
+// home() 会按服务端类目表重设（豆瓣首类目是 dbtv_hot，不是 2）
+var _homeTid = null;
+
+/* ---------------------------------------------------------------------------
+ * 类目筛选（2026-10-31 海哥需求；11-01 与豆瓣**逐项对齐**）
+ *
+ * app 的 spider 协议里 home() 可以带 filters，端上会在类目页给出「筛选」入口，
+ * category() 收到的 extend 就是这里选中的值。
+ *
+ * 值必须和 core/tmdbwall.py 与 core/doubanx.py 的 COUNTRIES / SORTS / GENRES
+ * 完全一致 —— 三个地方任意一处写错，等于那个选项点了没反应。
+ * 2026-11-01 起两套数据源共用同一组键（豆瓣内部把它们翻成 tags/genres/
+ * countries 参数），所以这里不再分 TM / DB 两份。
+ * ------------------------------------------------------------------------- */
+var COUNTRIES = [
+    ['', '全部'], ['CN', '国产'], ['US', '美国'], ['GB', '英国'],
+    ['JP', '日本'], ['KR', '韩国'], ['OTHER', '其他']
+];
+var SORTS = [['', '默认'], ['hot', '热门'], ['score', '高分'], ['new', '最新']];
+var GENRES = [
+    ['', '全部'], ['drama', '剧情'], ['comedy', '喜剧'], ['romance', '爱情'],
+    ['action', '动作'], ['scifi', '科幻'], ['animation', '动画'],
+    ['mystery', '悬疑'], ['horror', '恐怖'], ['crime', '犯罪']
+];
+
+function _opts(pairs) {
+    var a = [];
+    for (var i = 0; i < pairs.length; i++) { a.push({ n: pairs[i][1], v: pairs[i][0] }); }
+    return a;
+}
+
+function _filters(cls) {
+    var f = [
+        { key: 'c', name: '地区', value: _opts(COUNTRIES) },
+        { key: 's', name: '排序', value: _opts(SORTS) },
+        { key: 'g', name: '类型', value: _opts(GENRES) }
+    ];
+    var out = {};
+    for (var i = 0; i < cls.length; i++) {
+        var tid = String(cls[i].type_id);
+        if (tid === '1' || tid === 'db1') { continue; }   // 我的追剧：本地列表，不筛
+        out[tid] = f;
+    }
+    return out;
+}
 
 // QuickJS 环境里没有 print（alist.min.js 那份是自己定义的），只有 console.log
 function _log(msg) {
@@ -66,15 +111,30 @@ function _item(it) {
 }
 
 function home(filter) {
+    // 类目表以**服务端**为准：服务端按数据源（TMDB / 豆瓣）下发不同类目，
+    // 端上只管显示。这样遥控切了数据源，重开 App 就换成另一套类目，
+    // 不用重新打包 APK（类目写死在这里的旧做法已经去掉了）。
     var cls = [];
-    for (var i = 0; i < CLASSES.length; i++) {
-        cls.push({ type_id: CLASSES[i][0], type_pid: 0, type_name: CLASSES[i][1] });
+    var d = _get(API + '?ac=list');
+    var raw = (d && d['class']) || [];
+    for (var i = 0; i < raw.length; i++) {
+        if (!raw[i] || raw[i].type_id === undefined) { continue; }
+        cls.push({ type_id: raw[i].type_id, type_pid: 0, type_name: raw[i].type_name });
     }
-    return JSON.stringify({ class: cls, filters: {} });
+    if (!cls.length) {                       // 服务端没给就退回本地表，别给空类目条
+        for (var j = 0; j < CLASSES.length; j++) {
+            cls.push({ type_id: CLASSES[j][0], type_pid: 0, type_name: CLASSES[j][1] });
+        }
+    }
+    for (var k = 0; k < cls.length; k++) {   // 首屏推荐用第一个「有内容」的类目
+        if (String(cls[k].type_id) !== '1') { _homeTid = String(cls[k].type_id); break; }
+    }
+    return JSON.stringify({ class: cls, filters: _filters(cls) });
 }
 
 function homeVod(params) {
-    var d = _get(API + '?ac=detail&t=' + HOME_TID + '&pg=1');
+    var tid = _homeTid || HOME_TID;
+    var d = _get(API + '?ac=detail&t=' + tid + '&pg=1');
     var list = [];
     var raw = d.list || [];
     for (var i = 0; i < raw.length; i++) { list.push(_item(raw[i])); }
@@ -82,13 +142,19 @@ function homeVod(params) {
 }
 
 function category(tid, pg, filter, extend) {
-    var d = _get(API + '?ac=detail&t=' + tid + '&pg=' + pg);
+    // 筛选：extend 里 c=地区 s=排序 g=类型（见上面的 filters 定义）
+    var ex = extend || {};
+    var extra = '';
+    if (ex.c) { extra += '&c=' + encodeURIComponent(ex.c); }
+    if (ex.s) { extra += '&s=' + encodeURIComponent(ex.s); }
+    if (ex.g) { extra += '&g=' + encodeURIComponent(ex.g); }
+    var d = _get(API + '?ac=detail&t=' + tid + '&pg=' + pg + extra);
     var list = [];
     var raw = d.list || [];
     for (var i = 0; i < raw.length; i++) { list.push(_item(raw[i])); }
     return JSON.stringify({
         page: parseInt(pg, 10) || 1,
-        pagecount: 500,
+        pagecount: d.pagecount || 500,
         limit: 20,
         total: 9999,
         list: list
