@@ -798,14 +798,17 @@ def hai_version():
 def hai_poster():
     """豪华海报墙网页（服务端渲染的暗色页面，电视浏览器/手机都能开）
 
-    筛选状态走 URL：t=类目 c=地区 s=排序 g=类型，服务端直接用 TMDB /discover
-    重排 —— 电视 WebView 老，前端过滤+翻页最容易断层，这样最稳。
+    筛选状态走 URL：t=类目 c=地区 s=排序 g=类型，服务端直接按数据源重排 ——
+    电视 WebView 老，前端过滤+翻页最容易断层，这样最稳。
+    `src=tmdb|douban` 指定数据源；不传就用服务端记住的那个（遥控设置键切换）。
     """
-    try:
-        # 默认 2（热门电影）：1 是「我的追剧」，刚装好是空的，首页会很难看
-        t = int(request.args.get("t") or 2)
-    except ValueError:
-        t = 2
+    src = str(request.args.get("src") or "").strip()
+    src = src if src in ("tmdb", "douban") else posterweb.load_src()
+    # 类目：TMDB 是数字 id，豆瓣是 `dbtv_hot` 这种字符串 —— 原样往下传，
+    # page_home 内部各自校验，非法值会退到该数据源的默认类目。
+    t = request.args.get("t")
+    if t in (None, ""):
+        t = "dbtv_hot" if src == "douban" else 2
     try:
         pg = int(request.args.get("pg") or 1)
     except ValueError:
@@ -814,9 +817,33 @@ def hai_poster():
         posterweb.page_home(t, pg,
                             str(request.args.get("c") or ""),
                             str(request.args.get("s") or ""),
-                            str(request.args.get("g") or "")),
+                            str(request.args.get("g") or ""),
+                            src, bool(request.args.get("sm"))),
                     mimetype="text/html; charset=utf-8",
                     headers={"Cache-Control": "no-cache"})
+
+
+@bp.route("/hai/poster/src")
+def hai_poster_src():
+    """切换海报墙数据源（TMDB / 豆瓣）。
+
+    电视遥控「设置」键呼出的浮层就走这里。切换是**全局**的（写
+    data/poster.src.json），因为电视、手机、公网入口看到的应该是同一套数据。
+    切完 302 回原来那一页，并把 src 带到 query 里 —— WebView 里少一次
+    额外跳转，用户感觉就是「按一下换个库」。
+    """
+    to = str(request.args.get("to") or "").strip()
+    back = str(request.args.get("back") or "/hai/poster/").strip()
+    if not back.startswith("/hai/"):
+        back = "/hai/poster/"
+    if to in ("tmdb", "douban"):
+        posterweb.save_src(to)
+        sep = "&" if "?" in back else "?"
+        # 切源后类目 id 体系完全不同，回到该源首页最稳（否则 t=2 在豆瓣不存在）
+        base = "/hai/poster/" if to == "douban" else "/hai/poster/?t=2"
+        back = base
+    return Response(status=302, headers={"Location": back,
+                                         "Cache-Control": "no-cache"})
 
 
 @bp.route("/hai/poster/d/<vid>")
@@ -825,7 +852,7 @@ def hai_poster_detail(vid):
         r = int(request.args.get("r") or 0)
     except ValueError:
         r = 0
-    return Response(posterweb.page_detail(vid, r),
+    return Response(posterweb.page_detail(vid, r, bool(request.args.get("sm"))),
                     mimetype="text/html; charset=utf-8",
                     headers={"Cache-Control": "no-cache"})
 
@@ -984,6 +1011,63 @@ def hai_img(rest):
         return Response(status=302, headers={"Location": _IMG_HOST + "/" + safe})
 
 
+@bp.route("/hai/dbimg/<path:rest>")
+def hai_dbimg(rest):
+    """豆瓣图床代理 —— 直连必 418，只有带 Referer 才给图（实测）
+
+    路径与豆瓣一致：`/hai/dbimg/view/photo/m_ratio_poster/public/pXXXX.jpg`。
+    豆瓣图片散落在 img1/img2/img3/img9.doubanio.com 四个域名，但**路径唯一**，
+    所以只按路径做 key，抓图时依次试几个域名（某个 DNS 抽风也能出图）。
+    和 TMDB 代理共用同一个磁盘缓存目录（key 前缀 d 区分，不会撞）。
+    """
+    safe = "/".join(x for x in rest.split("/") if x and x not in (".", ".."))
+    if not re.match(r"^view/photo/[A-Za-z0-9_]+/[A-Za-z0-9_]+/[A-Za-z0-9_\-]+\.(jpg|jpeg|png|webp)$",
+                    safe or ""):
+        return Response("bad path", status=400)
+
+    ext = safe.rsplit(".", 1)[-1].lower()
+    name = "d" + hashlib.sha1(safe.encode("utf-8")).hexdigest()[:19] + "." + ext
+    path = os.path.join(_IMG_DIR, name)
+    if os.path.exists(path):
+        return send_from_directory(_IMG_DIR, name, max_age=2592000)
+
+    data = b""
+    for host in ("https://img3.doubanio.com", "https://img1.doubanio.com",
+                 "https://img2.doubanio.com", "https://img9.doubanio.com"):
+        try:
+            req = urllib.request.Request(host + "/" + safe, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36",
+                "Referer": "https://movie.douban.com/",
+            })
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = r.read()
+            if data:
+                break
+        except Exception:                          # noqa: BLE001
+            continue
+    if not data:
+        # 抓不到就给个 1x1 透明图：豆瓣裂图时别让整墙变灰块
+        return Response(
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
+            b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00"
+            b"\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82",
+            mimetype="image/png",
+            headers={"Cache-Control": "public, max-age=120"})
+    try:
+        os.makedirs(_IMG_DIR, exist_ok=True)
+        tmp = path + ".part"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        _img_gc()
+    except Exception:                              # noqa: BLE001
+        pass
+    return Response(data,
+                    mimetype="image/jpeg" if ext in ("jpg", "jpeg") else "image/" + ext,
+                    headers={"Cache-Control": "public, max-age=2592000"})
+
+
 def _img_gc(limit: int = 3000) -> None:
     """缓存图片数量上限，超了删最旧的 —— 海报墙翻几页就上千张，别把盘塞满"""
     try:
@@ -1029,12 +1113,16 @@ def hai_tmdb_vod():
     # 127.0.0.1 后就钉在缓存里 30 分钟 —— 电视拿到的全是 127.0.0.1 的图，
     # 整墙海报变灰块。复制一份再改，缓存里永远是原始 TMDB 地址。
     host = request.host_url.rstrip("/") + "/hai/img"
+    hostdb = request.host_url.rstrip("/")
     body["list"] = [dict(it) for it in (body.get("list") or [])]
     for it in body["list"]:
         for k in ("vod_pic", "vod_pic_slide"):
             v = str(it.get(k) or "")
             if v.startswith(_TMDB_IMG):
                 it[k] = host + v[len(_TMDB_IMG):]
+            elif v.startswith("/hai/dbimg/"):
+                # 豆瓣条目：doubanx 已经转成相对代理路径，这里补成绝对地址
+                it[k] = hostdb + v
 
     payload = json.dumps(body, ensure_ascii=False)
     return Response(payload, mimetype="application/json; charset=utf-8",

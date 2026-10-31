@@ -74,6 +74,78 @@ def save_cfg(d: dict) -> dict:
             pass
     return cur
 
+
+# ---------------------------------------------------------------------------
+# 数据源：tmdb / douban（2026-10-31 海哥需求）
+# ---------------------------------------------------------------------------
+#
+# 为什么存在：TMDB 的国产剧榜单更新太慢，「嫁金钗」这种当下最热的剧在
+# TMDB 热门剧集里根本没有。豆瓣榜单更贴国内观众，所以做成可切换的第二
+# 数据源 —— 电视上按遥控**设置键**呼出菜单就能换，选择存在服务端，
+# 换一台设备打开也是同一个数据源。
+#
+# 两套数据的 `vod_id` 前缀不同（tmdb 用 m/t 开头，豆瓣统一 `db`），
+# 详情页据此自动选模块，不需要额外参数。
+
+_SRC_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "data", "poster.src.json")
+_SRC_ALL = ("tmdb", "douban")
+_src_lock = threading.Lock()
+
+
+def load_src() -> str:
+    try:
+        with open(_SRC_PATH, "r", encoding="utf-8") as f:
+            s = str((json.load(f) or {}).get("src") or "").strip()
+        return s if s in _SRC_ALL else "tmdb"
+    except Exception:
+        return "tmdb"
+
+
+def save_src(src: str) -> str:
+    src = str(src or "").strip()
+    if src not in _SRC_ALL:
+        src = "tmdb"
+    with _src_lock:
+        try:
+            os.makedirs(os.path.dirname(_SRC_PATH), exist_ok=True)
+            with open(_SRC_PATH, "w", encoding="utf-8") as f:
+                json.dump({"src": src}, f, ensure_ascii=False)
+        except Exception:
+            pass
+    return src
+
+
+def _mod(src: str):
+    """按数据源取模块。接口只要 list_page / detail / classes 三样。"""
+    if src == "douban":
+        from . import doubanx as D
+        return D
+    from . import tmdbwall as T
+    return T
+
+
+def _classes(src: str) -> list[tuple[str, str]]:
+    """统一成 [(cid(str), 名称)]，两套数据的类目表形状不同，这里抹平。"""
+    if src == "douban":
+        from . import doubanx as D
+        return [(str(a), b) for a, b in D.classes()]
+    return [(str(c[0]), c[1]) for c in T.CLASSES]
+
+
+def _filters(src: str):
+    """筛选三行：地区 / 排序 / 类型。两套数据各用各的（豆瓣走 tag）。"""
+    if src == "douban":
+        from . import doubanx as D
+        return D.COUNTRIES, D.SORTS, D.GENRES
+    # T.GENRES 是 4 元组（key, 名称, 动画/真人标记, 语言），筛选面板只要前两位
+    return T.COUNTRIES, T.SORTS, [(k, n) for k, n, _, _ in T.GENRES]
+
+
+def _src_name(src: str) -> str:
+    return "豆瓣" if src == "douban" else "TMDB"
+
+
 _CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#070a10;color:#e8edf6;
@@ -191,6 +263,34 @@ body.below .hero .info{opacity:0;pointer-events:none}
  border:1px solid rgba(0,224,138,.3)}
 .back{display:inline-block;margin-bottom:18px;font-size:14px;color:#7d8aa3}
 .foot{margin-top:38px;font-size:12px;color:#4d5769;letter-spacing:1px}
+
+/* ---- 数据源切换浮层（遥控「设置」键呼出）---- */
+#srcMenu{display:none;position:fixed;left:0;top:0;right:0;bottom:0;z-index:60;
+ background:rgba(4,7,12,.82)}
+#srcMenu.on{display:block}
+#srcMenu .srcbox{position:absolute;left:50%;top:50%;width:640px;max-width:86vw;
+ transform:translate(-50%,-50%);padding:26px 28px 20px;border-radius:18px;
+ background:rgba(12,17,26,.97);border:1px solid rgba(0,224,138,.38);
+ box-shadow:0 0 60px rgba(0,224,138,.22),0 24px 60px rgba(0,0,0,.6)}
+#srcMenu .srctitle{font-size:15px;letter-spacing:3px;color:#9ff5cd;margin-bottom:16px}
+#srcMenu .srcopts{display:flex;gap:14px}
+#srcMenu .srcopt{flex:1;display:block;padding:20px 18px;border-radius:14px;
+ text-decoration:none;color:#cfdae8;background:rgba(255,255,255,.04);
+ border:1px solid rgba(255,255,255,.09);font-size:19px;letter-spacing:1px}
+#srcMenu .srcopt small{display:block;margin-top:8px;font-size:12.5px;color:#77839a;
+ letter-spacing:0}
+#srcMenu .srcopt.sel{color:#04110b;background:#00e08a;border-color:#00e08a;
+ box-shadow:0 0 30px rgba(0,224,138,.6)}
+#srcMenu .srcopt.sel small{color:#0a3d28}
+#srcMenu .srcopt.close{flex:0 0 96px;text-align:center;font-size:22px}
+#srcMenu .srcopt.close small{font-size:12px}
+#srcMenu .srcopt.cur:after{content:"当前";position:absolute;margin:-4px 0 0 6px;
+ font-size:11px;color:#00e08a}
+#srcMenu .srcopt.cur.sel:after{color:#0a3d28}
+#srcMenu .srchint{margin-top:16px;font-size:12.5px;color:#5d697e;text-align:center}
+.srcpill{float:right;padding:5px 12px;border-radius:9px;font-size:12.5px;
+ text-decoration:none;color:#9ff5cd;border:1px solid rgba(0,224,138,.42);
+ background:rgba(0,224,138,.09)}
 
 /* 操作区：播放 / 追剧。电视上这两个是主按钮，所以做得比 chips 大一圈。
    注意：**默认态不能是实心亮色** —— 遥控器焦点只有一个，如果两个按钮都亮着，
@@ -526,14 +626,17 @@ def _e(s) -> str:    return html.escape(str(s or ""))
 
 
 def _pic(u) -> str:
-    """图片地址改成站内相对路径，走中枢 `/hai/img` 代理。
+    """图片地址改成站内相对路径，走中枢代理（TMDB /hai/img、豆瓣 /hai/dbimg）。
 
-    两个原因：电视/手机直连 images.tmdb.org 慢且容易裂图；网页可能从局域网
-    或公网任意入口打开，绝对地址在另一端就挂。相对路径交给浏览器按当前入口补全。
+    为什么必须代理：
+      * TMDB —— 电视直连 images.tmdb.org 慢且容易裂图；
+      * 豆瓣 —— 直连一律 **418**，只有带 Referer 才给图（实测）；
+    两种都改成相对路径，网页从局域网或公网任意入口打开都能出图。
     """
     s = str(u or "")
     s = re.sub(r"^https?://images\.tmdb\.org/t/p/", "/hai/img/t/p/", s)
-    s = re.sub(r"^https?://[^/]+(/hai/img/.*)$", r"\1", s)
+    s = re.sub(r"^https?://[a-z0-9]*\.doubanio\.com/(view/photo/.+)$", r"/hai/dbimg/\1", s)
+    s = re.sub(r"^https?://[^/]+(/hai/(?:db)?img/.*)$", r"\1", s)
     return html.escape(s)
 
 
@@ -547,7 +650,8 @@ def _pic_raw(u) -> str:
     """
     s = str(u or "")
     s = re.sub(r"^https?://images\.tmdb\.org/t/p/", "/hai/img/t/p/", s)
-    s = re.sub(r"^https?://[^/]+(/hai/img/.*)$", r"\1", s)
+    s = re.sub(r"^https?://[a-z0-9]*\.doubanio\.com/(view/photo/.+)$", r"/hai/dbimg/\1", s)
+    s = re.sub(r"^https?://[^/]+(/hai/(?:db)?img/.*)$", r"\1", s)
     return s
 
 _JS_SELFHEAL = """
@@ -570,14 +674,148 @@ _JS_SELFHEAL = """
 """
 
 
-def _page(title: str, body: str, script: str = "") -> str:
+_JS_SRCMENU = """
+(function(){
+  // 遥控「设置」键呼出数据源菜单（2026-10-31 海哥需求）。
+  // 电视遥控器按键码不统一：菜单键 82、设置键 176 都有，个别机型给 93，
+  // 所以三个都收；另外页面右上角有一个可聚焦的「⚙ 数据源」小药丸，
+  // 万一手柄/遥控发不出这些键也点得到。
+  var menu = document.getElementById('srcMenu');
+  if (!menu) { return; }
+  var opts = [].slice.call(menu.querySelectorAll('.srcopt'));
+  var sel = 0;
+  for (var i = 0; i < opts.length; i++) {
+    if (opts[i].className.indexOf('cur') >= 0) { sel = i; }
+  }
+  function paint() {
+    for (var i = 0; i < opts.length; i++) {
+      if (/(^|\\s)sel(\\s|$)/.test(opts[i].className)) {
+        opts[i].className = opts[i].className
+          .replace(/(^|\\s)sel(\\s|$)/g, ' ').replace(/\\s+/g, ' ');
+      }
+    }
+    if (opts[sel]) { opts[sel].className += ' sel'; }
+  }
+  // 以 DOM 上的高亮为准（WebView 偶尔吞 keyCode，变量可能和画面不一致）
+  function curIdx() {
+    for (var i = 0; i < opts.length; i++) {
+      if (/(^|\\s)sel(\\s|$)/.test(opts[i].className)) { return i; }
+    }
+    return sel;
+  }
+  function open() { menu.className = 'on'; sel = Math.max(0, sel); paint(); }
+  function close() { menu.className = ''; }
+  function isOpen() { return menu.className.indexOf('on') >= 0; }
+
+  document.addEventListener('keydown', function (e) {
+    var k = e.keyCode || e.which;
+    // 设置 / 菜单键
+    if (k === 82 || k === 176 || k === 93) {
+      e.preventDefault();
+      if (isOpen()) { close(); } else { open(); }
+      return;
+    }
+    if (!isOpen()) { return; }
+    // 菜单打开时把方向/OK 全吃掉，别让底下的 _JS_NAV 同时挪焦点
+    e.stopPropagation();
+    e.preventDefault();
+    if (k === 21 || k === 19) {                 // ← / ↑
+      sel = (sel + opts.length - 1) % opts.length; paint();
+    } else if (k === 22 || k === 20) {          // → / ↓
+      sel = (sel + 1) % opts.length; paint();
+    } else if (k === 23 || k === 66 || k === 13) {
+      var a = opts[curIdx()];
+      if (a && a.getAttribute('href')) { location.href = a.getAttribute('href'); }
+    } else if (k === 4 || k === 27) {           // 返回 / ESC
+      close();
+    }
+  }, true);                                     // ← capture：先于页面自身导航
+
+  if (isOpen()) { paint(); }              // 服务端渲染直接打开时补上高亮
+
+  var pill = document.getElementById('srcPill');
+  if (pill) {
+    pill.addEventListener('click', function (e) { e.preventDefault(); open(); });
+    pill.addEventListener('focus', function () { });
+    pill.addEventListener('keydown', function (e) {
+      var k = e.keyCode || e.which;
+      if (k === 23 || k === 66 || k === 13) { e.preventDefault(); open(); }
+    });
+  }
+})();
+"""
+
+
+def _srcdlg(cur: str, back: str, opened: bool = False) -> str:
+    """数据源浮层 + 右上角小药丸。`back` 是切换后要回到的页面路径。
+
+    `opened=True` 时浮层直接展开 —— 电视遥控的「设置」键会被机顶盒系统
+    截走（实测 M401A：按 176 弹的是系统设置），WebView 也不把 MENU 键转给
+    JS，所以真正的入口是页面上那个可聚焦的「⚙ 数据源」按钮：点它 → 带
+    `sm=1` 重新渲染 → 浮层就是打开状态。这样遥控一定点得到。
+    """
+    q = urllib.parse.quote(back, safe="")
+    def opt(key, title, sub):
+        cls = "srcopt" + (" cur" if key == cur else "")
+        return (f'<a class="{cls}" data-src="{key}" '
+                f'href="/hai/poster/src?to={key}&amp;back={q}">'
+                f'{title}<small>{sub}</small></a>')
+    return (
+        '<div id="srcMenu"' + (' class="on"' if opened else '') + '><div class="srcbox">'
+        '<div class="srctitle">数据源</div>'
+        '<div class="srcopts">'
+        + opt("tmdb", "TMDB", "国际榜单 · 剧照丰富")
+        + opt("douban", "豆瓣", "国产剧更新更快")
+        + f'<a class="srcopt close" href="{_e(back)}">✕<small>关闭</small></a>'
+        + '</div><div class="srchint">← → 选择　OK 确认　「✕ 关闭」退出'
+          '（返回键会直接退出详情页）</div>'
+        '</div></div>'
+    )
+
+
+def _srcpill(cur: str) -> str:
+    """右上角的数据源标识（纯展示，不可点）。
+
+    真正的入口是类目条/按钮行里那个「⚙ 数据源」—— 遥控的焦点是页面自己
+    用 ←→ 驱动的，绝对定位在角落的元素反而选不到，所以入口必须放在
+    能被网格收进去的位置。
+    """
+    return f'<span class="srcpill">⚙ {_src_name(cur)}</span>'
+
+
+def _srcbtn(cur: str, here: str, cls: str = "fbtn") -> str:
+    """数据源的两个入口，并排放，遥控都选得到：
+
+      1) `⚙ 数据源`  —— 带 sm=1 重新渲染，浮层直接是打开态（看两个源的说明）
+      2) `⇄ TMDB`   —— **直接切**到另一个源，一次点按完成，不等浮层
+
+    为什么要两个：电视 WebView 对 DPAD 的 keyCode 转发不稳定（实测这台
+    M401A 上浮层里的方向键偶尔不生效），只靠浮层有风险；直切按钮走的是
+    普通 <a href>，和「筛选」「类目」同一条已验证的链路，一定点得动。
+    """
+    sep = "&" if "?" in here else "?"
+    other = "tmdb" if cur == "douban" else "douban"
+    return (f'<a class="{cls}" id="srcPill" href="{_e(here + sep + "sm=1")}">'
+            f'⚙ 数据源</a>'
+            f'<a class="{cls}" href="/hai/poster/src?to={other}'
+            f'&amp;back={urllib.parse.quote(here, safe="")}">'
+            f'⇄ {_src_name(other)}</a>')
+
+
+def _page(title: str, body: str, script: str = "", src: str = "tmdb",
+          back: str = "", sm: bool = False) -> str:
+    src = src if src in _SRC_ALL else "tmdb"
+    foot = f"{_src_name(src)} 海报墙 · hai 本地包中枢自托管"
     return (
         "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         f"<title>{_e(title)}</title><style>{_CSS}</style></head><body>"
+        f"{_srcpill(src)}"
         f"<div class=\"wrap\">{body}"
-        "<div class=\"foot\">TMDB 海报墙 · hai 本地包中枢自托管</div></div>"
+        f"<div class=\"foot\">{foot}</div></div>"
+        + _srcdlg(src, back or "/hai/poster/", sm)
         + (f"<script>{script}</script>" if script else "")
+        + f"<script>{_JS_SRCMENU}</script>"
         + f"<script>{_JS_SELFHEAL}</script>"
         + "</body></html>"
     )
@@ -593,16 +831,18 @@ def _card(it: dict) -> str:
     )
 
 
-def _q(tid: int, page: int = 1, country: str = "", sort: str = "",
-       genre: str = "") -> str:
+def _q(tid, page: int = 1, country: str = "", sort: str = "",
+       genre: str = "", src: str = "") -> str:
     """海报墙 URL（筛选状态全在 query 里，服务端渲染 —— 电视 WebView 最稳）"""
-    parts = [f"t={tid}"]
+    parts = [f"t={urllib.parse.quote(str(tid), safe='')}"]
     if country:
-        parts.append(f"c={country}")
+        parts.append("c=" + urllib.parse.quote(str(country), safe=""))
     if sort:
-        parts.append(f"s={sort}")
+        parts.append("s=" + urllib.parse.quote(str(sort), safe=""))
     if genre:
-        parts.append(f"g={genre}")
+        parts.append("g=" + urllib.parse.quote(str(genre), safe=""))
+    if src:
+        parts.append("src=" + src)
     if page and page > 1:
         parts.append(f"pg={page}")
     return "/hai/poster/?" + "&".join(parts)
@@ -759,16 +999,19 @@ _JS_WALL = """
 """
 
 
-def _filter_panel(type_id: int, page: int, country: str, sort: str,
-                  genre: str) -> str:
+def _filter_panel(type_id, page: int, country: str, sort: str,
+                  genre: str, src: str = "tmdb") -> str:
     """筛选面板 HTML：三组条件 + 关闭项，每项直接带完整 URL（点了就重渲染）"""
+    ctry, sorts, gens = _filters(src)
+
     def row(label: str, items: list[tuple[str, str]], cur: str, key: str) -> str:
         opts = []
         for val, name in items:
             url = _q(type_id, 1,
                      val if key == "c" else country,
                      val if key == "s" else sort,
-                     val if key == "g" else genre)
+                     val if key == "g" else genre,
+                     src if src != "tmdb" else "")
             on = " sel" if val == cur else ""
             opts.append(f"<a class=\"fopt{on}\" href=\"{_e(url)}\">{_e(name)}</a>")
         return (f"<div class=\"frow\"><div class=\"fl\">{label}</div>"
@@ -779,20 +1022,100 @@ def _filter_panel(type_id: int, page: int, country: str, sort: str,
     return (
         "<div id=\"fpanel\"><div class=\"fbox\">"
         "<div class=\"fh\">筛选<i>选完立刻按条件重排，返回键←关闭</i></div>"
-        + row("地区 / 国家", T.COUNTRIES, country, "c")
-        + row("排序", T.SORTS, sort, "s")
-        + row("影片类型", [(k, n) for k, n, _, _ in T.GENRES], genre, "g")
+        + row("地区 / 国家", ctry, country, "c")
+        + row("排序", sorts, sort, "s")
+        + row("影片类型", list(gens), genre, "g")
         + close
         + "<div class=\"fk\">← → 选条件 · ↑ ↓ 换一组 · OK 应用 · 返回 关闭</div>"
         "</div></div>"
     )
 
 
-def page_home(type_id: int = 1, page: int = 1, country: str = "",
-              sort: str = "", genre: str = "") -> str:
-    data = T.list_page(type_id, page, country, sort, genre)
+def _fsum(triple, country: str, sort: str, genre: str) -> str:
+    """把当前筛选条件拼成一句人话（两套数据共用）。"""
+    ctry, sorts, gens = triple
+    names = []
+    for pool, cur in ((ctry, country), (sorts, sort), (gens, genre)):
+        if not cur:
+            continue
+        nm = next((n for v, n in pool if v == cur), cur)
+        names.append(nm)
+    return " · ".join(names)
+
+
+def _home_douban(cid: str, page: int, country: str, sort: str,
+                 genre: str, sm: bool = False) -> str:
+    """豆瓣版海报墙。结构与 TMDB 版一致，只换数据来源与类目表。"""
+    from . import doubanx as D
+    data = D.list_page(cid, page, country, sort, genre)
     items = data.get("list") or []
-    fsum = T.filter_text(country, sort, genre)
+    fsum = _fsum((D.COUNTRIES, D.SORTS, D.GENRES), country, sort, genre)
+
+    hero = ""
+    if items:
+        top = items[0]
+        d = D.detail(top.get("vod_id") or "") or {}
+        bg = _pic(d.get("vod_pic_slide") or top.get("vod_pic") or "")
+        desc = str(d.get("vod_content") or "")[:170]
+        chips = []
+        if top.get("vod_remarks"):
+            chips.append(f"<span class=\"chip score\">{_e(top['vod_remarks'])}</span>")
+        for v in (d.get("vod_year"), d.get("vod_area")):
+            if v:
+                chips.append(f"<span class=\"chip\">{_e(v)}</span>")
+        if d.get("type_name"):
+            chips.append(f"<span class=\"chip p\">{_e(d['type_name'])}</span>")
+        hero = (
+            "<div class=\"hero\">"
+            f"<img class=\"bg\" src=\"{_e(bg)}\" alt=\"\">"
+            "<div class=\"shade\"></div>"
+            "<div class=\"info\">"
+            f"<h1>{_e(top.get('vod_name'))}</h1>"
+            f"<div class=\"chips\">{''.join(chips)}</div>"
+            f"<p class=\"desc\">{_e(desc)}</p>"
+            "</div></div>"
+        )
+
+    here = _q(cid, page, country, sort, genre, "douban")
+    tabs = ("<a class=\"fbtn\" id=\"fbtn\" data-filter=\"1\" href=\"#\">⚙ 筛选</a>"
+            + _srcbtn("douban", here))
+    for c2, name in D.classes():
+        on = " on" if c2 == cid else ""
+        attr = " data-filter=\"1\"" if c2 == cid else ""
+        tabs += (f"<a class=\"{on.strip()}\"{attr} "
+                 f"href=\"{_e(_q(c2, 1, country, sort, genre, 'douban'))}\">{_e(name)}</a>")
+    cards = "".join(_card(x) for x in items[1:])
+    if not items:
+        cards = ("<div class=\"empty\">豆瓣这会儿没返回数据（偶发限流），"
+                 "等几秒按返回再进一次就好。</div>")
+    summary = f"<span class=\"fsum\">筛选：<b>{_e(fsum)}</b></span>" if fsum else ""
+    body = (
+        f"<div class=\"brand\"><b>海报墙</b><span>豆瓣 · 国产剧更新更快</span>{summary}</div>"
+        f"{hero}<div class=\"tabs\">{tabs}</div>"
+        f"<div class=\"wall\" id=\"wallbox\">{cards}</div>"
+        + ("" if not items else _filter_panel(cid, page, country, sort, genre, "douban"))
+    )
+    return _page("海报墙 · 豆瓣", body, _JS_WALL, "douban", here, sm)
+
+
+def page_home(type_id=1, page: int = 1, country: str = "",
+              sort: str = "", genre: str = "", src: str = "tmdb",
+              sm: bool = False) -> str:
+    src = src if src in _SRC_ALL else load_src()
+    if src == "douban":
+        cid = str(type_id)
+        from . import doubanx as D
+        if cid not in (c for c, _ in D.classes()):
+            cid = D.classes()[0][0]
+        return _home_douban(cid, page, country, sort, genre, sm)
+
+    try:
+        tid = int(type_id)
+    except (TypeError, ValueError):
+        tid = 2
+    data = T.list_page(tid, page, country, sort, genre)
+    items = data.get("list") or []
+    fsum = _fsum((T.COUNTRIES, T.SORTS, T.GENRES), country, sort, genre)
 
     hero = ""
     if items:
@@ -821,34 +1144,40 @@ def page_home(type_id: int = 1, page: int = 1, country: str = "",
         )
 
     # 类目条：第一个是「⚙ 筛选」；当前类目本身也是筛选入口（海哥：在热门剧集上按 OK 呼出）
-    tabs = (f"<a class=\"fbtn\" id=\"fbtn\" data-filter=\"1\" href=\"#\">⚙ 筛选</a>")
-    for tid, name, _, _ in T.CLASSES:
-        on = " on" if tid == type_id else ""
-        attr = " data-filter=\"1\"" if tid == type_id else ""
+    here = _q(tid, page, country, sort, genre, "")
+    tabs = (f"<a class=\"fbtn\" id=\"fbtn\" data-filter=\"1\" href=\"#\">⚙ 筛选</a>"
+            + _srcbtn("tmdb", here))
+    for cid, name in _classes("tmdb"):
+        on = " on" if cid == str(tid) else ""
+        attr = " data-filter=\"1\"" if cid == str(tid) else ""
         tabs += (f"<a class=\"{on.strip()}\"{attr} "
-                 f"href=\"{_e(_q(tid, 1, country, sort, genre))}\">{_e(name)}</a>")
+                 f"href=\"{_e(_q(cid, 1, country, sort, genre))}\">{_e(name)}</a>")
     cards = "".join(_card(x) for x in items[1:])
     if not items:
         # 「我的追剧」刚装好是空的，给一句人话，别让人以为页面坏了
         cards = ("<div class=\"empty\">这一类还没有内容。"
                  + ("去别的类目点开一部片，详情页点「一键追剧」就会出现在这里。</div>"
-                    if type_id == T.WATCH_TYPE else "换个类目或放宽筛选看看。</div>"))
+                    if tid == T.WATCH_TYPE else "换个类目或放宽筛选看看。</div>"))
     summary = f"<span class=\"fsum\">筛选：<b>{_e(fsum)}</b></span>" if fsum else ""
     body = (
         f"<div class=\"brand\"><b>海报墙</b><span>TMDB · 深色影院</span>{summary}</div>"
         f"{hero}<div class=\"tabs\">{tabs}</div>"
         f"<div class=\"wall\" id=\"wallbox\">{cards}</div>"
-        + ("" if type_id == T.WATCH_TYPE or not items else _filter_panel(
-            type_id, page, country, sort, genre))
+        + ("" if tid == T.WATCH_TYPE or not items else _filter_panel(
+            tid, page, country, sort, genre, "tmdb"))
     )
-    return _page("海报墙 · TMDB", body, _JS_WALL)
+    return _page("海报墙 · TMDB", body, _JS_WALL, "tmdb", here, sm)
 
 
-def page_detail(vid: str, retry: int = 0) -> str:
-    # 只拿元数据：TMDB 侧有长缓存，基本上就是本地字典查找。
+def page_detail(vid: str, retry: int = 0, sm: bool = False) -> str:
+    # 数据源看 vod_id 前缀：豆瓣统一 `db<id>`，TMDB 是 `m/t<id>`。
+    # 这样链接本身就能表达数据源，不用额外参数，分享/收藏也不会串。
+    src = "douban" if str(vid or "").startswith("db") else "tmdb"
+    M = _mod(src)
+    # 只拿元数据：两套数据都有长缓存，基本上就是本地字典查找。
     # 这里**绝不能**用 with_plays=True —— 那样会同步跑一遍网盘搜索（花卷最慢要
     # 5 秒），详情页首屏从 0.2 秒直接变成 3 秒以上，实拍反馈过"打开要 3 秒"。
-    d = T.detail(vid, with_plays=False)
+    d = M.detail(vid, with_plays=False)
     if not d:
         # 2026-10-31 真机反馈「播完返回偶尔整页空白」：多半是 TMDB 侧抖动/
         # 限流导致元数据拿空，页面就只剩一行字。这里改成**自动重试页**：
@@ -865,16 +1194,17 @@ def page_detail(vid: str, retry: int = 0) -> str:
                 f"<a class=\"btn\" href=\"/hai/poster/d/{_e(vid)}\">立即重试</a>"
                 f"<a class=\"btn ghost\" href=\"/hai/poster/\">返回海报墙</a></div></div>"
             )
-            html = _page("载入中", body)
+            html = _page("载入中", body, "", src, f"/hai/poster/d/{_e(vid)}")
             # meta refresh 比 JS 稳（WebView 被冻结时 JS 定时器不一定跑）
             html = html.replace("</head>",
                                 f"<meta http-equiv=\"refresh\" content=\"2.5;url="
                                 f"/hai/poster/d/{_e(vid)}?r={retry + 1}\"></head>")
             return html
         return _page("未找到", "<div class=\"brand\"><b>海报墙</b></div>"
-                              "<p class=\"desc\">TMDB 暂时没有返回这部片的数据，"
-                              "回上一层再进一次通常就好了。</p>"
-                              "<p><a class=\"btn\" href=\"/hai/poster/\">← 返回海报墙</a></p>")
+                              f"<p class=\"desc\">{_src_name(src)} 暂时没有返回这部片的"
+                              "数据，回上一层再进一次通常就好了。</p>"
+                              "<p><a class=\"btn\" href=\"/hai/poster/\">← 返回海报墙</a></p>",
+                     "", src, "/hai/poster/")
     bg = _pic(d.get("vod_pic_slide") or "")
     chips = []
     if d.get("vod_remarks"):
@@ -935,6 +1265,9 @@ def page_detail(vid: str, retry: int = 0) -> str:
     else:
         watch_btn = (f"<a class=\"btn ghost\" href=\"/hai/poster/watch?act=add&vid={_e(vid)}"
                      f"&back=/hai/poster/d/{_e(vid)}\">＋ 一键追剧</a>")
+
+    # 「⚙ 数据源」放进按钮行：遥控 ←→ 就能选到，OK 呼出浮层（见 _srcdlg 注释）
+    src_btn = _srcbtn(src, f"/hai/poster/d/{_e(vid)}", cls="btn ghost")
 
     play_block = (
         "<div class=\"sect\">播放</div>"
@@ -1023,7 +1356,7 @@ def page_detail(vid: str, retry: int = 0) -> str:
         "<div class=\"info\">"
         f"<h1>{_e(d.get('vod_name'))}</h1>"
         f"<div class=\"chips\">{''.join(chips)}</div>"
-        f"<div class=\"acts\">{play_btn}{search_btn}{watch_btn}</div>"
+        f"<div class=\"acts\">{play_btn}{search_btn}{watch_btn}{src_btn}</div>"
         f"<div class=\"keys\">← → 选按钮　↓ 演职员　OK 确认</div>"
         "</div></div>"
         # 旧简介块去掉（2026-10-30 海哥）：二屏左上已有特效剧名+简介卡，重复了
@@ -1052,4 +1385,6 @@ def page_detail(vid: str, retry: int = 0) -> str:
         "else if(b.innerText.indexOf('播放')>=0){b.innerHTML='▶ 播放(搜索)';}}"
         "catch(e){}};x.send();})();"
     )
-    return _page(f"{d.get('vod_name')} · 海报墙", body, _JS_NAV + hero_js + play_js)
+    return _page(f"{d.get('vod_name')} · 海报墙", body,
+                 _JS_NAV + hero_js + play_js, src,
+                 f"/hai/poster/d/{_e(vid)}", sm)

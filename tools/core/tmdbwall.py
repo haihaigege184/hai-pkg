@@ -379,8 +379,13 @@ def _discover_params(cls, country: str, sort: str, genre: str) -> tuple[str, dic
     return api, params
 
 
-def list_page(type_id: int, page: int = 1, country: str = "",
+def list_page(type_id, page: int = 1, country: str = "",
               sort: str = "", genre: str = "") -> dict:
+    # 豆瓣类目（dbtv_hot / dbmv_cn …）直接转给豆瓣模块。
+    # 类目 id 用字符串前缀区分两套数据，App 侧只当普通 type_id 透传即可。
+    if str(type_id or "").startswith("db"):
+        from . import doubanx as D
+        return D.list_page(str(type_id), page, country, sort, genre)
     tid = _as_int(type_id, WATCH_TYPE)
     page = max(1, int(page or 1))
     country = (country or "").strip().upper()
@@ -608,6 +613,12 @@ def detail(vid: str, with_plays: bool = True, push: bool = False) -> dict:
 
     `push=True` 只给 app 接口用（网盘链接要 push:// 前缀），网页端保持原样。
     """
+    # 豆瓣条目（db 前缀）走自己的详情，但播放源仍然按片名去网盘站源匹配 ——
+    # 这样电视/手机的原生界面点开豆瓣片也能直接起播，和网页版同一条链路。
+    _s = str(vid or "").strip()
+    if _s.startswith("db"):
+        return _detail_douban(_s, with_plays, push)
+
     kind, tid = _parse_vid(vid)
     if not kind:
         return {}
@@ -631,6 +642,32 @@ def detail(vid: str, with_plays: bool = True, push: bool = False) -> dict:
     plays = _plays(item["vod_name"], item["vod_year"], push=push)
     out["vod_play_from"] = "$$$".join(n for n, _ in plays)
     out["vod_play_url"] = "$$$".join(u for _, u in plays)
+    return out
+
+
+def _detail_douban(vid: str, with_plays: bool = True, push: bool = False) -> dict:
+    """豆瓣条目的苹果 CMS 详情。
+
+    豆瓣没有自己的片源，播放一律按片名走 panwall 的严格同名匹配
+    （玩偶→木偶→花卷→蜡笔），和「▶ 播放」按钮完全同一条链路。
+    图片在 doubanx 里已经转成 `/hai/dbimg/...` 相对路径，接口层再按
+    请求 Host 补成绝对地址。
+    """
+    try:
+        from . import doubanx as D
+        d = D.detail(vid, with_plays=False)
+    except Exception:
+        return {}
+    if not d:
+        return {}
+    out = dict(d)
+    out["vod_id"] = vid
+    out["vod_play_from"] = ""
+    out["vod_play_url"] = ""
+    if with_plays:
+        plays = _plays(out.get("vod_name") or "", out.get("vod_year") or "", push=push)
+        out["vod_play_from"] = "$$$".join(n for n, _ in plays)
+        out["vod_play_url"] = "$$$".join(u for _, u in plays)
     return out
 
 
@@ -756,6 +793,23 @@ def _build_meta(vid: str, kind: str, tid: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _classes():
+    """类目表。数据源是豆瓣时下发豆瓣类目，反之发 TMDB 类目。
+
+    App 的类目条是启动时拉这一次的，所以切换数据源后要重开一次 App
+    才能看到新类目（这是端上的固有行为，不是 bug）。
+    """
+    try:
+        import os as _os
+        import json as _json
+        _p = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                           "data", "poster.src.json")
+        with open(_p, "r", encoding="utf-8") as _f:
+            if str((_json.load(_f) or {}).get("src") or "") == "douban":
+                from . import doubanx as D
+                return [{"type_id": c, "type_pid": 0, "type_name": n}
+                        for c, n in D.classes()]
+    except Exception:
+        pass
     return [{"type_id": t, "type_pid": 0, "type_name": n}
             for t, n, _, _ in CLASSES]
 
@@ -786,7 +840,8 @@ def handle(args: dict, push: bool = False) -> dict:
             body.update({"page": 1, "pagecount": 1, "limit": 20,
                          "total": len(items), "list": items})
             return body
-        t = _as_int(args.get("t") or args.get("type_id"), 1)
+        _t = args.get("t") or args.get("type_id") or 1
+        t = _t if str(_t).startswith("db") else _as_int(_t, 1)
         body.update(list_page(t, page,
                               str(args.get("c") or ""),
                               str(args.get("s") or ""),
@@ -803,7 +858,8 @@ def handle(args: dict, push: bool = False) -> dict:
     # 缺省 t 是 2（热门电影）而不是 1 —— 1 是「我的追剧」，首屏给空列表很怪。
     # 筛选（2026-10-31）：c=地区 s=排序 g=类型，由 lib/tmdb.js 的 filters 下发，
     # 端上选完拼到 URL 上；这里只透传，白名单与范围在 list_page 里兜。
-    t = _as_int(args.get("t") or args.get("type_id"), 2)
+    _t = args.get("t") or args.get("type_id") or 2
+    t = _t if str(_t).startswith("db") else _as_int(_t, 2)
     body.update(list_page(t, page,
                           str(args.get("c") or ""),
                           str(args.get("s") or ""),

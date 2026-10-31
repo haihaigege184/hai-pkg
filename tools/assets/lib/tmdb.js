@@ -29,6 +29,8 @@ var CLASSES = [
 
 // 首屏推荐用「热门电影」而不是「我的追剧」——追剧刚装好是空的，首屏空白很怪
 var HOME_TID = 2;
+// home() 会按服务端类目表重设（豆瓣首类目是 dbtv_hot，不是 2）
+var _homeTid = null;
 
 /* ---------------------------------------------------------------------------
  * 类目筛选（2026-10-31 海哥需求）
@@ -58,17 +60,38 @@ function _opts(pairs) {
     return a;
 }
 
-function _filters() {
-    var one = [
+/* 豆瓣数据源的筛选项（2026-10-31 加）。
+ * 豆瓣只认 tag + sort，所以地区/类型最终都归一成一个 tag，值必须和
+ * core/doubanx.py 的 COUNTRIES / SORTS / GENRES 一致。 */
+var DB_COUNTRIES = [
+    ['', '全部'], ['CN', '国产'], ['US', '美国'], ['GB', '英国'], ['JP', '日本'],
+    ['KR', '韩国'], ['HK', '中国香港'], ['TW', '中国台湾']
+];
+var DB_SORTS = [['', '默认'], ['recommend', '推荐'], ['time', '最新'], ['rank', '高分']];
+var DB_GENRES = [
+    ['', '全部'], ['剧情', '剧情'], ['喜剧', '喜剧'], ['爱情', '爱情'],
+    ['悬疑', '悬疑'], ['动作', '动作'], ['科幻', '科幻'], ['犯罪', '犯罪'],
+    ['古装', '古装'], ['恐怖', '恐怖'], ['动画', '动画'], ['纪录片', '纪录片']
+];
+
+function _isDb(tid) { return String(tid).indexOf('db') === 0; }
+
+function _filters(cls) {
+    var tm = [
         { key: 'c', name: '地区', value: _opts(COUNTRIES) },
         { key: 's', name: '排序', value: _opts(SORTS) },
         { key: 'g', name: '类型', value: _opts(GENRES) }
     ];
+    var db = [
+        { key: 'c', name: '地区', value: _opts(DB_COUNTRIES) },
+        { key: 's', name: '排序', value: _opts(DB_SORTS) },
+        { key: 'g', name: '类型', value: _opts(DB_GENRES) }
+    ];
     var out = {};
-    for (var i = 0; i < CLASSES.length; i++) {
-        var tid = CLASSES[i][0];
-        if (tid === 1) { continue; }          // 「我的追剧」是本地列表，不筛
-        out[String(tid)] = one;
+    for (var i = 0; i < cls.length; i++) {
+        var tid = String(cls[i].type_id);
+        if (tid === '1') { continue; }        // 「我的追剧」是本地列表，不筛
+        out[tid] = _isDb(tid) ? db : tm;
     }
     return out;
 }
@@ -109,15 +132,30 @@ function _item(it) {
 }
 
 function home(filter) {
+    // 类目表以**服务端**为准：服务端按数据源（TMDB / 豆瓣）下发不同类目，
+    // 端上只管显示。这样遥控切了数据源，重开 App 就换成另一套类目，
+    // 不用重新打包 APK（类目写死在这里的旧做法已经去掉了）。
     var cls = [];
-    for (var i = 0; i < CLASSES.length; i++) {
-        cls.push({ type_id: CLASSES[i][0], type_pid: 0, type_name: CLASSES[i][1] });
+    var d = _get(API + '?ac=list');
+    var raw = (d && d['class']) || [];
+    for (var i = 0; i < raw.length; i++) {
+        if (!raw[i] || raw[i].type_id === undefined) { continue; }
+        cls.push({ type_id: raw[i].type_id, type_pid: 0, type_name: raw[i].type_name });
     }
-    return JSON.stringify({ class: cls, filters: _filters() });
+    if (!cls.length) {                       // 服务端没给就退回本地表，别给空类目条
+        for (var j = 0; j < CLASSES.length; j++) {
+            cls.push({ type_id: CLASSES[j][0], type_pid: 0, type_name: CLASSES[j][1] });
+        }
+    }
+    for (var k = 0; k < cls.length; k++) {   // 首屏推荐用第一个「有内容」的类目
+        if (String(cls[k].type_id) !== '1') { _homeTid = String(cls[k].type_id); break; }
+    }
+    return JSON.stringify({ class: cls, filters: _filters(cls) });
 }
 
 function homeVod(params) {
-    var d = _get(API + '?ac=detail&t=' + HOME_TID + '&pg=1');
+    var tid = _homeTid || HOME_TID;
+    var d = _get(API + '?ac=detail&t=' + tid + '&pg=1');
     var list = [];
     var raw = d.list || [];
     for (var i = 0; i < raw.length; i++) { list.push(_item(raw[i])); }
@@ -137,7 +175,7 @@ function category(tid, pg, filter, extend) {
     for (var i = 0; i < raw.length; i++) { list.push(_item(raw[i])); }
     return JSON.stringify({
         page: parseInt(pg, 10) || 1,
-        pagecount: 500,
+        pagecount: d.pagecount || 500,
         limit: 20,
         total: 9999,
         list: list
