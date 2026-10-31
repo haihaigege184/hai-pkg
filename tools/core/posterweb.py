@@ -112,12 +112,21 @@ body.below .hero .info{opacity:0;pointer-events:none}
 .hero p.desc{font-size:14px;line-height:1.75;color:#b9c4d6;max-height:5.2em;overflow:hidden}
 
 /* 分类 */
-.tabs{margin:0 0 20px}
+.tabs{margin:0 0 14px}
 .tabs a{display:inline-block;margin:0 10px 10px 0;padding:8px 16px;border-radius:10px;
  font-size:14px;color:#93a1b8;background:rgba(255,255,255,.035);
  border:1px solid rgba(255,255,255,.07);transition:none}
 .tabs a.on{color:#00e08a;border-color:rgba(0,224,138,.55);
  background:rgba(0,224,138,.10);box-shadow:0 0 18px rgba(0,224,138,.22)}
+.tabs a:focus,.card:focus{outline:none}
+.tabs a:focus,.tabs a.sel{color:#0a0d14;background:#00e08a;border-color:#00e08a;
+ box-shadow:0 0 22px rgba(0,224,138,.6)}
+.tabs a.fbtn{color:#dcc4ff;border-color:rgba(168,85,247,.5);
+ background:rgba(168,85,247,.12)}
+.tabs a.fbtn:focus,.tabs a.fbtn.sel{color:#0a0d14;background:#a855f7;border-color:#a855f7;
+ box-shadow:0 0 22px rgba(168,85,247,.65)}
+.fsum{font-size:12px;color:#6ea88f;letter-spacing:1px;margin-left:2px}
+.fsum b{color:#00e08a;font-weight:600}
 
 /* 海报墙 */
 .wall{display:flex;flex-wrap:wrap;margin:0 -9px}
@@ -134,6 +143,36 @@ body.below .hero .info{opacity:0;pointer-events:none}
 .card h3{margin-top:9px;font-size:14px;font-weight:500;line-height:1.45;color:#dfe7f3;
  max-height:2.9em;overflow:hidden}
 .card .sub{margin-top:4px;font-size:12px;color:#6f7c93}
+.card:focus,.card.sel{outline:none}
+.card:focus .pic,.card.sel .pic{border-color:#00e08a;
+ box-shadow:0 0 0 2px rgba(0,224,138,.55),0 0 26px rgba(0,224,138,.35)}
+.card:focus h3,.card.sel h3{color:#9ff5cd}
+
+/* 类目筛选面板（2026-10-31）：按 OK 在类目条上呼出，三组条件，
+   每组一行横向 chip，选中即整页重渲染（服务端滤镜，翻页才不会断层） */
+#fpanel{display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;
+ z-index:60;background:rgba(4,6,10,.86)}
+#fpanel.show{display:block}
+#fpanel .fbox{position:absolute;top:50%;left:50%;width:1090px;max-width:92vw;
+ margin-top:-232px;margin-left:-545px;padding:26px 30px 20px;border-radius:18px;
+ background:linear-gradient(160deg,rgba(16,22,32,.99),rgba(9,12,18,.99));
+ border:1px solid rgba(0,224,138,.32);
+ box-shadow:0 0 60px rgba(0,0,0,.8),0 0 40px rgba(0,224,138,.14)}
+#fpanel .fh{font-size:19px;color:#00e08a;letter-spacing:3px;margin-bottom:6px;
+ text-shadow:0 0 14px rgba(0,224,138,.6)}
+#fpanel .fh i{font-style:normal;color:#8ea0bb;font-size:13px;letter-spacing:1px;
+ margin-left:12px;text-shadow:none}
+.frow{margin-top:18px}
+.frow .fl{font-size:12px;color:#6f7c93;letter-spacing:3px;margin-bottom:9px}
+.fopts{display:flex;flex-wrap:wrap;margin:0 -5px}
+.fopt{display:inline-block;margin:0 5px 9px;padding:7px 15px;border-radius:9px;
+ font-size:13.5px;color:#a9b6ca;background:rgba(255,255,255,.045);
+ border:1px solid rgba(255,255,255,.08)}
+.fopt.sel{color:#9ff5cd;border-color:rgba(0,224,138,.5);
+ background:rgba(0,224,138,.12)}
+.fopt:focus,.fopt.focus{outline:none;color:#0a0d14;background:#00e08a;border-color:#00e08a;
+ box-shadow:0 0 20px rgba(0,224,138,.55)}
+#fpanel .fk{margin-top:16px;font-size:12px;color:#5f6b80;letter-spacing:1px}
 
 /* 详情页 */
 .dtop{display:flex;margin-bottom:26px}
@@ -483,8 +522,7 @@ _JS_HERO = """
 """
 
 
-def _e(s) -> str:
-    return html.escape(str(s or ""))
+def _e(s) -> str:    return html.escape(str(s or ""))
 
 
 def _pic(u) -> str:
@@ -512,6 +550,26 @@ def _pic_raw(u) -> str:
     s = re.sub(r"^https?://[^/]+(/hai/img/.*)$", r"\1", s)
     return s
 
+_JS_SELFHEAL = """
+(function(){
+  // 自愈：页面几乎是空的（WebView 被系统回收后重载失败 / 网关抽风）就自己刷一次。
+  // 只在真的空页时触发，最多两次，正常页面永远不刷新。
+  setTimeout(function(){
+    try{
+      var txt = document.body ? (document.body.innerText || '') : '';
+      var h = document.body ? document.body.scrollHeight : 0;
+      if (txt.length < 12 && h < 320) {
+        var n = +(sessionStorage.getItem('hai_nr') || 0);
+        if (n < 2) { sessionStorage.setItem('hai_nr', n + 1); location.reload(); }
+      } else {
+        sessionStorage.removeItem('hai_nr');
+      }
+    }catch(e){}
+  }, 3500);
+})();
+"""
+
+
 def _page(title: str, body: str, script: str = "") -> str:
     return (
         "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
@@ -520,6 +578,7 @@ def _page(title: str, body: str, script: str = "") -> str:
         f"<div class=\"wrap\">{body}"
         "<div class=\"foot\">TMDB 海报墙 · hai 本地包中枢自托管</div></div>"
         + (f"<script>{script}</script>" if script else "")
+        + f"<script>{_JS_SELFHEAL}</script>"
         + "</body></html>"
     )
 
@@ -534,9 +593,206 @@ def _card(it: dict) -> str:
     )
 
 
-def page_home(type_id: int = 1, page: int = 1) -> str:
-    data = T.list_page(type_id, page)
+def _q(tid: int, page: int = 1, country: str = "", sort: str = "",
+       genre: str = "") -> str:
+    """海报墙 URL（筛选状态全在 query 里，服务端渲染 —— 电视 WebView 最稳）"""
+    parts = [f"t={tid}"]
+    if country:
+        parts.append(f"c={country}")
+    if sort:
+        parts.append(f"s={sort}")
+    if genre:
+        parts.append(f"g={genre}")
+    if page and page > 1:
+        parts.append(f"pg={page}")
+    return "/hai/poster/?" + "&".join(parts)
+
+
+_JS_WALL = """
+(function () {
+  var tabs = [].slice.call(document.querySelectorAll('.tabs a'));
+  var cards = [].slice.call(document.querySelectorAll('.wall a.card'));
+  var panel = document.getElementById('fpanel');
+  var wall = document.getElementById('wallbox');
+  if (!cards.length && !tabs.length) { return; }
+
+  function makeGrid(els) {
+    var rows = [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i], placed = false;
+      for (var r = 0; r < rows.length; r++) {
+        if (Math.abs(rows[r][0].offsetTop - el.offsetTop) < 24) {
+          rows[r].push(el); placed = true; break;
+        }
+      }
+      if (!placed) { rows.push([el]); }
+    }
+    rows.sort(function (a, b) { return a[0].offsetTop - b[0].offsetTop; });
+    for (var r2 = 0; r2 < rows.length; r2++) {
+      rows[r2].sort(function (a, b) { return a.offsetLeft - b.offsetLeft; });
+    }
+    return rows;
+  }
+
+  // ---- 主网格：类目条 + 海报 ----
+  var grid = [], row = 0, col = 0;
+  function build() {
+    var els = tabs.concat(cards);
+    grid = els.length ? makeGrid(els) : [];
+  }
+  function hi() {
+    for (var i = 0; i < tabs.length; i++) { tabs[i].classList.remove('sel'); }
+    for (var j = 0; j < cards.length; j++) { cards[j].classList.remove('sel'); }
+    var el = grid[row] && grid[row][col];
+    if (el) { el.classList.add('sel'); }
+  }
+  function ensure(el) {
+    if (!el) { return; }
+    var r = el.getBoundingClientRect(), h = window.innerHeight;
+    if (r.top < 8) { window.scrollBy(0, r.top - 40); }
+    else if (r.bottom > h - 8) { window.scrollBy(0, r.bottom - h + 40); }
+  }
+  function go(dr, dc) {
+    if (!grid.length) { return; }
+    var nr = Math.min(Math.max(0, row + dr), grid.length - 1);
+    var c = (dr === 0) ? col + dc : Math.min(col, grid[nr].length - 1);
+    c = Math.min(Math.max(0, c), grid[nr].length - 1);
+    row = nr; col = c;
+    hi(); ensure(grid[row][col]);
+  }
+  function openItem() {
+    var el = grid[row] && grid[row][col];
+    if (!el) { return; }
+    var href = el.getAttribute('href');
+    if (el.getAttribute('data-filter') === '1') { openPanel(); return; }
+    if (href) { location.href = href; }
+  }
+
+  // ---- 筛选面板 ----
+  var frows = [], fsel = [], fr = 0, fc = 0;
+  function initPanel() {
+    if (!panel) { return; }
+    var rs = [].slice.call(panel.querySelectorAll('.frow'));
+    for (var i = 0; i < rs.length; i++) {
+      var opts = [].slice.call(rs[i].querySelectorAll('.fopt'));
+      if (!opts.length) { continue; }
+      var sel = -1;
+      for (var j = 0; j < opts.length; j++) {
+        if (opts[j].className.indexOf('sel') >= 0) { sel = j; }
+      }
+      frows.push(opts); fsel.push(sel < 0 ? 0 : sel);
+    }
+  }
+  function fHi() {
+    for (var i = 0; i < frows.length; i++) {
+      for (var j = 0; j < frows[i].length; j++) {
+        frows[i][j].classList.remove('focus');
+      }
+    }
+    var el = frows[fr] && frows[fr][fc];
+    if (el) { el.classList.add('focus'); }
+  }
+  function fGo(dr, dc) {
+    if (!frows.length) { return; }
+    if (dr) {
+      fr = Math.min(Math.max(0, fr + dr), frows.length - 1);
+      fc = Math.min(fsel[fr], frows[fr].length - 1);
+    } else {
+      fc = Math.min(Math.max(0, fc + dc), frows[fr].length - 1);
+    }
+    fHi();
+  }
+  function fOpen() {
+    var el = frows[fr] && frows[fr][fc];
+    if (!el) { return; }
+    var href = el.getAttribute('href');
+    if (href && href !== '#') { location.href = href; }
+  }
+  function openPanel() {
+    if (!panel) { return; }
+    panel.classList.add('show');
+    if (!frows.length) { initPanel(); }
+    fr = 0; fc = fsel[0] || 0;
+    fHi();
+  }
+  function closePanel() {
+    if (!panel) { return; }
+    panel.classList.remove('show');
+    hi();
+  }
+
+  build(); hi();
+
+  document.addEventListener('keydown', function (e) {
+    var k = e.keyCode;
+    var inPanel = panel && panel.className.indexOf('show') >= 0;
+    if (inPanel) {
+      if (k === 38) { fGo(-1, 0); }
+      else if (k === 40) { fGo(1, 0); }
+      else if (k === 37) { fGo(0, -1); }
+      else if (k === 39) { fGo(0, 1); }
+      else if (k === 13 || k === 23) { fOpen(); }
+      else if (k === 4 || k === 27 || k === 8 || k === 461) { closePanel(); }
+      else { return; }
+      e.preventDefault();
+      return false;
+    }
+    if (k === 38) { go(-1, 0); }
+    else if (k === 40) { go(1, 0); }
+    else if (k === 37) { go(0, -1); }
+    else if (k === 39) { go(0, 1); }
+    else if (k === 13 || k === 23) { openItem(); }
+    else if (k === 82) { openPanel(); }        // MENU 键也能呼出
+    else { return; }
+    e.preventDefault();
+    return false;
+  }, false);
+
+  // 触屏/鼠标也能用：点分类条上的「筛选」或当前类目
+  var fb = document.getElementById('fbtn');
+  if (fb) {
+    fb.addEventListener('click', function (e) {
+      e.preventDefault(); openPanel(); return false;
+    });
+  }
+})();
+"""
+
+
+def _filter_panel(type_id: int, page: int, country: str, sort: str,
+                  genre: str) -> str:
+    """筛选面板 HTML：三组条件 + 关闭项，每项直接带完整 URL（点了就重渲染）"""
+    def row(label: str, items: list[tuple[str, str]], cur: str, key: str) -> str:
+        opts = []
+        for val, name in items:
+            url = _q(type_id, 1,
+                     val if key == "c" else country,
+                     val if key == "s" else sort,
+                     val if key == "g" else genre)
+            on = " sel" if val == cur else ""
+            opts.append(f"<a class=\"fopt{on}\" href=\"{_e(url)}\">{_e(name)}</a>")
+        return (f"<div class=\"frow\"><div class=\"fl\">{label}</div>"
+                f"<div class=\"fopts\">{''.join(opts)}</div></div>")
+
+    close = ("<div class=\"frow\"><div class=\"fl\">操作</div><div class=\"fopts\">"
+             f"<a class=\"fopt\" href=\"#\">✕ 关闭</a></div></div>")
+    return (
+        "<div id=\"fpanel\"><div class=\"fbox\">"
+        "<div class=\"fh\">筛选<i>选完立刻按条件重排，返回键←关闭</i></div>"
+        + row("地区 / 国家", T.COUNTRIES, country, "c")
+        + row("排序", T.SORTS, sort, "s")
+        + row("影片类型", [(k, n) for k, n, _, _ in T.GENRES], genre, "g")
+        + close
+        + "<div class=\"fk\">← → 选条件 · ↑ ↓ 换一组 · OK 应用 · 返回 关闭</div>"
+        "</div></div>"
+    )
+
+
+def page_home(type_id: int = 1, page: int = 1, country: str = "",
+              sort: str = "", genre: str = "") -> str:
+    data = T.list_page(type_id, page, country, sort, genre)
     items = data.get("list") or []
+    fsum = T.filter_text(country, sort, genre)
 
     hero = ""
     if items:
@@ -564,32 +820,61 @@ def page_home(type_id: int = 1, page: int = 1) -> str:
             "</div></div>"
         )
 
-    tabs = "".join(
-        f"<a class=\"{'on' if tid == type_id else ''}\" "
-        f"href=\"/hai/poster/?t={tid}\">{_e(name)}</a>"
-        for tid, name, _, _ in T.CLASSES
-    )
+    # 类目条：第一个是「⚙ 筛选」；当前类目本身也是筛选入口（海哥：在热门剧集上按 OK 呼出）
+    tabs = (f"<a class=\"fbtn\" id=\"fbtn\" data-filter=\"1\" href=\"#\">⚙ 筛选</a>")
+    for tid, name, _, _ in T.CLASSES:
+        on = " on" if tid == type_id else ""
+        attr = " data-filter=\"1\"" if tid == type_id else ""
+        tabs += (f"<a class=\"{on.strip()}\"{attr} "
+                 f"href=\"{_e(_q(tid, 1, country, sort, genre))}\">{_e(name)}</a>")
     cards = "".join(_card(x) for x in items[1:])
     if not items:
         # 「我的追剧」刚装好是空的，给一句人话，别让人以为页面坏了
         cards = ("<div class=\"empty\">这一类还没有内容。"
                  + ("去别的类目点开一部片，详情页点「一键追剧」就会出现在这里。</div>"
-                    if type_id == T.WATCH_TYPE else "换个类目看看。</div>"))
+                    if type_id == T.WATCH_TYPE else "换个类目或放宽筛选看看。</div>"))
+    summary = f"<span class=\"fsum\">筛选：<b>{_e(fsum)}</b></span>" if fsum else ""
     body = (
-        "<div class=\"brand\"><b>海报墙</b><span>TMDB · 深色影院</span></div>"
-        f"{hero}<div class=\"tabs\">{tabs}</div><div class=\"wall\">{cards}</div>"
+        f"<div class=\"brand\"><b>海报墙</b><span>TMDB · 深色影院</span>{summary}</div>"
+        f"{hero}<div class=\"tabs\">{tabs}</div>"
+        f"<div class=\"wall\" id=\"wallbox\">{cards}</div>"
+        + ("" if type_id == T.WATCH_TYPE or not items else _filter_panel(
+            type_id, page, country, sort, genre))
     )
-    return _page("海报墙 · TMDB", body)
+    return _page("海报墙 · TMDB", body, _JS_WALL)
 
 
-def page_detail(vid: str) -> str:
+def page_detail(vid: str, retry: int = 0) -> str:
     # 只拿元数据：TMDB 侧有长缓存，基本上就是本地字典查找。
     # 这里**绝不能**用 with_plays=True —— 那样会同步跑一遍网盘搜索（花卷最慢要
     # 5 秒），详情页首屏从 0.2 秒直接变成 3 秒以上，实拍反馈过"打开要 3 秒"。
     d = T.detail(vid, with_plays=False)
     if not d:
+        # 2026-10-31 真机反馈「播完返回偶尔整页空白」：多半是 TMDB 侧抖动/
+        # 限流导致元数据拿空，页面就只剩一行字。这里改成**自动重试页**：
+        # 每 2.5 秒自己刷一次，最多 3 次，刷不到才认输。
+        if retry < 3:
+            body = (
+                "<div class=\"brand\"><b>海报墙</b></div>"
+                f"<div style=\"margin-top:14vh;text-align:center\">"
+                f"<div style=\"font-size:17px;color:#9ff5cd;letter-spacing:2px\">"
+                f"正在重新载入影片信息…（{retry + 1}/3）</div>"
+                "<div style=\"margin-top:10px;font-size:13px;color:#6f7c93\">"
+                "网络抖动时数据站会短暂拿不到数据，页面会自动重试</div>"
+                f"<div style=\"margin-top:26px\">"
+                f"<a class=\"btn\" href=\"/hai/poster/d/{_e(vid)}\">立即重试</a>"
+                f"<a class=\"btn ghost\" href=\"/hai/poster/\">返回海报墙</a></div></div>"
+            )
+            html = _page("载入中", body)
+            # meta refresh 比 JS 稳（WebView 被冻结时 JS 定时器不一定跑）
+            html = html.replace("</head>",
+                                f"<meta http-equiv=\"refresh\" content=\"2.5;url="
+                                f"/hai/poster/d/{_e(vid)}?r={retry + 1}\"></head>")
+            return html
         return _page("未找到", "<div class=\"brand\"><b>海报墙</b></div>"
-                              "<p class=\"desc\">TMDB 没有这条数据。</p>")
+                              "<p class=\"desc\">TMDB 暂时没有返回这部片的数据，"
+                              "回上一层再进一次通常就好了。</p>"
+                              "<p><a class=\"btn\" href=\"/hai/poster/\">← 返回海报墙</a></p>")
     bg = _pic(d.get("vod_pic_slide") or "")
     chips = []
     if d.get("vod_remarks"):
@@ -752,8 +1037,9 @@ def page_detail(vid: str) -> str:
                .replace("%IMGS%", json.dumps(hero_imgs, ensure_ascii=False))
                .replace("%INTERVAL%", str(cfg["interval"]))
                .replace("%EFFECT%", cfg["effect"]))
-    # 「▶ 播放」直达玩偶：页面打开后后台解析 vod id，解析成功就换 href。
-    # 故意不阻塞首屏 —— 解析要 1~2 秒（wogg 搜索页），失败就保持搜索兜底。
+    # 「▶ 播放」直达站源：页面打开后后台并行搜全部站源（玩偶打头），
+    # 找到**完全同名**的资源就换 href 并把站名写到按钮上，用户一眼知道
+    # 会从哪个站起播；一站都没匹配到才保持「聚合搜索」兜底。
     play_js = (
         "(function(){var b=document.getElementById('btnPlay');if(!b)return;"
         "var x=new XMLHttpRequest();x.open('GET','/hai/poster/play?vid="
@@ -761,6 +1047,9 @@ def page_detail(vid: str) -> str:
         "if(x.readyState!==4)return;try{var r=JSON.parse(x.responseText);"
         "if(r&&r.ok&&r.id){b.href='haiplay://play?site='+encodeURIComponent(r.site_key)"
         "+'&id='+encodeURIComponent(r.id)+'&name='+encodeURIComponent(r.name||'')"
-        "+'&pic='+encodeURIComponent(r.pic||'');}}catch(e){}};x.send();})();"
+        "+'&pic='+encodeURIComponent(r.pic||'');"
+        "if(r.site){b.innerHTML='▶ 播放 · '+r.site;}}"
+        "else if(b.innerText.indexOf('播放')>=0){b.innerHTML='▶ 播放(搜索)';}}"
+        "catch(e){}};x.send();})();"
     )
     return _page(f"{d.get('vod_name')} · 海报墙", body, _JS_NAV + hero_js + play_js)

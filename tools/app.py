@@ -796,7 +796,11 @@ def hai_version():
 
 @bp.route("/hai/poster/")
 def hai_poster():
-    """豪华海报墙网页（服务端渲染的暗色页面，电视浏览器/手机都能开）"""
+    """豪华海报墙网页（服务端渲染的暗色页面，电视浏览器/手机都能开）
+
+    筛选状态走 URL：t=类目 c=地区 s=排序 g=类型，服务端直接用 TMDB /discover
+    重排 —— 电视 WebView 老，前端过滤+翻页最容易断层，这样最稳。
+    """
     try:
         # 默认 2（热门电影）：1 是「我的追剧」，刚装好是空的，首页会很难看
         t = int(request.args.get("t") or 2)
@@ -806,14 +810,22 @@ def hai_poster():
         pg = int(request.args.get("pg") or 1)
     except ValueError:
         pg = 1
-    return Response(posterweb.page_home(t, pg),
+    return Response(
+        posterweb.page_home(t, pg,
+                            str(request.args.get("c") or ""),
+                            str(request.args.get("s") or ""),
+                            str(request.args.get("g") or "")),
                     mimetype="text/html; charset=utf-8",
                     headers={"Cache-Control": "no-cache"})
 
 
 @bp.route("/hai/poster/d/<vid>")
 def hai_poster_detail(vid):
-    return Response(posterweb.page_detail(vid),
+    try:
+        r = int(request.args.get("r") or 0)
+    except ValueError:
+        r = 0
+    return Response(posterweb.page_detail(vid, r),
                     mimetype="text/html; charset=utf-8",
                     headers={"Cache-Control": "no-cache"})
 
@@ -835,32 +847,42 @@ def hai_poster_cfg():
 
 @bp.route("/hai/poster/play")
 def hai_poster_play():
-    """「▶ 播放」直达站源解析口（2026-10-30 海哥需求）
+    """「▶ 播放」直达站源解析口（2026-10-30 需求 / 10-31 重写）
 
-    详情页打开后由 JS 后台 fetch（不阻塞首屏），拿站源 spider 认的 vod id，
-    把播放按钮的 href 从「haiplay://search?q=」升级成
-    「haiplay://play?site=&id=&name=&pic=」—— app 拦截后直达玩偶选集页。
-    解析不到（站源挂了/没结果）返回 ok=0，播放按钮保持搜索兜底不变。
+    详情页打开后由 JS 后台 fetch（不阻塞首屏），按**站源顺序**（玩偶打头）
+    逐个站搜「完全同名」的资源，命中就把播放按钮的 href 换成
+    `haiplay://play?site=&id=&name=&pic=` —— app 拦截后直达该站选集页。
+    全部站源都没有完全同名 → ok=0，按钮保持 `haiplay://search?q=` 兜底。
+
+    调试：加 &debug=1 会额外返回每站的候选片名，方便对「为什么没匹配上」取证。
     """
     vid = str(request.args.get("vid") or "").strip()
-    site = str(request.args.get("site") or "玩偶").strip()
     if not vid:
         return jsonify(ok=0, error="缺少 vid")
     d = tmdbwall.detail(vid, with_plays=False)
     if not d:
         return jsonify(ok=0, error="未找到影片")
+    title = d.get("vod_name") or ""
+    year = d.get("vod_year") or ""
     try:
         from core import panwall
-        r = panwall.resolve_vod(site, d.get("vod_name") or "",
-                                d.get("vod_year") or "")
+        r = panwall.resolve_play(title, year)
     except Exception as e:
         return jsonify(ok=0, error="%s: %s" % (type(e).__name__, e))
     if not r:
-        return jsonify(ok=0, error="站源搜索无结果")
-    return jsonify(ok=1, site_key="Wogg", site=r["site_name"], id=r["id"],
-                   name=r.get("name") or d.get("vod_name"),
-                   pic=d.get("vod_pic") or "",
-                   title_hit=bool(r.get("title_hit")))
+        out = dict(ok=0, error="所有站源都没有完全同名资源", title=title)
+        if request.args.get("debug"):
+            out["sites"] = [s["name"] for s in panwall.play_sites()]
+        return jsonify(**out)
+    resp = dict(ok=1, site_key=r["site_key"], site=r["site_name"], id=r["id"],
+                name=r.get("name") or title, pic=d.get("vod_pic") or "",
+                title_hit=True)
+    if request.args.get("debug"):
+        from core import panwall as _pw
+        resp["debug"] = {"title": title, "year": year,
+                         "site": r["site_name"], "num_id": r.get("num_id"),
+                         "order": [s["name"] for s in _pw.play_sites()]}
+    return jsonify(**resp)
 
 
 @bp.route("/hai/poster/watch", methods=["POST", "GET"])
@@ -1001,8 +1023,14 @@ def hai_tmdb_vod():
     # 海报改走中枢代理：端直连 images.tmdb.org 一张图 300KB、2~3 秒，
     # 海报墙几十张就成一片灰。换成「端访问接口时用的那个地址」取图
     # （请求 Host 就是它），局域网内秒开，也不会在外网入口图裂。
+    #
+    # 2026-10-31 修：这里必须**先复制再改**。list_page 的结果是缓存里的同一个
+    # 对象，之前直接就地改写，第一个访问者（比如本机 curl）把地址改写成
+    # 127.0.0.1 后就钉在缓存里 30 分钟 —— 电视拿到的全是 127.0.0.1 的图，
+    # 整墙海报变灰块。复制一份再改，缓存里永远是原始 TMDB 地址。
     host = request.host_url.rstrip("/") + "/hai/img"
-    for it in body.get("list") or []:
+    body["list"] = [dict(it) for it in (body.get("list") or [])]
+    for it in body["list"]:
         for k in ("vod_pic", "vod_pic_slide"):
             v = str(it.get(k) or "")
             if v.startswith(_TMDB_IMG):

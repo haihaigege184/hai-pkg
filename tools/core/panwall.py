@@ -38,6 +38,7 @@ app 就会用自己那套网盘模块（`lib/tokenm.json` 里的登录态）去�
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -181,13 +182,13 @@ def peek(title: str, year: str = "") -> list[tuple[str, str]]:
     return _cache_get(f"pan:{title}:{year}") or []
 
 
-def _cache_set(key: str, val):
+def _cache_set(key: str, val, ttl: float = None):
     with _lock:
         if len(_cache) > 600:
             now = time.time()
             for k in [k for k, (e, _) in _cache.items() if e < now]:
                 _cache.pop(k, None)
-        _cache[key] = (time.time() + _TTL, val)
+        _cache[key] = (time.time() + (ttl or _TTL), val)
 
 
 def _share_id(url: str) -> str:
@@ -520,64 +521,323 @@ def collect(title: str, year: str = "") -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# 播放直达站源：解析「站源 spider 认的 vod id」（2026-10-30 海哥需求）
+# 播放直达站源：解析「站源 spider 认的 vod id」（2026-10-30 需求 / 10-31 重写）
 # ---------------------------------------------------------------------------
+#
+# 2026-10-31 海哥验收后的硬规则（旧实现全部踩中）：
+#   1. 旧实现只取搜索结果前 3 条候选、且用「子串包含」判片名 ——
+#      玩偶搜「仙逆」，前两条是「仙逆剧场版 神临之战 / 弑仙之战」，
+#      「仙逆」在第三条，子串匹配对剧场版也成立 ⇒ 必然跳错片。
+#   2. 旧实现只问玩偶一个站，玩偶没有就直接掉搜索页。
+#   所以改成：**并行搜索全部站源 → 每站只认「完全相等的片名」→
+#   按站源顺序（玩偶打头）取第一个命中的站 → 全站都没有才回搜索页。**
+#
+# 站源清单可在 data/play_sites.json 覆盖（/live 维护页可改顺序/开关），
+# 改站源不用重打包 APK。
 
-# app 端 9 参入口要的 id 形态 = 爬虫族 detailContent(id) 里的原始 id。
-# Wogg 系爬虫都是「拿 id 拼 URL」，给完整路径 /voddetail/<n>.html；
-# panwall 自己抓页面用的是纯数字 —— 两种形态别混。真机上如果发现选集页
-# 打不开/挂错片，改这一个字段就行（纯服务端配置，不用重打包 APK）。
-PLAY_ID_FULLPATH = True
+# app 端 9 参入口要的 id 形态 = 爬虫 detailContent(id) 里的原始 id。
+# 玩偶系（wogg 模板）爬虫「拿 id 拼 URL」，只认完整路径 /voddetail/<n>.html；
+# 木偶/花卷（maccms 模板）爬虫吃纯数字 id，自己拼 index.php/vod/detail/id/<n>.html。
+# 真机上打不开选集页就是这里形态错了 —— 纯服务端配置，改完重启即可。
+PLAY_SITES_DEFAULT = [
+    {"name": "玩偶", "key": "Wogg", "tpl": "wogg", "id_fmt": "path",
+     "bases": ["https://www.wogg.live", "https://www.wogg.net"],
+     "search": "/vodsearch/-------------.html?wd={q}",
+     "id_re": r"/voddetail/(\d+)\.html", "detail": "/voddetail/{}.html"},
+    {"name": "木偶", "key": "Mogg", "tpl": "maccms", "id_fmt": "path",
+     "bases": ["http://123.666291.xyz"],
+     "search": "/index.php/vod/search.html?wd={q}",
+     "id_re": r"/index\.php/vod/detail/id/(\d+)\.html",
+     "detail": "/index.php/vod/detail/id/{}.html"},
+    {"name": "花卷", "key": "Hjzc", "tpl": "maccms", "id_fmt": "path",
+     "bases": ["https://www.hjzhencai.top"],
+     "search": "/index.php/vod/search.html?wd={q}",
+     "id_re": r"/index\.php/vod/detail/id/(\d+)\.html",
+     "detail": "/index.php/vod/detail/id/{}.html"},
+    {"name": "蜡笔", "key": "蜡笔网盘", "tpl": "maccms", "id_fmt": "path",
+     "bases": ["https://www.fmcf.fun"],
+     "search": "/index.php/vod/search.html?wd={q}",
+     "id_re": r"/voddetail/(\d+)\.html", "detail": "/voddetail/{}.html"},
+]
+
+_PLAY_CFG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "data", "play_sites.json")
 
 
-def resolve_vod(site_name: str, title: str, year: str = "") -> dict:
-    """给「▶ 播放」直达站源选集页解析 vod id。
+def play_sites() -> list[dict]:
+    """站源顺序：默认内置，data/play_sites.json 里按 name 覆盖/追加。
 
-    csp_Wogg 是 pg.jar 里的爬虫，中枢没法直接问它 —— 但它抓的就是 wogg
-    网页，搜索/详情结构与上面 _one_site 完全一样，直接复用同一套组件：
-    搜索页抓候选 id → 逐个开详情页对片名 → 命中即回。
-    结果进缓存（同 12h TTL）；标题对不上也缓存（带 title_hit=False），
-    避免每按一次播放都重抓一遍。失败不缓存。
+    只认 enabled != False 的项；顺序 = 列表顺序（第一个命中的站直接播）。
+    """
+    sites = [dict(s) for s in PLAY_SITES_DEFAULT]
+    try:
+        with open(_PLAY_CFG, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except Exception:
+        return sites
+    over = {str(x.get("name")): x for x in (cfg.get("sites") or []) if x.get("name")}
+    merged = []
+    for name in (cfg.get("order") or []):
+        src = over.get(name) or next((s for s in sites if s["name"] == name), None)
+        if src and all(m["name"] != name for m in merged):
+            merged.append(dict(src))
+    for s in sites:                       # order 里没列的按默认位置补后面
+        if all(m["name"] != s["name"] for m in merged):
+            merged.append(dict(s))
+    return [s for s in merged if over.get(s["name"], {}).get("enabled", True) is not False]
+
+
+# 站源健康：连续失败就冷一段时间，别让每次点播放都等死站超时
+_health: dict[str, float] = {}
+
+
+def _site_ok(name: str) -> bool:
+    return _health.get(name, 0) < time.time()
+
+
+def _site_bad(name: str, sec: float = 1200) -> None:
+    _health[name] = time.time() + sec
+
+
+_CARD_RE = re.compile(r'<div class="(?:module-card-item[^"]*|video-info)">')
+
+
+def _parse_cards(html: str, site: dict) -> list[dict]:
+    """把搜索页解析成 [{id, name, note, kind, year, region}]（全量，不只前 3 条）
+
+    两套模板：
+      wogg   玩偶/蜡笔 —— `<h3><a href="/voddetail/1.html" title="片名">`
+      maccms 木偶/花卷 —— `<img alt="片名">` + `<strong>片名</strong>` + 年份/地区/类型
+    """
+    out, seen = [], set()
+    marks = [m.start() for m in _CARD_RE.finditer(html)]
+    if not marks:
+        marks = [0]
+    bounds = marks + [len(html)]
+    for i in range(len(marks)):
+        seg = html[bounds[i]:bounds[i + 1]]
+        m = re.search(site["id_re"], seg)
+        if not m:
+            continue
+        cid = m.group(1)
+        if cid in seen:
+            continue
+        name = ""
+        for pat in (r'<h3>\s*<a[^>]*?title="([^"]+)"',
+                    r'<img[^>]*?alt="([^"]+)"',
+                    r'<strong[^>]*>([^<]+)</strong>',
+                    r'<a[^>]*?title="([^"]+)"'):
+            mm = re.search(pat, seg)
+            if mm and mm.group(1).strip():
+                name = mm.group(1).strip()
+                break
+        if not name:
+            continue
+        seen.add(cid)
+        note = ""
+        mm = (re.search(r'class="(?:module-item-note|video-serial)"[^>]*title="([^"]*)"', seg)
+              or re.search(r'class="(?:module-item-note|video-serial)"[^>]*>([^<]*)<', seg))
+        if mm:
+            note = (mm.group(1) or "").strip()
+        kind = ""
+        mm = (re.search(r'class="module-card-item-class"[^>]*>([^<]*)<', seg)
+              or re.search(r'class="video-info-aux".*?title="([^"]+)"', seg, re.S))
+        if mm:
+            kind = (mm.group(1) or "").strip()
+        year, region = "", ""
+        mm = re.search(r'class="module-info-item-content">\s*(\d{4})[^<]*<span', seg)
+        if mm:
+            year = mm.group(1)
+        mm = re.search(r'(\d{4})<span class="slash">/</span>([^<]{1,12})<span', seg)
+        if mm:
+            year, region = mm.group(1), mm.group(2).strip()
+        out.append({"id": cid, "name": name, "note": note, "kind": kind,
+                    "year": year, "region": region})
+    return out
+
+
+# 片名归一化：去掉画质/语言/集数尾巴，只留「片名本体」做全等比较。
+# 故意**不**去「第N季 / 剧场版 / 沙雕版」—— 那些是不同的片，去掉就会挂错资源。
+_TITLE_JUNK = re.compile(
+    r"(4k|8k|2160p|1080p|720p|hdr|hd|蓝光|bluray|高清|超清|国语|粤语|英语|双语|中字|"
+    r"沪语|川语|方言|普通话|原声|无删减|未删减|导演剪辑|完整版|加长版|tv版|年番|"
+    r"合集|合辑|全集|完结|更新至第?\d+集|共\d+集)", re.I)
+
+
+def _title_key(s: str) -> str:
+    t = str(s or "")
+    t = re.sub(r"[\(（\[【][^\)）\]】]{0,20}[\)）\]】]", "", t)   # 括号内容
+    t = re.sub(r"\b(19|20)\d{2}\b", "", t)                      # 年份
+    t = _TITLE_JUNK.sub("", t)
+    t = re.sub(r"[版]$", "", t)                                 # 末尾「…版」
+    return _norm(t)
+
+
+_SEASON_RE = re.compile(r"(第[一二三四五六七八九十\d]+季|season\s*\d+|第[一二三四五六七八九十\d]+部)", re.I)
+
+
+def _season_no(s: str) -> int:
+    m = re.search(r"第([一二三四五六七八九十\d]+)季", str(s or ""))
+    if not m:
+        return 0
+    t = m.group(1)
+    if t.isdigit():
+        return int(t)
+    cn = "一二三四五六七八九十"
+    if t in cn:
+        return cn.index(t) + 1
+    if t == "十":
+        return 10
+    return 0
+
+
+def _pick_exact(rows: list[dict], title: str, year: str = "") -> dict:
+    """只认片名**完全相等**的条目。
+
+    两级严格匹配（2026-10-31 真机反馈补的第 2 级）：
+      1. 归一化后完全一致 —— 去掉 4K/国语/更新至第N集 这类尾巴。
+         「仙逆」≠「仙逆剧场版 神临之战」≠「仙逆沙雕版」，一个都不许混进来。
+      2. 「同一部剧的某一季」—— 站源把《庆余年》拆成「庆余年 第一季 / 第二季」，
+         而 TMDB 是整部剧一个条目。这种情况按季号最小（第一季）收，
+         但优先级低于第 1 级：真有整部剧条目时永远不用它。
+    """
+    want = _title_key(title)
+    if not want:
+        return {}
+    wy = str(year or "")[:4]
+
+    def score(r: dict) -> float:
+        s = 0.0
+        if wy and r.get("year"):
+            s += 5 if wy == r["year"] else -3
+        k = r.get("kind", "") + r.get("note", "") + r.get("region", "")
+        if re.search(r"动漫|电视剧|剧集|连续剧|综艺|纪录片", k):
+            s += 3
+        if re.search(r"短剧|短漫|沙雕|解说|预告|花絮|合集|cut|剧场版|sp|特别篇", k, re.I):
+            s -= 4
+        m = re.search(r"第\s*(\d+)\s*集", r.get("note", ""))
+        if m:
+            s += min(int(m.group(1)), 300) / 1000.0
+        return s
+
+    tier1 = [r for r in rows if _title_key(r["name"]) == want]
+    if tier1:
+        tier1.sort(key=score, reverse=True)
+        return tier1[0]
+    base = _SEASON_RE.sub("", want)
+    if not base:
+        return {}
+    tier2 = [r for r in rows
+             if _SEASON_RE.sub("", _title_key(r["name"])) == base
+             and _season_no(r["name"]) > 0]
+    if tier2:
+        tier2.sort(key=lambda r: (_season_no(r["name"]), -score(r)))
+        return tier2[0]
+    return {}
+
+
+# 上次抓通的 base 记下来排最前：玩偶的 .live/.net 两个域名轮流抽风，
+# 每次先试对的那个能把首屏解析从 6 秒压到 1 秒级。
+_base_pick: dict[str, str] = {}
+
+
+def _search_site(site: dict, title: str, budget: float = 6.0) -> list[dict]:
+    """单站搜索，返回解析后的全部条目。
+
+    注意区分两件事：**页面抓不到**（域名/网络问题 → 记健康惩罚，冷 20 分钟）
+    和**抓到了但没有这部片**（正常业务结果，绝不算站死）。
+    """
+    name = site["name"]
+    if not _site_ok(name):
+        return []
+    q = urllib.parse.quote(title)
+    end = time.time() + budget
+    bases = list(site.get("bases") or [])
+    good = _base_pick.get(name)
+    if good in bases:
+        bases.remove(good)
+        bases.insert(0, good)
+    for base in bases:
+        left = end - time.time()
+        if left <= 0.5:
+            break
+        html = _get(base.rstrip("/") + site["search"].format(q=q),
+                    timeout=min(4.0, left))
+        if not html:
+            continue
+        _base_pick[name] = base
+        return _parse_cards(html, site)      # 抓到了就信它（可能是真的没结果）
+    _site_bad(name)
+    return []
+
+
+def resolve_play(title: str, year: str = "") -> dict:
+    """点「▶ 播放」时的站源解析：并行搜全站 → 按顺序取第一个完全匹配。
+
+    **首站优先短路**：玩偶命中就立刻返回，不等其余站（真机反馈「等 6 秒太久」）；
+    玩偶没有才继续等其它站。全部站源都没有完全同名 → {}，
+    这时才让按钮掉搜索页（海哥定的规则）。
     """
     title = str(title or "").strip()
-    site = next((s for s in SITES if s["name"] == site_name), None)
-    if not site or not title:
+    if not title:
         return {}
-    key = f"vres:{site_name}:{title}:{year}"
-    hit = _cache_get(key)
+    ckey = f"pc:{_title_key(title)}:{str(year or '')[:4]}"
+    hit = _cache_get(ckey)
     if hit is not None:
         return hit or {}
 
-    q = urllib.parse.quote(title)
-    page, base = "", ""
-    for b in site["bases"]:
-        page = _get(b + site["search"].format(q=q))
-        if page:
-            base = b
-            break
-    if not page:
+    chain = play_sites()
+    got: dict[str, list[dict]] = {}
+    ths: dict[str, threading.Thread] = {}
+    for s in chain:
+        t = threading.Thread(
+            target=lambda s=s: got.__setitem__(s["name"], _search_site(s, title)),
+            daemon=True)
+        t.start()
+        ths[s["name"]] = t
+
+    def pick() -> dict:
+        for s in chain:                  # 严格按配置顺序挑第一个命中的站
+            rows = got.get(s["name"])
+            if rows is None:             # 这一站还没搜完
+                continue
+            best = _pick_exact(rows, title, year)
+            if best:
+                return {"site_name": s["name"], "site_key": s["key"],
+                        "id": best["id"] if s.get("id_fmt") == "num"
+                        else s["detail"].format(best["id"]),
+                        "num_id": best["id"], "name": best["name"],
+                        "year": best.get("year", ""), "title_hit": True}
         return {}
-    nt = _norm(title)
+
     out: dict = {}
-    for cid in _candidate_ids(page, site, limit=3):
-        html = _get(base + site["detail"].format(cid))
-        if not html:
-            continue
-        name = _title_of(html)
-        nn = _norm(name)
-        if nt and nn and nt not in nn and nn not in nt:
-            continue                      # 片名对不上，换下一个候选
-        out = {"site_name": site_name, "id": site["detail"].format(cid),
-               "num_id": cid, "name": name or title, "title_hit": True}
-        break
+    end = time.time() + 9.0
+    # 首站单独等：命中即回，不陪其它站跑完
+    first = chain[0]["name"] if chain else ""
+    if first:
+        ths[first].join(max(0.05, min(6.0, end - time.time())))
+        out = pick()
     if not out:
-        cids = _candidate_ids(page, site, limit=1)
-        if cids:
-            # 没有标题对得上的候选 —— 退回第一个，让用户在选集页自己看
-            out = {"site_name": site_name, "id": site["detail"].format(cids[0]),
-                   "num_id": cids[0], "name": title, "title_hit": False}
-    if out and not PLAY_ID_FULLPATH:
-        out["id"] = out["num_id"]
-    if out:
-        _cache_set(key, out)
+        for s in chain:
+            if out:
+                break
+            ths[s["name"]].join(max(0.02, end - time.time()))
+            out = pick()
+    # 命中缓存 6h；全站没命中只缓存 20 分钟（站方上新后还能再试）
+    _cache_set(ckey, out, ttl=(6 * 3600 if out else 1200))
     return out
+
+
+def resolve_vod(site_name: str, title: str, year: str = "") -> dict:
+    """只问单个站源（调试/兜底用）。站源顺序逻辑走 resolve_play。"""
+    title = str(title or "").strip()
+    site = next((s for s in play_sites() if s["name"] == site_name), None)
+    if not site or not title:
+        return {}
+    best = _pick_exact(_search_site(site, title), title, year)
+    if not best:
+        return {}
+    return {"site_name": site_name, "site_key": site["key"],
+            "id": best["id"] if site.get("id_fmt") == "num" else site["detail"].format(best["id"]),
+            "num_id": best["id"], "name": best["name"],
+            "year": best.get("year", ""), "title_hit": True}

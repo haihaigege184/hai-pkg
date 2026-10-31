@@ -52,21 +52,104 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36")
 
 # 分类：(type_id, 名称, TMDB 路径, 额外参数)
+#
+# 2026-10-29 按海哥要求重排（顺序即海报墙上的顺序）：
+#   我的追剧 → 4 热门 → 4 高分 → 正在上映 → 即将上映
+#
+# 两处结构性调整：
+#  1. 「热门/高分剧集」改用 /discover 并 `without_genres=16` 排掉动画。
+#     原来用 /tv/popular，动画番剧混在里面 —— 国漫一多就把「剧集」挤满，
+#     海哥看到的「国漫进了华语剧集」就是这个原因。现在国漫/日漫各自单开类目，
+#     剧集类目只留真人剧，三类互不串味。
+#  2. 国漫/日漫靠 `with_genres=16`（Animation）+ 原产地语言区分：
+#     TMDB 里国漫 original_language=zh、日漫=ja，这个判据比按国家更稳
+#     （日漫常有 JP/US 合拍，国漫也有 CN/TW 合拍）。
+#
+# 高分榜必须带 vote_count 门槛，否则会刷出一堆「1 票 10 分」的冷门条目。
+# 国漫投票基数天然比日漫小，门槛给低一些，不然首页会空。
 CLASSES = [
-    (1, "热门电影", "/movie/popular", {}),
-    (2, "热门剧集", "/tv/popular", {}),
-    (3, "高分电影", "/movie/top_rated", {}),
-    (4, "正在上映", "/movie/now_playing", {}),
-    (5, "高分剧集", "/tv/top_rated", {}),
-    (6, "华语剧集", "/discover/tv", {"with_original_language": "zh",
-                                     "sort_by": "popularity.desc",
-                                     "vote_count.gte": "20"}),
-    (7, "日本动画", "/discover/tv", {"with_genres": "16",
+    (1, "我的追剧", None, None),                                    # 特殊：本地列表
+    (2, "热门电影", "/movie/popular", {}),
+    (3, "热门剧集", "/discover/tv", {"sort_by": "popularity.desc",
+                                     "without_genres": "16",
+                                     "vote_count.gte": "50"}),
+    (4, "热门国漫", "/discover/tv", {"with_genres": "16",
+                                     "with_original_language": "zh",
+                                     "sort_by": "popularity.desc"}),
+    (5, "热门日漫", "/discover/tv", {"with_genres": "16",
                                      "with_original_language": "ja",
                                      "sort_by": "popularity.desc"}),
-    (8, "即将上映", "/movie/upcoming", {}),
+    (6, "高分电影", "/movie/top_rated", {}),
+    (7, "高分剧集", "/discover/tv", {"sort_by": "vote_average.desc",
+                                     "without_genres": "16",
+                                     "vote_count.gte": "500"}),
+    (8, "高分国漫", "/discover/tv", {"with_genres": "16",
+                                     "with_original_language": "zh",
+                                     "sort_by": "vote_average.desc",
+                                     "vote_count.gte": "30"}),
+    (9, "高分日漫", "/discover/tv", {"with_genres": "16",
+                                     "with_original_language": "ja",
+                                     "sort_by": "vote_average.desc",
+                                     "vote_count.gte": "200"}),
+    (10, "正在上映", "/movie/now_playing", {}),
+    (11, "即将上映", "/movie/upcoming", {}),
 ]
 _CLASS_BY_ID = {c[0]: c for c in CLASSES}
+
+# ---------------------------------------------------------------------------
+# 类目筛选（2026-10-31 海哥需求）：地区 / 排序 / 类型
+# ---------------------------------------------------------------------------
+# 走 TMDB /discover 的原生参数，不做本地过滤 —— 本地过滤会把 20 条翻成 3 条，
+# 翻页也会断层。三家参数语义：
+#   with_origin_country  原产地（电影/剧集都支持）
+#   with_genres          类型 id（电影和剧集的 id 不是一套，必须分开映射）
+#   sort_by              popularity.desc / 日期 desc / vote_average.desc
+COUNTRIES = [
+    ("", "全部"), ("CN", "国产"), ("US", "美国"), ("GB", "英国"), ("JP", "日本"),
+    ("KR", "韩国"), ("TH", "泰国"), ("IN", "印度"), ("HK", "中国香港"),
+    ("TW", "中国台湾"), ("FR", "法国"), ("DE", "德国"), ("ES", "西班牙"),
+    ("CA", "加拿大"), ("AU", "澳大利亚"), ("RU", "俄罗斯"),
+]
+SORTS = [("hot", "最热"), ("new", "最新"), ("score", "高分")]
+# (key, 名称, 电影 genre id, 剧集 genre id) —— 剧集没有爱情/恐怖，留 None
+GENRES = [
+    ("action", "动作", "28", "10759"),
+    ("comedy", "喜剧", "35", "35"),
+    ("romance", "爱情", "10749", None),
+    ("scifi", "科幻", "878", "10765"),
+    ("mystery", "悬疑", "9648", "9648"),
+    ("horror", "恐怖", "27", None),
+    ("crime", "犯罪", "80", "80"),
+    ("animation", "动画", "16", "16"),
+    ("drama", "剧情", "18", "18"),
+    ("doc", "纪录片", "99", "99"),
+    ("adventure", "冒险", "12", "10759"),
+    ("fantasy", "奇幻", "14", "10765"),
+    ("war", "战争", "10752", "10768"),
+    ("family", "家庭", "10751", "10751"),
+]
+_MOVIE_CLASSES = {2, 6, 10, 11}
+_GENRE_M = {k: (m, t) for k, _, m, t in GENRES}
+_SORT_TEXT = {"hot": "最热", "new": "最新", "score": "高分"}
+_COUNTRY_TEXT = dict(COUNTRIES)
+_GENRE_TEXT = {k: n for k, n, _, _ in GENRES}
+
+
+def filter_text(country: str = "", sort: str = "", genre: str = "") -> str:
+    """筛选条件的可读摘要（页面标题条上用）"""
+    bits = []
+    if country:
+        bits.append(_COUNTRY_TEXT.get(country, country))
+    if sort:
+        bits.append(_SORT_TEXT.get(sort, sort))
+    if genre:
+        bits.append(_GENRE_TEXT.get(genre, genre))
+    return " · ".join(bits)
+
+
+# 「我的追剧」的 type_id：0 是历史遗留（旧接口没有 0），这里固定成 1；
+# 单独抽出来是为了 list_page / 详情页判断时不用到处写魔法数字。
+WATCH_TYPE = 1
 
 # 采集站（包里已有这三个 type=1 站点，直接复用，不额外引入新源）
 #
@@ -220,19 +303,115 @@ def _list_item(it: dict, type_id: int, type_name: str) -> dict:
     }
 
 
-def list_page(type_id: int, page: int = 1) -> dict:
-    cls = _CLASS_BY_ID.get(int(type_id or 1)) or CLASSES[0]
-    tid, tname, path, extra = cls
-    page = max(1, int(page or 1))
+def _watch_page(page: int = 1) -> dict:
+    """「我的追剧」——本地列表，不打 TMDB
 
-    ck = f"list:{tid}:{page}"
+    列表项字段和 TMDB 类目完全一致，app 那边看不出区别；区别只在数据来源。
+    存的时候就已经把 name/pic/remark 固化下来了，所以 TVDB 挂了、TMDB 限流了，
+    追剧列表照样能画出来（只是点进去详情要等 TMDB 恢复）。
+    """
+    from . import watchlist
+    rows = watchlist.items()
+    per = 20
+    start = max(0, (page - 1) * per)
+    chunk = rows[start:start + per]
+    items = []
+    for r in chunk:
+        items.append({
+            "vod_id": r.get("vod_id"),
+            "vod_name": r.get("vod_name") or r.get("vod_id"),
+            "vod_pic": r.get("vod_pic") or "",
+            "vod_remarks": r.get("vod_remarks") or "",
+            "vod_year": r.get("vod_year") or "",
+            "type_id": WATCH_TYPE,
+            "type_name": "我的追剧",
+        })
+    return {
+        "page": page,
+        "pagecount": max(1, (len(rows) + per - 1) // per),
+        "limit": per,
+        "total": len(rows),
+        "list": items,
+    }
+
+
+def _discover_params(cls, country: str, sort: str, genre: str) -> tuple[str, dict]:
+    """把「类目 + 三个筛选」翻成一次 /discover 请求的参数。
+
+    关键点：类目自带的约束（排掉动画 / 只留国漫 / 高分票数门槛）必须保留，
+    否则「热门剧集 + 国产」会把动画剧混回来，跟类目本意冲突。
+    只有用户主动选了「动画」类型时才反掉 without_genres=16。
+    """
+    tid, tname, path, extra = cls
+    is_movie = tid in _MOVIE_CLASSES
+    params = dict(extra)
+    api = "/discover/movie" if is_movie else "/discover/tv"
+
+    # 原来的固定排序一律让位给用户选择；没选就保留类目自带排序
+    cur_sort = params.pop("sort_by", "")
+    if sort == "hot":
+        params["sort_by"] = "popularity.desc"
+    elif sort == "new":
+        params["sort_by"] = ("primary_release_date.desc" if is_movie
+                             else "first_air_date.desc")
+    elif sort == "score":
+        params["sort_by"] = "vote_average.desc"
+        # 高分必须带票数门槛，否则刷出一堆「3 票 10 分」的冷门条目。
+        # 类目自带门槛更低（如热门剧集 50），这里取两者较大值，别被它拉低。
+        need = 300 if is_movie else 200
+        try:
+            cur = int(float(params.get("vote_count.gte") or 0))
+        except (TypeError, ValueError):
+            cur = 0
+        params["vote_count.gte"] = str(max(cur, need))
+    elif cur_sort:
+        params["sort_by"] = cur_sort
+
+    if country:
+        params["with_origin_country"] = country
+    if genre:
+        gm, gt = _GENRE_M.get(genre, ("", ""))
+        gid = gm if is_movie else gt
+        if gid:
+            if gm == "16" or gt == "16":       # 选了动画 ⇒ 必须放开 without_genres
+                params.pop("without_genres", None)
+            params["with_genres"] = gid
+    return api, params
+
+
+def list_page(type_id: int, page: int = 1, country: str = "",
+              sort: str = "", genre: str = "") -> dict:
+    tid = _as_int(type_id, WATCH_TYPE)
+    page = max(1, int(page or 1))
+    country = (country or "").strip().upper()
+    sort = (sort or "").strip().lower()
+    genre = (genre or "").strip().lower()
+    country = country if country in dict(COUNTRIES) else ""
+    sort = sort if sort in dict(SORTS) else ""
+    genre = genre if genre in _GENRE_TEXT else ""
+
+    # 我的追剧：实时读文件（几十毫秒），**不能进缓存** ——
+    # 刚点完「追剧」再切回来必须立刻看到，缓存 30 分钟会让人以为没加上。
+    if tid == WATCH_TYPE:
+        return _watch_page(page)
+
+    cls = _CLASS_BY_ID.get(tid) or CLASSES[1]
+    tid, tname, path, extra = cls
+
+    filtered = bool(country or sort or genre)
+    ck = f"list:{tid}:{page}:{country}:{sort}:{genre}"
     hit = _cache_get(ck)
     if hit is not None:
         return hit
 
-    params = dict(extra)
-    params["page"] = page
-    data = _tmdb(path, **params) or {}
+    if filtered:
+        api, params = _discover_params(cls, country, sort, genre)
+        params["page"] = page
+        data = _tmdb(api, **params) or {}
+    else:
+        params = dict(extra)
+        params["page"] = page
+        data = _tmdb(path, **params) or {}
     items = [_list_item(it, tid, tname)
              for it in (data.get("results") or []) if it.get("id")]
     total = int(data.get("total_results") or 0)
@@ -457,7 +636,9 @@ def detail(vid: str, with_plays: bool = True, push: bool = False) -> dict:
 
 def _build_meta(vid: str, kind: str, tid: str) -> dict:
     """纯 TMDB 元数据（不含播放源），可安全长缓存"""
-    d = _tmdb(f"/{kind}/{tid}", append_to_response="credits") or {}
+    d = _tmdb(f"/{kind}/{tid}",
+              append_to_response="credits,recommendations,images",
+              include_image_language="zh,en,null") or {}
     if not d:
         return {}
 
@@ -471,6 +652,59 @@ def _build_meta(vid: str, kind: str, tid: str) -> dict:
     actors = [str(c.get("name") or "") for c in cast[:6] if c.get("name")]
     directors = [str(c.get("name") or "") for c in crew
                  if c.get("job") == "Director"][:2]
+
+    # 结构化演职员：海报墙详情页要单独排版「演员 + 角色 + 头像」，
+    # 以及导演/编剧等 crew。profile 给 TMDB 原地址，改写代理交给 posterweb。
+    cast_full = []
+    for c in cast[:16]:
+        if not c.get("name"):
+            continue
+        cast_full.append({
+            "name": str(c.get("name")),
+            "character": str(c.get("character") or "").strip(),
+            "profile": _img(c.get("profile_path"), "w185") if c.get("profile_path") else "",
+        })
+    crew_full = []
+    for c in crew:
+        job = str(c.get("job") or "")
+        if c.get("name") and job in ("Director", "Writer", "Screenplay",
+                                     "Original Music Composer"):
+            crew_full.append({"name": str(c.get("name")), "job": job})
+            if len(crew_full) >= 6:
+                break
+
+    # 相关推荐：TMDB recommendations，带真链接（跳海报墙详情页）
+    recs = []
+    for r in (d.get("recommendations") or {}).get("results") or []:
+        if not r.get("id"):
+            continue
+        recs.append({
+            "vid": _vid(r),
+            "name": _name_of(r),
+            "pic": _img(r.get("poster_path"), "w342") if r.get("poster_path") else "",
+            "remark": _remark_of(r),
+            "year": _year_of(r),
+        })
+        if len(recs) >= 12:
+            break
+
+    # 背景大图：详情页「大海报」轮播用。TMDB 一部片通常有数张
+    # backdrop（横版），取前 6 张 w1280；和海报拼成一组，轮播不重样。
+    backdrops = (d.get("images") or {}).get("backdrops") or []
+    bd = []
+    for b in backdrops:
+        if b.get("file_path"):
+            bd.append(_img(b["file_path"], "w1280"))
+            if len(bd) >= 6:
+                break
+
+    # TMDB 官方美化剧名（logo 图）：优先中文，退英文，再退无语言标注。
+    # 详情页左上角的片名动画条用它；没有 logo 就退回纯文字。
+    logo = ""
+    for lg in (d.get("images") or {}).get("logos") or []:
+        if lg.get("file_path"):
+            logo = _img(lg["file_path"], "w500")
+            break
 
     countries = " / ".join(_cn(_AREA_CN, x.get("name", ""))
                            for x in (d.get("production_countries") or [])[:3])
@@ -492,7 +726,8 @@ def _build_meta(vid: str, kind: str, tid: str) -> dict:
     if extra:
         content = content + "\n\n" + "\n".join(extra)
 
-    item = {        "vod_id": vid,
+    item = {
+        "vod_id": vid,
         "vod_name": name,
         "vod_pic": _img(d.get("poster_path"), "w780"),
         "vod_pic_slide": _img(d.get("backdrop_path"), "w1280"),
@@ -507,6 +742,11 @@ def _build_meta(vid: str, kind: str, tid: str) -> dict:
         "type_name": genres or ("电影" if kind == "movie" else "剧集"),
         "vod_play_from": "",
         "vod_play_url": "",
+        "vod_cast": cast_full,
+        "vod_crew": crew_full,
+        "vod_recs": recs,
+        "vod_backdrops": bd,
+        "vod_logo": logo,
     }
     return item
 
@@ -547,7 +787,10 @@ def handle(args: dict, push: bool = False) -> dict:
                          "total": len(items), "list": items})
             return body
         t = _as_int(args.get("t") or args.get("type_id"), 1)
-        body.update(list_page(t, page))
+        body.update(list_page(t, page,
+                              str(args.get("c") or ""),
+                              str(args.get("s") or ""),
+                              str(args.get("g") or "")))
         return body
 
     # 搜索：?wd=关键词
@@ -556,7 +799,13 @@ def handle(args: dict, push: bool = False) -> dict:
         body.update(search(wd, page))
         return body
 
-    # 列表：?ac=videolist&t=1&pg=1  /  ?ac=list  /  ?（首页推荐）
-    t = _as_int(args.get("t") or args.get("type_id"), 1)
-    body.update(list_page(t, page))
+    # 列表：?ac=videolist&t=2&pg=1  /  ?ac=list  /  ?（首页推荐）
+    # 缺省 t 是 2（热门电影）而不是 1 —— 1 是「我的追剧」，首屏给空列表很怪。
+    # 筛选（2026-10-31）：c=地区 s=排序 g=类型，由 lib/tmdb.js 的 filters 下发，
+    # 端上选完拼到 URL 上；这里只透传，白名单与范围在 list_page 里兜。
+    t = _as_int(args.get("t") or args.get("type_id"), 2)
+    body.update(list_page(t, page,
+                          str(args.get("c") or ""),
+                          str(args.get("s") or ""),
+                          str(args.get("g") or "")))
     return body
