@@ -309,19 +309,29 @@
               'X-Requested-With': 'XMLHttpRequest' };
     var r = await req('POST', 'https://pan.baidu.com/share/verify' + q, h,
       form({ pwd: pwd, vcode: '', vcode_str: '' }));
-    return r.json && Number(r.json.errno) === 0;
+    if (!(r.json && Number(r.json.errno) === 0)) return false;
+    // verify 会回 randsk，浏览器是把它当 BDCLND cookie 存下来再带回去的。
+    // 我们的 http 桥没有 cookie 罐，必须手动带上 —— 少了它 share/list
+    // 恒回 errno 2「链接出错了」（2026-11-02 实测：Python 有 jar 所以一直正常，
+    // JS 这边就永远「分享里没扫到文件」）。
+    o.bdclnd = r.json.randsk || r.json.randskstr || '';
+    return true;
   }
 
   /** 分享列表 —— 参数是 CDP 抓包定死的，少一个就 errno 2 */
   async function bdList(ck, o, dirPath) {
+    var isRoot = (!dirPath || dirPath === '/');
     var q = '?web=5&app_id=' + BD.appId + '&desc=1&showempty=0&page=1&num=100'
-      + '&order=time&shorturl=' + o.surl + '&root=1&view_mode=1'
+      + '&order=time&shorturl=' + o.surl + '&view_mode=1'
       + '&channel=chunlei&web=1&bdstoken=' + o.bdstoken
       + '&logid=' + encodeURIComponent(bdLogid())
       + '&clienttype=0&dp-logid=' + bdDplogid();
-    if (dirPath && dirPath !== '/') q += '&dir=' + encodeURIComponent(dirPath);
+    // **子目录不能带 root=1**（带了百度永远回分享根，套娃分享就扫不出文件）
+    if (isRoot) { q += '&root=1'; }
+    else { q += '&dir=' + encodeURIComponent(dirPath); }
     var h = { 'User-Agent': BD.ua, 'Referer': o.ref,
               'X-Requested-With': 'XMLHttpRequest' };
+    if (o.bdclnd) { h.Cookie = 'BDCLND=' + o.bdclnd; }
     var r = await req('GET', 'https://pan.baidu.com/share/list' + q, h);
     return (r.json && r.json.list) || [];
   }
@@ -333,6 +343,7 @@
       + '&clienttype=0&dp-logid=' + bdDplogid();
     var h = { 'User-Agent': BD.ua, 'Referer': o.ref,
               'X-Requested-With': 'XMLHttpRequest' };
+    if (o.bdclnd) { h.Cookie = 'BDCLND=' + o.bdclnd; }
     var r = await req('GET', 'https://pan.baidu.com/share/tplconfig' + q, h);
     var d = (r.json && r.json.data) || {};
     return { sign: d.sign || '', ts: d.timestamp || 0 };
@@ -346,7 +357,7 @@
       var it = list[i];
       var name = it.server_filename || '';
       if (String(it.isdir) === '1') {
-        if (depth < 3) {
+        if (depth < 5) {
           var sub = await bdTree(ck, o, it.path || dirPath, depth + 1);
           out = out.concat(sub);
         }
