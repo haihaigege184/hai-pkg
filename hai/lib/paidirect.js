@@ -41,32 +41,22 @@ function _clean(id) {
 function detail(id) {
     var u = _clean(id);
     if (!u) { return JSON.stringify({ list: [] }); }
-    // id 是一条中枢短链（…/hai/pp/<token>）。这里先把它换回真正的
-    // 127.0.0.1:9978 网盘直链，播放器拿到的就是终址，不依赖 302 跟随
-    // （电视上的 ExoPlayer 能不能跟 302 到 localhost 没保证）。
-    // 换不到就退回原样，让它至少试一次。
-    var real = u;
-    try {
-        if (u.indexOf('/hai/pp/') >= 0) {
-            var r = req(u + '?json=1', { timeout: 8000 });
-            var txt = '';
-            if (r) {
-                if (typeof r.content === 'string') { txt = r.content; }
-                else if (typeof r === 'string') { txt = r; }
-            }
-            txt = String(txt || '').trim();
-            if (txt.indexOf('http') === 0) { real = txt; }
-        }
-    } catch (e) { }
+    // id 就是中枢的 `/hai/pp/<token>` 播放地址，**原样交出去**。
+    //
+    // 2026-11-01 改：原来这里会先 GET `?json=1` 把真链换回来再播（因为那时
+    // 真链是本机 9978 的代理，能裸播）。现在真链是夸克 CDN，有防盗链 ——
+    // 播放器自己发请求必 412，只能由中枢代拉（中枢那条短链自带 Cookie 头）。
+    // 再去做「换回真链」反而会把播放地址换成裸 CDN，必挂；而且带鉴权的短链
+    // 分支不会再吐 json，请求会一直等到超时白卡 8 秒。
     return JSON.stringify({
         list: [{
-            vod_id: real,
+            vod_id: u,
             vod_name: '海哥网盘',
             vod_pic: '',
             vod_pic_slide: '',
             vod_remarks: '',
             vod_play_from: '海哥网盘',
-            vod_play_url: '播放$' + real
+            vod_play_url: '播放$' + u
         }]
     });
 }

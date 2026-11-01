@@ -193,6 +193,38 @@ function _play_order(from, urls) {
 }
 
 function detail(id) {
+    // 直连兜底（2026-11-01）：id 本身就是一个 http(s) 播放地址时，原样当成
+    // 一路片源交出去 —— 不再查 TMDB。海报墙详情页「▶ 播放」拿到的夸克直链
+    // 走的就是这条路：`/hai/pp/<token>` 是中枢的鉴权中转，播放器连中枢，
+    // 中枢补 Cookie 去拉 CDN（夸克 CDN 裸拉必 412）。
+    //
+    // 为什么不另开一个站点登记：新增 site 要等 app 重新导入 jsm.json，
+    // 真机上不重启/不刷新就一直「找不到数据」（NPE）。TMDBWall 这个 key
+    // 是 app 里早就在用的，直接复用最稳。
+    if (/^https?:\/\//i.test(String(id || ''))) {
+        var u0 = String(id).trim();
+        // 字段必须给全 —— app 侧对 vod_content / vod_area 之类做了
+        // Objects.requireNonNull，少一个就整页「找不到数据」（真机 logcat 的
+        // NullPointerException 就是这么来的）。
+        return JSON.stringify({
+            list: [{
+                vod_id: u0,
+                vod_name: '海哥直连',
+                vod_pic: '',
+                vod_pic_slide: '',
+                type_name: '网盘直连',
+                vod_year: '',
+                vod_area: '',
+                vod_lang: '',
+                vod_actor: '',
+                vod_director: '',
+                vod_content: '',
+                vod_remarks: '',
+                vod_play_from: '海哥直连',
+                vod_play_url: '播放$' + u0
+            }]
+        });
+    }
     var d = _get(API + '?ac=detail&ids=' + id);
     var raw = d.list || [];
     if (!raw.length) {
@@ -313,6 +345,30 @@ function play(flag, id, flags) {
 
     if (/^push:\/\//i.test(u)) {
         // 已经是 push://（夸克分享链接形式）：交给 jar 的网盘模块
+        return JSON.stringify({ parse: 0, playUrl: '', url: u, header: '' });
+    }
+
+    // 中枢鉴权短链：?json=1 吐 `<CDN直链>@Headers={"Cookie":...}`。
+    // 拆开一起交给播放器 —— 播放器**直连夸克 CDN**（用户实测 11MB/s），
+    // 不走中枢中转。中转要绕一圈局域网，4K 高码率会被卡到 4MB/s。
+    if (u.indexOf('/hai/pp/') > -1) {
+        try {
+            var res = req(u + '?json=1', { timeout: 8000 });
+            var body = (res && (res.content || '')) || '';
+            if (typeof res === 'string') { body = res; }
+            var k = body.indexOf('@Headers=');
+            if (k > 0) {
+                var link = body.substring(0, k).trim();
+                var head = body.substring(k + 9).trim();
+                var e2 = head.lastIndexOf('}');
+                if (e2 > 0) { head = head.substring(0, e2 + 1); }
+                if (/^https?:\/\//i.test(link)) {
+                    _log('pp -> cdn ' + link.substring(0, 70));
+                    return JSON.stringify({ parse: 0, playUrl: '', url: link, header: head });
+                }
+            }
+        } catch (e) { _log('pp resolve fail: ' + e); }
+        // 拆不出头就原样交给中枢中转（至少能播，只是慢）
         return JSON.stringify({ parse: 0, playUrl: '', url: u, header: '' });
     }
 

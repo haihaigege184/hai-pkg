@@ -96,6 +96,86 @@ MANIFEST_ACT = ('        <activity android:configChanges="keyboard|keyboardHidde
                 'android:name="com.fongmi.android.tv.ui.activity.WebDetailActivity" '
                 'android:screenOrientation="sensorLandscape"/>\n')
 
+# ---- 启动器改成自建海报墙（2026-11-01 海哥：进点播第一眼必须是我们的墙）----
+#
+# 原版的 LAUNCHER 是 HomeActivity。整块 intent-filter 搬到 HaiHomeActivity，
+# 由它先压 HomeActivity 进栈底、再叠一层 WebDetailActivity（海报墙）——
+# 从海报墙按返回就是原生点播页，配站点/扫码登网盘/直播一条后路都没丢。
+LAUNCHER_PAT = re.compile(
+    r'[ \t]*<intent-filter>\s*'
+    r'<action android:name="android\.intent\.action\.MAIN"/>\s*'
+    r'<category android:name="android\.intent\.category\.LAUNCHER"/>\s*'
+    r'<category android:name="android\.intent\.category\.LEANBACK_LAUNCHER"/>\s*'
+    r'</intent-filter>', re.S)
+
+LAUNCHER_XML = """        <intent-filter>
+            <action android:name="android.intent.action.MAIN"/>
+            <category android:name="android.intent.category.LAUNCHER"/>
+            <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
+        </intent-filter>"""
+
+HOME_ACT = ('        <activity android:configChanges="keyboard|keyboardHidden|navigation|'
+            'orientation|screenLayout|screenSize|smallestScreenSize" '
+            'android:exported="true" '
+            'android:name="com.fongmi.android.tv.ui.activity.HaiHomeActivity" '
+            'android:screenOrientation="sensorLandscape">\n'
+            + LAUNCHER_XML + "\n        </activity>\n")
+
+# ---- VideoActivity 自动起播 ----
+#
+# `oOo0oO0oO0o0OoOo(I)` 是 Leanback 列表「选中第 I 项并立即点击」——
+# 原版用它在「连播下一集」时自动定位。我们把它接到静态字段 haiAutoEp 上：
+# WebDetailActivity 从 haiplay://…&ep=N 读出集号写进字段，这里在 UI 绑定
+# 完成后起一个 Handler 去点第 N-1 项（N=0 时完全不动，走原版行为）。
+AUTO_FIELD = """\n.field public static haiAutoEp:I\n"""
+
+AUTO_INJECT = """
+    # ---- 海哥影视：详情页带 ep 参数进来时自动起播那一集 ----
+    # 先打一条**无条件**日志（2026-11-01）：上一版只在 haiAutoEp>0 时才动，
+    # 结果「到底这个方法有没有被调用」全靠猜。logcat -s HaiAutoPlay 一看便知。
+    const-string v0, "hook hit"
+
+    invoke-static {v0, v0}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+
+    sget v0, Lcom/fongmi/android/tv/ui/activity/VideoActivity;->haiAutoEp:I
+
+    invoke-static {v0}, Ljava/lang/String;->valueOf(I)Ljava/lang/String;
+
+    move-result-object v1
+
+    const-string v2, "hook ep"
+
+    invoke-static {v2, v1}, Landroid/util/Log;->e(Ljava/lang/String;Ljava/lang/String;)I
+
+    if-lez v0, :cond_hai_noauto
+
+    const/4 v1, 0x0
+
+    sput v1, Lcom/fongmi/android/tv/ui/activity/VideoActivity;->haiAutoEp:I
+
+    add-int/lit8 v0, v0, -0x1
+
+    new-instance v1, Landroid/os/Handler;
+
+    invoke-static {}, Landroid/os/Looper;->getMainLooper()Landroid/os/Looper;
+
+    move-result-object v2
+
+    invoke-direct {v1, v2}, Landroid/os/Handler;-><init>(Landroid/os/Looper;)V
+
+    new-instance v2, Lcom/fongmi/android/tv/ui/activity/HaiAutoPlay;
+
+    invoke-direct {v2, p0, v0}, Lcom/fongmi/android/tv/ui/activity/HaiAutoPlay;-><init>(Lcom/fongmi/android/tv/ui/activity/VideoActivity;I)V
+
+    const-wide/16 v3, 0x1388
+
+    invoke-virtual {v1, v2, v3, v4}, Landroid/os/Handler;->postDelayed(Ljava/lang/Runnable;J)Z
+
+    :cond_hai_noauto
+"""
+
+VIDEO_HOOK = ".method public final OoOoO0oOoO0O0OoO()V"
+
 
 def run(cmd, **kw):
     print("  $", " ".join(str(c) for c in cmd[:6]), "…" if len(cmd) > 6 else "")
@@ -119,11 +199,12 @@ def step_decode(apk: str, out: str):
 
 
 def step_smali(dec: str):
-    print("[2/6] 注入 WebDetailActivity")
+    print("[2/6] 注入 WebDetailActivity / HaiHomeActivity / HaiAutoPlay")
     dst = os.path.join(dec, ACT_DIR)
     os.makedirs(dst, exist_ok=True)
     for fn in ("WebDetailActivity.smali", "WebDetailActivity$1.smali",
-               "SearchActivity.smali"):
+               "SearchActivity.smali", "HaiAutoPlay.smali",
+               "HaiHomeActivity.smali"):
         src = os.path.join(SMALI_DIR, fn)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(dst, fn))
@@ -133,8 +214,30 @@ def step_smali(dec: str):
     s2, n = START_PAT.subn(START_NEW, s)
     if n != 1:
         raise SystemExit("VideoActivity.start 替换失败，命中 %d 次（版本可能对不上）" % n)
-    open(p, "w", encoding="utf-8").write(s2)
+    s = s2
     print("       VideoActivity 入口已改（1 处）")
+
+    # 静态字段 haiAutoEp
+    if "haiAutoEp" not in s:
+        head = s.find("\n", s.find(".class public"))
+        s = s[:head + 1] + AUTO_FIELD + s[head + 1:]
+        print("       已插入静态字段 haiAutoEp")
+
+    # 自动起播：接在 UI 绑定方法末尾
+    if "HaiAutoPlay" not in s:
+        ms = s.find(VIDEO_HOOK)
+        if ms < 0:
+            raise SystemExit("找不到 %s，自动起播注入失败" % VIDEO_HOOK)
+        me = s.find(".end method", ms)
+        body = s[ms:me]
+        body = body.replace(".locals 3", ".locals 6", 1)
+        idx = body.rfind("return-void")
+        if idx < 0:
+            raise SystemExit("UI 绑定方法里找不到 return-void")
+        body = body[:idx] + AUTO_INJECT + body[idx:]
+        s = s[:ms] + body + s[me:]
+        print("       自动起播已挂到 OoOo0OoOoO0O0OoO()")
+    open(p, "w", encoding="utf-8").write(s)
 
 
 def step_manifest(dec: str):
@@ -154,6 +257,19 @@ def step_manifest(dec: str):
         if not anchor:
             raise SystemExit("manifest 里找不到 VideoActivity 那一行，插入位置未知")
         s = s[:anchor.end()] + MANIFEST_ACT + s[anchor.end():]
+
+    # ---- 启动器搬到 HaiHomeActivity ----
+    if "HaiHomeActivity" not in s:
+        m = LAUNCHER_PAT.search(s)
+        if not m:
+            raise SystemExit("manifest 里找不到 LAUNCHER intent-filter")
+        s = s[:m.start()] + "\n" + s[m.end():]
+        k = s.find('android:name="com.fongmi.android.tv.ui.activity.WebDetailActivity"')
+        if k < 0:
+            raise SystemExit("找不到 WebDetailActivity 的 activity 节点")
+        j = s.find("/>", k)
+        s = s[:j + 2] + "\n" + HOME_ACT + s[j + 2:]
+        print("       LAUNCHER -> HaiHomeActivity（原生 HomeActivity 保留但不再是入口）")
 
     open(p, "w", encoding="utf-8").write(s)
     print("       applicationId ->", NEW_PKG, "；已注册 WebDetailActivity")
