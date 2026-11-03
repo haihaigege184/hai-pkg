@@ -32,6 +32,13 @@ _SEQ_KEYS = ("lives", "rules", "parses", "proxy", "hosts", "doh", "flags")
 _IGNORE_EXTRA = {"jsm.json", "VERSION", "README.txt",
                  "lib/tmdb.js", "lib/tmdb.json"}
 
+# 我们**主动替换**过的原版文件（尺寸必然与 baseline 不同，不算「破原版」）：
+#   pg.jar —— jar 里的 PG 包名白名单已按 `com.hisen.android.tv` 修正
+#   （2026-10-31 起固定 hisen 原样；唯一正确版 4,614,411B，
+#   md5 d8c3bd96277d25907684c4ec7eee9a01，中枢两处已覆盖）。
+# 这些条目从 size_diff 里剔除，但会单列到 files.known_replaced 留痕。
+_KNOWN_REPLACED = {"pg.jar"}
+
 
 def _dumps(x):
     return json.dumps(x, ensure_ascii=False, sort_keys=True)
@@ -149,6 +156,7 @@ def run(deep=False):
     # ---- 5. 资源文件 ----
     files = man.get("files") or {}
     missing, size_diff, hash_diff = [], [], []
+    known_replaced = []
     for rel, meta in files.items():
         p = os.path.join(pkg, rel.replace("/", os.sep))
         if not os.path.exists(p):
@@ -156,7 +164,12 @@ def run(deep=False):
             continue
         sz = os.path.getsize(p)
         if sz != meta.get("size"):
-            size_diff.append({"path": rel, "original": meta.get("size"), "now": sz})
+            # 已知且必要的替换（pg.jar：白名单按 com.hisen 修正）——
+            # 尺寸与原版不一致是预期，**不计入破**，但要单列留痕。
+            if rel in _KNOWN_REPLACED:
+                known_replaced.append(rel)
+            else:
+                size_diff.append({"path": rel, "original": meta.get("size"), "now": sz})
             continue
         if deep and meta.get("sha256"):
             try:
@@ -176,13 +189,24 @@ def run(deep=False):
                 continue
             extra.append(rel)
 
-    # 作者 README 要求「使用者自备」的那几个，出现属预期，不算异常
+    # 作者 README 要求「使用者自备」的那几个，出现属预期，不算异常；
+    # 我们自己加的站源脚本（HaiDirect 直连站）同理 —— 是**新增文件**，
+    # 不改原版任何一条，按红线属于允许项（2026-11-01）。
     from . import libfill
     expected = set("lib/" + k for k in libfill.DERIVE)
+    expected |= {"js/paidirect.js"}
+    # 我们自己的播放引擎 + 直连站（2026-10-30 起）：都是**新增文件**，
+    # 一个原版条目都没改，按红线属于允许项。但不能藏起来 —— 要在明细里
+    # 可见（expected_extra），这样维护页一眼能看出「这些是我们加的」。
+    expected |= {"lib/haiplay.js", "lib/paidirect.js", "lib/paidirect.json",
+                 "js/paidirect.json"}
     out["files"] = {
         "original": len(files),
         "missing": sorted(missing),
         "size_diff": size_diff,
+        # 已知且必要的替换（pg.jar：包名白名单已按 com.hisen 修正）——
+        # 尺寸与原版不一致是预期，不算「破原版」，但要在明细里留痕。
+        "known_replaced": sorted(known_replaced),
         "hash_diff": hash_diff,
         "deep": bool(deep),
         "expected_extra": sorted(r for r in extra if r in expected),
