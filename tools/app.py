@@ -14,6 +14,7 @@
     python app.py render    # 只重新生成一次配置
 """
 import gzip as _gzip
+import base64
 import hashlib
 import json
 import os
@@ -21,7 +22,10 @@ import re
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
+import concurrent.futures
 
 from flask import (Blueprint, Flask, Response, g, jsonify, redirect, request,
                    send_from_directory)
@@ -32,7 +36,7 @@ from core import config as C          # noqa: E402
 from core import (absbase, addsite, checkin_ck, ckvault, dav, devices, endpoints, epbench,  # noqa: E402
                   gateway, health, libfill, navwatch, notify, patch, pkgupdate, probe,
                   relay, renderbase, report, siteorder, sources as S, store, sync,
-                  tmdbwall, verify, posterweb)
+                  tmdbwall, verify, posterweb, warm)
 
 app = Flask(__name__, static_folder=None)
 bp = Blueprint("oktv", __name__)
@@ -725,6 +729,15 @@ def _jsm_body(req, tail):
         if base:
             suffix = base
             jsm = absbase.absolutize(jsm, base, prefix=pfx)
+    # ---- spider（jar）必须给电视**本地路径** ----
+    # 2026-11-02 00:xx 定位：`./pg.jar` 被绝对化成 `http://10.0.0.11:8099/hai/pg.jar`，
+    # app 会去下载（access log 能看到 206 分段），但**下载完不落地**
+    #（/data/data/<pkg>/cache 和 files 都是空的，全盘也找不到新 jar），
+    # 于是所有 csp_* 站点在 DexClassLoader 里找不到类 → `site=Wogg` 直接
+    # NullPointerException → 界面「找不到数据」。
+    # 原版能播，是因为它的接口配的就是端上已有的本地 jar。
+    # 这里改成端上实实在在存在的那份（用户机器上 /sdcard/pg/pg.jar）。
+    jsm["spider"] = "/data/data/com.hisen.android.tv/files/pg.jar"
     key = (suffix, tail, _last_render["ts"], ckvault.version())
     if _jsm_cache["key"] == key and _jsm_cache["body"]:
         return _jsm_cache["body"]
@@ -804,11 +817,13 @@ def hai_poster():
     """
     src = str(request.args.get("src") or "").strip()
     src = src if src in ("tmdb", "douban") else posterweb.load_src()
-    # 类目：TMDB 是数字 id，豆瓣是 `dbtv_hot` 这种字符串 —— 原样往下传，
+    # 类目：TMDB 是数字 id，豆瓣是 `db2` 这种字符串 —— 原样往下传，
     # page_home 内部各自校验，非法值会退到该数据源的默认类目。
+    # 数字部分两套数据是对齐的（2=热门电影 … 11=即将上映），所以切源后
+    # 同一个位置还是同一类。
     t = request.args.get("t")
     if t in (None, ""):
-        t = "dbtv_hot" if src == "douban" else 2
+        t = "db2" if src == "douban" else 2
     try:
         pg = int(request.args.get("pg") or 1)
     except ValueError:
@@ -820,7 +835,10 @@ def hai_poster():
                             str(request.args.get("g") or ""),
                             src, bool(request.args.get("sm"))),
                     mimetype="text/html; charset=utf-8",
-                    headers={"Cache-Control": "no-cache"})
+                    # 缓存 90 秒：电视上「返回海报墙」不再重新请求重新渲染
+                    #（海哥 2026-11-02：不用每次都刷新）。类目/源变了 URL 也变，
+                    # 所以不会串页。
+                    headers={"Cache-Control": "private, max-age=90"})
 
 
 @bp.route("/hai/poster/src")
@@ -838,16 +856,150 @@ def hai_poster_src():
         back = "/hai/poster/"
     if to in ("tmdb", "douban"):
         posterweb.save_src(to)
-        sep = "&" if "?" in back else "?"
-        # 切源后类目 id 体系完全不同，回到该源首页最稳（否则 t=2 在豆瓣不存在）
-        base = "/hai/poster/" if to == "douban" else "/hai/poster/?t=2"
-        back = base
+        # 切源后回到该源的首页（类目 id 体系不同，t=2 在豆瓣叫 db2）
+        back = ("/hai/poster/?src=douban&t=db2" if to == "douban"
+                else "/hai/poster/?src=tmdb&t=2")
     return Response(status=302, headers={"Location": back,
                                          "Cache-Control": "no-cache"})
 
 
+@bp.route("/hai/poster/p/<pid>")
+def hai_poster_person(pid):
+    """影人页（详情页点头像进来）。
+
+    pid 前缀决定数据源：`db<cid>` 豆瓣影人 / `tp<id>` TMDB 影人。
+    页面自己画，**不跳 app 原生搜索页**（海哥 11-01 要求）。
+    """
+    return Response(posterweb.page_person(pid, bool(request.args.get("sm"))),
+                    mimetype="text/html; charset=utf-8",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@bp.route("/hai/poster/q")
+def hai_poster_search():
+    """搜索结果页（详情页「🔍 搜索」进来）。豆瓣 + TMDB 两段结果，自绘海报卡。"""
+    kw = str(request.args.get("kw") or "").strip()
+    return Response(posterweb.page_search(kw, bool(request.args.get("sm"))),
+                    mimetype="text/html; charset=utf-8",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@bp.route("/hai/poster/cast")
+def hai_poster_cast():
+    """详情页演职员补全口（兜底）。
+
+    2026-11-01 起豆瓣详情本身就带头像和影人 id 了（走 credits 接口，
+    见 core/doubanx.credits），首屏就有 —— 这个口只在 credits 临时失败、
+    页面退回「名字首字母」占位时才被 JS 调到。
+
+    注意头像必须走站内代理（_pic_raw）：credits 给的 profile 是
+    `https://img*.doubanio.com/view/personage/...` 原始地址，电视直连
+    **一律 418**（防盗链只认 Referer）—— 原样返回就是一圈黑头像。
+    """
+    vid = str(request.args.get("vid") or "").strip()
+    if not vid.startswith("db"):
+        return jsonify(ok=0, people=[])
+    sid = vid[2:]
+    try:
+        from core import doubanx as D
+        from core.posterweb import _pic_raw
+        for kind in ("tv", "movie"):
+            cr = D.credits(sid, kind)
+            if not cr.get("cast"):
+                continue
+            people = [{"name": c.get("name"), "cid": c.get("cid"),
+                       "avatar": _pic_raw(c.get("profile") or "")}
+                      for c in (cr.get("cast") or []) + (cr.get("crew") or [])]
+            return jsonify(ok=1, people=people)
+    except Exception as e:
+        return jsonify(ok=0, error="%s: %s" % (type(e).__name__, e), people=[])
+    return jsonify(ok=0, people=[])
+
+
+# /hai/poster/d/__probe 在电视上验证「本地取链」是否可用（不经过服务器算直链）
+_PROBE_HTML = """<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<body style="background:#0b0b0b;color:#7CFC00;font:15px/1.45 monospace;padding:18px;white-space:pre-wrap">
+<script src="/hai/lib/haiplay.js?v=%JSVER%"></script>
+<script>
+(function () {
+  var out = [];
+  function log(s) { out.push(String(s)); document.body.textContent = out.join('@@NL@@'); }
+  function q(k) { var m = location.search.match(new RegExp('[?&]' + k + '=([^&]*)')); return m ? decodeURIComponent(m[1]) : ''; }
+  log('=== 海哥影视 本地取链自检 ===');
+  log('bridge: ' + (typeof hai));
+  if (typeof hai === 'undefined') { log('FAIL 没有 hai bridge（APK 未注入 HaiJs）'); return; }
+  try { log('quark ck len: ' + ((hai.ck('quark') || '').length)); } catch (e) { log('ck err: ' + e); }
+  try { log('baidu ck len: ' + ((hai.ck('baidu') || '').length)); } catch (e) { log('ck err: ' + e); }
+
+  // 1) 先测 bridge 能不能发请求
+  hai && setTimeout(function () {}, 0);
+  var r0 = hai.http('GET', 'http://10.0.0.11:8099/hai/lib/haiplay.js', '{}', '');
+  try { var j0 = JSON.parse(r0); log('http 自测: code=' + j0.code + ' len=' + (j0.body || '').length); }
+  catch (e) { log('http 自测失败: ' + String(r0).slice(0, 120)); }
+
+  var share = q('share') || 'https://pan.quark.cn/s/90729cfcaaac';
+  var ep = parseInt(q('ep') || '1', 10);
+  log('share: ' + share + '  ep=' + ep);
+
+  // 2) 夸克 token 原始响应（排查用）
+  try {
+    var sid = (share.match(/[/]s[/]([0-9a-zA-Z]+)/) || [])[1] || '';
+    var hd2 = {
+      'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+        + '(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'),
+      'Referer': 'https://pan.quark.cn/',
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'Cookie': hai.ck('quark') || ''
+    };
+    var rq = hai.http('POST',
+      'https://drive-pc.quark.cn/1/clouddrive/share/sharepage/token?pr=ucpro&fr=pc',
+      JSON.stringify(hd2), JSON.stringify({ pwd_id: sid, passcode: '' }));
+    log('token raw: ' + String(rq).slice(0, 420));
+  } catch (e2) { log('token err: ' + e2); }
+
+  log('...取链中（最多 40 秒）');
+  HaiPlay.ep({ share: share, ep: ep, title: q('title') || '' }).then(function (r) {
+    log('result: ' + JSON.stringify(r).slice(0, 900));
+    if (r && r.ok) {
+      var h = HaiPlay.href(r, ep, r.name || '');
+      log('href: ' + h.slice(0, 260));
+      log('>>> 5 秒后自动起播');
+      setTimeout(function () { location.href = h; }, 5000);
+    } else {
+      log('FAIL 取链失败');
+    }
+  }).catch(function (e) { log('EXCEPTION: ' + e); });
+})();
+</script>
+"""
+
+
+@bp.route("/hai/dbg")
+def hai_dbg():
+    """页面 JS 的诊断落点（电视 WebView 里画不出来，只能这样取证）。"""
+    m = (request.args.get("m") or "")[:200]
+    try:
+        with open(os.path.join(C.DATA_DIR, "dbg.log"), "a", encoding="utf-8") as f:
+            f.write("%s\t%s\t%s\n" % (time.strftime("%H:%M:%S"), _client_ip(), m))
+    except Exception:
+        pass
+    return Response("ok", mimetype="text/plain")
+
+
 @bp.route("/hai/poster/d/<vid>")
 def hai_poster_detail(vid):
+    if str(vid) == "__probe":
+        _v = "0"
+        try:
+            _v = str(int(os.path.getmtime(os.path.join(
+                C.BASE_DIR if hasattr(C, "BASE_DIR") else ".",
+                "assets", "lib", "haiplay.js"))))
+        except Exception:
+            pass
+        return Response(_PROBE_HTML.replace("@@NL@@", chr(10)).replace("%JSVER%", _v),
+                        mimetype="text/html")
     try:
         r = int(request.args.get("r") or 0)
     except ValueError:
@@ -872,6 +1024,135 @@ def hai_poster_cfg():
     return jsonify(ok=True, cfg=cfg)
 
 
+# ---------------------------------------------------------------------------
+# 播放解析：进度广播 + 结果缓存（2026-11-03）
+# ---------------------------------------------------------------------------
+# 起因（海哥）：*「等待播放的遮罩界面能否显示状态信息，比如加载状态、片源信息、
+# 缓冲」+「加快起播速度」*。
+#
+# 两条都不改播放链路，只加两样东西：
+#   1. `_PLAY_PROG`：解析过程中逐段写状态（查找站源 → 解析第 N 集 → 就绪），
+#      网页遮罩每 400ms 拉一次 `/hai/poster/progress`，把「在干什么」显示出来；
+#   2. `_PLAY_CACHE`：算好的 href 缓存 8 分钟。详情页一打开就先预热续播那一集，
+#      用户真按「▶ 播放」时直接命中，省掉 3~15 秒。
+# 缓存键带集号：同一部剧换集必须重算，否则会播错集。
+_PLAY_PROG = {}
+_PLAY_CACHE = {}
+_PLAY_LOCK = threading.Lock()
+_PLAY_TTL = 8 * 60
+
+
+def _pl_key(vid, ep):
+    try:
+        return (str(vid or ""), int(ep or 0))
+    except (TypeError, ValueError):
+        return (str(vid or ""), 0)
+
+
+def _pg(vid, ep, stage, text, **kw):
+    """写一条进度（视频解码前的「在干什么」，给遮罩显示）。"""
+    d = {"stage": stage, "text": text, "ts": time.time()}
+    d.update(kw)
+    with _PLAY_LOCK:
+        _PLAY_PROG[_pl_key(vid, ep)] = d
+        if len(_PLAY_PROG) > 300:
+            for k in list(_PLAY_PROG)[:100]:
+                _PLAY_PROG.pop(k, None)
+
+
+def _pl_get(vid, ep):
+    with _PLAY_LOCK:
+        v = _PLAY_CACHE.get(_pl_key(vid, ep))
+    if not v or time.time() - v.get("ts", 0) > _PLAY_TTL:
+        return None
+    return v.get("data")
+
+
+def _pl_put(vid, ep, data):
+    with _PLAY_LOCK:
+        _PLAY_CACHE[_pl_key(vid, ep)] = {"ts": time.time(), "data": data}
+        if len(_PLAY_CACHE) > 200:
+            for k in list(_PLAY_CACHE)[:80]:
+                _PLAY_CACHE.pop(k, None)
+
+
+_PAN_CN = {"quark": "夸克", "uc": "UC", "baidu": "百度", "ali": "阿里"}
+
+
+def _fmt_size(n) -> str:
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n >= 1073741824:
+        return "%.1f GB" % (n / 1073741824.0)
+    if n > 0:
+        return "%d MB" % max(1, round(n / 1048576.0))
+    return "大小未知"
+
+
+def _link_kbps(url, hdr, nbytes=128 * 1024, timeout=4.0) -> int:
+    """量这条直链的实际速度（KB/s），0 表示探测失败。
+
+    为什么要量：百度非会员只有 ~100 KB/s 的预览通道，照样能签出「合法」直链，
+    交给播放器就是转圈到 3003。与其让它撞墙，不如先量一下 —— 慢的候选排到
+    后面去，有快的就先播快的（多花 0.1~1 秒，省掉一次失败）。
+    """
+    h = dict(hdr or {})
+    h["Range"] = "bytes=0-%d" % max(0, int(nbytes) - 1)
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(
+                urllib.request.Request(url, headers=h), timeout=timeout) as f:
+            b = f.read(int(nbytes))
+        dt = max(0.05, time.time() - t0)
+        return int(len(b) / 1024.0 / dt)
+    except Exception:
+        return 0
+
+
+@bp.route("/hai/poster/progress")
+def hai_poster_progress():
+    """播放解析进度（给起播遮罩显示「在干什么」）。
+
+    详情页点「▶ 播放」后遮罩先铺上，然后每 400ms 拉一次这里：
+      eps      正在汇总站源/选集
+      resolve  正在解析第 N 集（夸克/百度…）
+      slow     某条链太慢，换下一条
+      probe    取到直链，正在量速度
+      ready    已就绪，马上跳播放器
+    """
+    vid = str(request.args.get("vid") or "").strip()
+    try:
+        ep = int(request.args.get("ep") or 0)
+    except ValueError:
+        ep = 0
+    with _PLAY_LOCK:
+        d = dict(_PLAY_PROG.get(_pl_key(vid, ep)) or {})
+    if not d:
+        return jsonify(stage="", text="", age=0)
+    d["age"] = round(time.time() - d.get("ts", time.time()), 1)
+    return jsonify(d)
+
+
+@bp.route("/hai/poster/warm")
+def hai_poster_warm():
+    """焦点预热：光标停在哪张卡上，就提前把它的选集聚合排进后台。
+
+    绝不批量预扫（一部 20~40 秒，7 类 × 20 部要一小时，还会把采集站打到
+    限流）。这里只排「用户下一眼可能点开的那一部」，串行、最多排 6 个。
+    """
+    vid = str(request.args.get("vid") or "").strip()
+    title = str(request.args.get("name") or "").strip()
+    ok = warm.warm_vid(vid, title)
+    return jsonify(ok=1 if ok else 0, queued=int(ok), stat=warm.stats())
+
+
+@bp.route("/hai/poster/warm/stat")
+def hai_poster_warm_stat():
+    return jsonify(warm.stats())
+
+
 @bp.route("/hai/poster/play")
 def hai_poster_play():
     """「▶ 播放」直达站源解析口（2026-10-30 需求 / 10-31 重写）
@@ -886,30 +1167,1495 @@ def hai_poster_play():
     vid = str(request.args.get("vid") or "").strip()
     if not vid:
         return jsonify(ok=0, error="缺少 vid")
+    p = {}                              # 选集聚合结果（各分支按需覆盖）
     d = tmdbwall.detail(vid, with_plays=False)
     if not d:
         return jsonify(ok=0, error="未找到影片")
     title = d.get("vod_name") or ""
     year = d.get("vod_year") or ""
+    # pic 必须是**绝对地址**：豆瓣条目这里是 /hai/dbimg/... 这种相对路径，
+    # 直接塞进 haiplay:// 交给播放器会触发 app 侧 Objects.requireNonNull 的
+    # NPE（真机 logcat 实锤），表现为「找不到数据」。
+    _pic_u = str(d.get("vod_pic") or "")
+    if _pic_u.startswith("/"):
+        _pic_u = _ext_base() + _pic_u
+
+    # ---- ⓪⓪ 夸克直链：**连文件列表都不要**（2026-11-01 新链路）------------
+    #
+    # 链路：分享链接 + 集号 → 服务端 token/detail 递归扫目录 → 挑第 N 集
+    #   → 转存到自己网盘（台账去重，同集只转一次）→ file/download 取链
+    #   → 塞进 /hai/pp/<token>（带 Cookie 头）→ ExoPlayer 播我们、我们代拉。
+    #
+    # 关键两个坑（都已实证）：
+    #   ① `file/download` 必须用**夸克客户端 UA**，浏览器 UA 恒报 23018
+    #      「download file size limit」，跟文件大小无关；
+    #   ② CDN 直链只带 UA 会 412，必须 UA+Referer+Cookie 三件套 —— 播放器
+    #      补不上，所以只能由服务端当中转（`_stream`）。
+    if request.args.get("direct"):
+        try:
+            want = int(request.args.get("ep") or 0)
+        except ValueError:
+            want = 0
+        # 详情页预热过的结果直接用（&fresh=1 可强制重算，调试用）
+        if not request.args.get("fresh"):
+            _hit = _pl_get(vid, want)
+            if _hit:
+                _d = dict(_hit)
+                _d["cached"] = 1
+                _pg(vid, want, "ready", "已就绪（缓存命中），开始播放",
+                    pan=_d.get("pan") or "", file=_d.get("file") or "",
+                    size=_d.get("size") or 0)
+                return jsonify(**_d)
+        _pg(vid, want, "eps", "正在汇总站源与选集…")
+        try:
+            p = _eps_payload(vid)
+        except Exception:
+            p = {}
+        # 真机联调：&site=tmdb 强制走自建 spider，&site=push 走内建
+        _sd = (request.args.get("site") or "").strip()
+        site_dir = {"tmdb": "TMDBWall", "push": "push_agent"}.get(_sd, _SITE_DIRECT)
+        from core import panck as _pk
+
+        def _collect(_p):
+            """从聚合结果里挑出这一集 + 所有能算直链的分享（夸克/UC）。"""
+            _flat = []
+            for sea in (_p.get("merged") or []):
+                _flat.extend(sea.get("eps") or [])
+            _pick = None
+            if want:
+                _pick = next((e for e in _flat
+                              if int(e.get("ep") or 0) == want
+                              and e.get("routes")), None)
+            if _pick is None:
+                _pick = next((e for e in _flat if e.get("routes")), None)
+            _cs = []
+            if _pick:
+                for r in (_pick.get("routes") or []):
+                    lk = str(r.get("push") or "")
+                    if lk and lk not in _cs and _pk.pan_of(lk):
+                        _cs.append(lk)
+                for s in (_p.get("sources") or []):
+                    lk = str(s.get("link") or "")
+                    if lk and lk not in _cs and _pk.pan_of(lk):
+                        _cs.append(lk)
+            # ---- 同一部片常有多个分享（正片 / 剧场版 / 不同站源）----------
+            # 2026-11-03 实测：仙逆「第 2 集」被挑成 `Renegade Immortal
+            # Movie 2.4K.mp4`（剧场版分享只有一个文件，文件名里的 2 被当成集号，
+            # 单文件分享的兜底逻辑直接把它返回了）。
+            # 这里按「这个分享里到底有没有这一集 / 有几集」重排候选：
+            #   有该集的多集分享 → 优先级最高；集数越多越可信；剧场版垫底。
+            _cnt = {}
+            for s in (_p.get("sources") or []):
+                lk = str(s.get("link") or "")
+                if not lk:
+                    continue
+                _eps = []
+                for _sea in (s.get("seasons") or []):
+                    for _e in (_sea.get("eps") or []):
+                        try:
+                            _eps.append(int(_e.get("ep") or 0))
+                        except (TypeError, ValueError):
+                            pass
+                _cnt[lk] = (1 if (want and want in _eps) else 0, len(_eps))
+            if _cnt:
+                _cs.sort(key=lambda x: (-_cnt.get(x, (0, 0))[0],
+                                        0 if "quark" in x.lower() else 1,
+                                        -_cnt.get(x, (0, 0))[1]))
+            # ---- 用户在浮层里明确点了哪条线路，就以哪条为准（2026-11-04）----
+            # 不然服务端会按「有没有这一集 / 夸克优先 / 集数多」自己挑，
+            # 结果挑到剧场版或另一个站源的同集（仙逆第1集被挑成
+            # `Renegade Immortal Movie 2.1080P.mp4`），用户点的白点。
+            _want_link = str(request.args.get("link") or "").strip()
+            if _want_link:
+                _cs = [_want_link] + [x for x in _cs if x != _want_link]
+            return _flat, _pick, _cs
+
+        flat, pick, cands = _collect(p)
+        if pick and not cands:
+            # 缓存里没有一个能算的网盘 → 作废缓存 + 强制重聚合一次
+            app.logger.info("eps cache has no usable pan for %s, refetch", vid)
+            _eps_forget(vid)
+            try:
+                p = _eps_payload(vid, force=True)
+                flat, pick, cands = _collect(p)
+            except Exception:
+                pass
+
+        if pick:
+            # 候选里没有夸克 —— 最常见的成因：`collect_full` 串行问四个站源，
+            # 玩偶（夸克）在 11 秒 budget 里没回来就被丢掉，只剩木偶（UC）。
+            # 而 UC 单连接只有 ~220 KB/s，1080p 都喂不动（用户看到的就是
+            # 「播放错误」）。这里宁可多花十几秒重问一次，也别让他去播 UC。
+            if not any("quark" in x.lower() for x in cands):
+                app.logger.info("no quark candidate for %s, refetch panwall", title)
+                # 2026-11-03 修：以前这里无条件 `_eps_forget(vid)` —— 于是
+                # 「只有百度源」的片子（如仙逆）每播一次就把 30 分钟缓存作废、
+                # 重扫三个站源，20~40 秒全花在这上面。只有**一条可算的链都没有**
+                # 时才需要作废重建。
+                if not cands:
+                    _eps_forget(vid)
+                try:
+                    from core import panwall as _pw
+                    g2 = _pw.collect_full(title, year, budget=15.0)
+                    for _gn, _us in (g2 or []):
+                        _u = str(_us).split("#")[0].split("$", 1)[-1].strip()
+                        if "quark" in _u.lower() and _u not in cands:
+                            cands.insert(0, _u)
+                except Exception as e:
+                    app.logger.info("refetch panwall fail: %s", e)
+
+            # 联调：&pan=uc 只走 UC（验证第二条腿）
+            _want_pan = (request.args.get("pan") or "").strip().lower()
+            if _want_pan:
+                cands = [x for x in cands if _pk.pan_of(x) == _want_pan]
+            # 顺序已由 _collect 排好（有没有这一集 → 夸克优先 → 集数多）。
+            # **不要**在这里再按平台重排：那会把「有这一集的正片分享」压到
+            # 「只有剧场版的夸克分享」后面，第 2 集又挂成剧场版。
+            cks = _pk.load() or {}
+
+            def _mk(link, pan, res, kbps):
+                """把一条可用直链拼成 haiplay:// 并记账（缓存 + 进度）。"""
+                hdr = dict(_pk.dl_headers(pan))
+                hdr["Cookie"] = cks.get(pan) or ""
+                base = _ext_base().rstrip("/")
+                is_hls = (res.get("mode") == "preview")
+                if is_hls:
+                    # 百度在线播放（PCS streaming）给的是 m3u8：必须让播放器
+                    # 看到 `.m3u8` 才会选 HlsMediaSource。
+                    #
+                    # 2026-11-03：默认走 `/hai/hls`（分片由服务端并发预取代取）。
+                    # 理由：百度分片单连接只有 60~140KB/s，而一段 2 秒分片
+                    # 要 1.29MB（需 645KB/s 才能连播）⇒ 直连必然越播越卡。
+                    # 服务端并发 22~32 路预取实测能到 2.1~2.8MB/s，够 4K。
+                    # 想看「分片直连百度」的效果可加 `?hlsraw=1`。
+                    tok = _pp_make(res["url"], hdr,
+                                   int(res.get("size") or 0))
+                    if request.args.get("hlsraw"):
+                        path = "/hai/hlsraw/" + tok + ".m3u8"
+                    else:
+                        path = "/hai/hls/" + tok + ".m3u8"
+                elif request.args.get("relay"):
+                    tok = _pp_make(res["url"], hdr)
+                    path = "/hai/pp/" + tok
+                else:
+                    path = "/hai/dp/" + _dp_pack(res["url"], hdr,
+                                                int(res.get("size") or 0))
+                href = ("haiplay://play?site=" + site_dir + "&id="
+                        + urllib.parse.quote("push://" + base + path, safe="")
+                        + "&ep=" + str(int(pick.get("ep") or 1))
+                        + "&name=" + urllib.parse.quote(
+                            "%s %s" % (title, pick.get("label") or ""), safe="")
+                        + "&pic=" + urllib.parse.quote(_pic_u, safe=""))
+                data = dict(ok=1, mode="direct",
+                            direct=(0 if request.args.get("relay") else 1),
+                            href=href, ep=pick.get("ep") or 0,
+                            label=pick.get("label") or "",
+                            pan=res.get("pan") or _pk.pan_of(link),
+                            file=res.get("name") or "",
+                            size=res.get("size") or 0,
+                            total=len(flat), kbps=int(kbps or 0),
+                            play_mode="hls" if is_hls else "origin")
+                if kbps and kbps < 220:
+                    data["note"] = ("这条链路实测只有 %d KB/s（%s），"
+                                    "可能卡顿/起播慢" % (kbps, _PAN_CN.get(pan, pan)))
+                _pl_put(vid, want, data)
+                _pg(vid, want, "ready",
+                    "已就绪 · %s%s · %s%s" % (
+                        _PAN_CN.get(pan, pan),
+                        "（在线播放）" if is_hls else "",
+                        _fmt_size(res.get("size")),
+                        "（%d KB/s，偏慢）" % kbps if 0 < kbps < 220 else ""),
+                    pan=data["pan"], file=data["file"], size=data["size"],
+                    kbps=data["kbps"], play_mode=data["play_mode"])
+                return jsonify(**data)
+
+            for _i, link in enumerate(cands):
+                pan = _pk.pan_of(link)
+                _pg(vid, want, "resolve",
+                    "正在解析第 %s 集（%s）…" % (pick.get("ep") or 1,
+                                                _PAN_CN.get(pan, pan)))
+                res = _pk.ep_direct(link, int(pick.get("ep") or 0), title,
+                                    pan=pan)
+                if not res.get("ok"):
+                    app.logger.info("direct miss %s(%s): %s", link[:50], pan,
+                                    res.get("error"))
+                    continue
+                # 起播前**只量第一条**成功的链（128KB，约 0.1~1.3 秒），拿到的
+                # 数字只用来**标注**「这条只有 N KB/s，可能卡顿」。
+                #
+                # 为什么不拿速度去挑候选（2026-11-03 实测教训）：仙逆第 2 集
+                # 有两条百度分享 —— 花卷（110 集，正片 XN.S01E02.mp4）和玩偶
+                # （3 个文件，剧场版）。两条都是 ~118 KB/s，按“快的优先”排序后
+                # 剧场版那点微小差异赢了，第 2 集又挂回剧场版。
+                # **正确性 > 速度**：候选顺序已经按「有没有这一集 → 夸克优先 →
+                # 集数多」排好，第一条成功的就用它。
+                _kbps = 0
+                if _i == 0 and res.get("mode") != "preview":
+                    _kbps = _link_kbps(res["url"], dict(_pk.dl_headers(pan),
+                                                        Cookie=cks.get(pan) or ""))
+                return _mk(link, pan, res, _kbps)
+        # 算不出直链（非夸克源 / CK 过期 / 分享挂了）就退回 push 那条路
+
+    # ---- ⓪ push 直入：**跳过站源选集页**（2026-11-01 真机实证，最优路径）----
+    #
+    # 地面事实（电视 adb 实测，见 memory 2026-11-01）：
+    #   `VideoActivity(key=push_agent, id=push://<分享链接>)` 会**直接**渲染
+    #   网盘文件列表（站源名「推送」/ 类型 UC网盘），跳过了 TMDBWall 那一层
+    #   站源选集页 —— 那正是用户抱怨的「先跳海海哥哥.海报墙，再跳推送」里的
+    #   第一跳。点第一个文件即出画面，取流 11 MB/s。
+    #
+    # 为什么只剩这一层：网盘分享要转存 + 要 CK，解析全在 app/jar 内部完成，
+    # 外部拿不到终址（反查 pg.jar 的 classes.dex 已确认，没有 dwnz/do=quark
+    # 任何端点）。所以「文件列表」是目前的地板，能不能再压掉靠 apk 侧自动点。
+    if request.args.get("push"):
+        try:
+            want = int(request.args.get("ep") or 0)
+        except ValueError:
+            want = 0
+        p = {}
+        try:
+            p = _eps_payload(vid)
+        except Exception:
+            p = {}
+        flat = []
+        for sea in (p.get("merged") or []):
+            flat.extend(sea.get("eps") or [])
+        pick = None
+        if want:
+            pick = next((e for e in flat
+                         if int(e.get("ep") or 0) == want and e.get("routes")), None)
+        if pick is None:
+            pick = next((e for e in flat if e.get("routes")), None)
+        if pick:
+            r0 = pick["routes"][0]
+            link = ""
+            for s in (p.get("sources") or []):
+                if (s.get("site") == r0.get("site")
+                        and s.get("pan") == r0.get("pan") and s.get("link")):
+                    link = s["link"]
+                    break
+            if link:
+                # id 必须整体 urlencode —— 分享链接自带 `?public=1`，
+                # 裸拼会被 Uri 的 query 解析从 `&`/`?` 处截断。
+                href = ("haiplay://play?site=push_agent&id="
+                        + urllib.parse.quote("push://" + link, safe="")
+                        + "&ep=" + str(int(pick.get("ep") or 0))
+                        + "&name=" + urllib.parse.quote(
+                            "%s %s" % (title, pick.get("label") or ""), safe="")
+                        + "&pic=" + urllib.parse.quote(_pic_u, safe=""))
+                return jsonify(ok=1, mode="push", href=href, link=link,
+                               ep=pick.get("ep") or 0,
+                               label=pick.get("label") or "",
+                               total=len(flat), site=r0.get("site") or "",
+                               pan=r0.get("pan") or "")
+        # 一集都列不出来时往下走 TMDBWall 兜底，别让按钮点下去没反应
+
+    # ---- ① 直链模式（2026-11-01 海哥：播放链条不许露 PG 原生界面）--------
+    #
+    # 老实现返回 site_key+id，app 会打开该站的**选集页**（PG 的灰底列表），
+    # 这就是「露原生界面」。带 direct=1 时直接从网盘聚合结果里挑一集，
+    # 拼成 `haiplay://play?site=HaiDirect&id=<127.0.0.1:9978 直链>`，
+    # 播放器起来就是画面，中间没有任何站源页面。
+    if request.args.get("direct"):
+        try:
+            want = int(request.args.get("ep") or 0)
+        except ValueError:
+            want = 0
+        p = {}
+        try:
+            p = _eps_payload(vid)
+        except Exception:
+            p = {}
+        flat = []
+        for sea in (p.get("merged") or []):
+            flat.extend(sea.get("eps") or [])
+        pick = None
+        if want:
+            pick = next((e for e in flat
+                         if int(e.get("ep") or 0) == want and e.get("routes")), None)
+        if pick is None:
+            pick = next((e for e in flat if e.get("routes")), None)
+        # 注意：这里**绝不能**再 `return routes[0]["href"]`。那条地址是
+        # `127.0.0.1:9978/proxy?do=quark&...` —— 9978 是 app 内置 server，
+        # 播放器把它当普通 URL 直接拉会拿到空响应，界面上就是「播放无数据」
+        # （老版本正是栽在这一句上，2026-11-01 15:59 删除）。
+        # 算不出夸克直链就让它继续往下走 push 兜底。
+
+    # ---- ⓪ 先用 TMDBWall 自己（2026-11-01 真机验证）----------------------
+    #
+    # 这是 app 里**必定存在**的站点，而且它的 detail() 本来就带完整线路
+    # （夸克/百度/天翼，push:// 形式）。所以只要按片名在它自己的库里搜到
+    # 完全同名的一条，`haiplay://play?site=TMDBWall&id=<vod_id>` 就能直接
+    # 打开选集页并播放 —— 实测「极速：伪装者」这条链 100% 通。
+    #
+    # 豆瓣源没有 TMDB 的 vod_id，但片名是共用的，所以这一步对两个源都适用，
+    # 也是唯一一条不依赖第三方网盘站死活的播放入口。
+    # 2026-11-01 20:xx 删掉了原来那段「按片名在 TMDBWall 库里搜同名」兜底。
+    # 它返回的 `site=TMDBWall` 在这台电视上**必定 NPE**（app 从不加载自建 js
+    # 站点），用户看到的就是「无数据」。宁可如实返回失败原因。
+
     try:
         from core import panwall
         r = panwall.resolve_play(title, year)
     except Exception as e:
         return jsonify(ok=0, error="%s: %s" % (type(e).__name__, e))
     if not r:
-        out = dict(ok=0, error="所有站源都没有完全同名资源", title=title)
-        if request.args.get("debug"):
-            out["sites"] = [s["name"] for s in panwall.play_sites()]
-        return jsonify(**out)
-    resp = dict(ok=1, site_key=r["site_key"], site=r["site_name"], id=r["id"],
-                name=r.get("name") or title, pic=d.get("vod_pic") or "",
-                title_hit=True)
+        # 别只丢一句「没有完全同名的片源」—— 用户看到的就一句「无数据」。
+        # 这里把真正卡住的那一步说出来：是站源没这部片，还是只有我们
+        # 解析不了的网盘（百度/115/阿里/天翼）。
+        why = "站源里没搜到这部片"
+        pans = []
+        try:
+            for s0 in (p.get("sources") or []):
+                pn = (s0.get("pan") or "").strip()
+                if pn and pn not in pans:
+                    pans.append(pn)
+            if pans:
+                ok_pans = [x for x in pans if x in ("夸克", "UC")]
+                if not ok_pans:
+                    why = "这部片只有 %s 源，暂不支持" % "/".join(pans)
+                else:
+                    why = "网盘解析失败（%s），可能是空间不足或分享失效" % "/".join(pans)
+        except Exception:
+            pass
+        return jsonify(ok=0, error=why, title=title, pans=pans)
+    resp = dict(ok=1, mode="site", site_key=r["site_key"], site=r["site_name"],
+                id=r["id"], name=r.get("name") or title,
+                pic=_pic_u, title_hit=True)
     if request.args.get("debug"):
         from core import panwall as _pw
         resp["debug"] = {"title": title, "year": year,
                          "site": r["site_name"], "num_id": r.get("num_id"),
                          "order": [s["name"] for s in _pw.play_sites()]}
     return jsonify(**resp)
+
+
+# 网盘优先级：夸克最稳（不封外链、直链失效慢），UC 次之。同集有多条线路时
+# 「自动」就按这个顺序取第一条能播的（2026-11-01）。
+# 网盘优先级：同集有多条线路时「自动」就按这个顺序取第一条。
+#
+# 2026-11-01 真机改判：**UC 排第一**。原来夸克打头（理由是「不封外链、直链
+# 失效慢」），但那是给「本机 9978 直链」那套假设写的，而那条路已被证伪。
+# 现在走的是 `site=push_agent&id=push://<分享>` —— app 内置的 Push 解析器
+# 实测对 UC 分享能列出文件并起播（11MB/s），对**夸克分享直接解析不出来**：
+# 页面只剩「推送 / 播放 / 原始链接」三行，等于播不了。所以 UC 优先。
+_PAN_RANK = {"UC": 0, "夸克": 1, "百度": 2, "阿里": 3, "115": 4}
+
+# 直链短化表：token -> (真实 9978 直链, 过期时间)
+#
+# 为什么不在 haiplay:// 里直接塞直链（2026-11-01 真机）：一条 127.0.0.1:9978
+# 的地址编码后 800+ 字符，WebView 拦截 → Uri 解析 → 播放器任何一环都可能截断
+# 或超限，出问题时日志里也是一团乱。换成 12 位 token，真地址留在服务端。
+# 直链走哪个站点：
+#   "push_agent" —— 内建，稳，但只会把 URL 渲染成一条列表，
+#                   要靠 APK 的自动确定键点进去（中间闪一下列表）
+#   "TMDBWall"   —— 自建 spider，play() 能直接返回「直链+请求头」，
+#                   播放器直连 CDN（理论上满速），但 app 未必加载它
+_SITE_DIRECT = "push_agent"
+
+_PP: dict = {}
+_PP_TTL = 8 * 3600
+_PP_PATH = os.path.join(C.DATA_DIR, "pp.json")
+_PP_LOADED = [False]
+
+
+def _pp_load() -> None:
+    """把短链表从盘上捞回来。
+
+    为什么必须落盘（2026-11-01 16:20 修）：token 原先只存内存，服务一重启
+    （改代码 / systemd restart）整张表就空。电视上播放器此时拿到的还是
+    「几秒前生成的那个 token」→ 410 → 界面直接「播放无数据」。
+    一整个下午的重启把这条踩了无数遍。
+    """
+    if _PP_LOADED[0]:
+        return
+    _PP_LOADED[0] = True
+    try:
+        with open(_PP_PATH, "r", encoding="utf-8") as f:
+            d = json.load(f) or {}
+        now = time.time()
+        for k, v in d.items():
+            if isinstance(v, list) and len(v) >= 2 and float(v[1]) > now:
+                _PP[k] = (v[0], float(v[1]), v[2] if len(v) > 2 else {},
+                          int(v[3]) if len(v) > 3 else 0)
+    except Exception:
+        pass
+
+
+def _pp_save() -> None:
+    try:
+        tmp = _PP_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_PP, f, ensure_ascii=False)
+        os.replace(tmp, _PP_PATH)
+    except Exception:
+        pass
+
+
+def _dp_pack(url: str, hdr: dict, size: int = 0) -> str:
+    """生成 `/hai/dp/<token>` 里的 token。
+
+    起先试过把「直链 + 请求头」整体 base64 塞进 URL（自包含、APK 侧不用
+    发请求），但实测 b64 长度 4098 —— 加上 haiplay:// 和 push:// 前缀
+    整条 URL 超过 4K，Uri/Intent 传递不可靠。
+
+    改成复用 `_pp` 短链表：token 12 位，APK 侧拦截器看到 `/hai/dp/` 就先
+    问一次 `/hai/dp/<token>?hdr=1` 拿 {url, header}，再改写请求直连 CDN。
+    多一次本地 HTTP 往返（几毫秒），换来一个 40 字符的短地址。
+    """
+    return _pp_make(url, hdr, size)
+
+
+def _dp_unpack(b: str) -> dict:
+    # 播放器那边可能带 `.m3u8` 后缀（HLS 要靠后缀选解码器），这里剥掉
+    b = str(b or "").split(".")[0]
+    """token → {u, h}。供 /hai/dp/<b> 兜底（拦截器没生效时）使用。"""
+    g = _pp_get(b)
+    if not g:
+        return {}
+    return {"u": g[0], "h": g[1], "size": g[2]}
+
+
+def _pp_make(url: str, hdr: dict = None, size: int = 0) -> str:
+    """登记一条 CDN 直链，返回 12 位短 token。
+
+    存成 `(url, exp, hdr, size)` 四元组 —— size 是给 APK 侧多线程数据源用的：
+    它要按 Range 切段就得先知道文件总长（不然播放器发 `bytes=0-` 时没法算
+    Content-Range）。读取端统一用 `_pp_get()`，兼容老的三元组。
+    """
+    _pp_load()
+    key = str(url) + "|" + "|".join(sorted((hdr or {}).keys()))
+    t = hashlib.md5(key.encode("utf-8")).hexdigest()[:12]
+    now = time.time()
+    if len(_PP) > 4000:                     # 简单清理，别让字典无限涨
+        for k, v in list(_PP.items()):
+            if v[1] < now:
+                _PP.pop(k, None)
+    _PP[t] = (str(url), now + _PP_TTL, dict(hdr or {}), int(size or 0))
+    _pp_save()
+    return t
+
+
+def _pp_get(t: str):
+    """(url, hdr, size) 或 None —— 兼容历史上只存三元组的 pp.json。"""
+    _pp_load()
+    hit = _PP.get(t)
+    if not hit or hit[1] < time.time():
+        return None
+    size = int(hit[3]) if len(hit) > 3 else 0
+    return hit[0], (hit[2] if len(hit) > 2 else {}) or {}, size
+
+
+_PP_POOL = {"ex": None}
+
+
+def _pp_pool():
+    """拉夸克的共享线程池（8 路并发 × 最多 3 条流，留点余量）。"""
+    if _PP_POOL["ex"] is None:
+        from concurrent.futures import ThreadPoolExecutor
+        _PP_POOL["ex"] = ThreadPoolExecutor(max_workers=24)
+    return _PP_POOL["ex"]
+
+
+def _fetch_seg(url: str, hdr: dict, s: int, e: int) -> bytes:
+    """并发分段用：拉 [s, e] 这一段，整段读满再返回。
+
+    放在模块级（不嵌在视图里）是为了能丢进线程池。
+    """
+    need = e - s + 1
+    for attempt in (0, 1):
+        try:
+            h = dict(hdr)
+            h["Range"] = "bytes=%d-%d" % (s, e)
+            with urllib.request.urlopen(
+                    urllib.request.Request(url, headers=h), timeout=20) as f:
+                # 直接 read() 读完这一段。别用 read1(256KB) 小块循环 ——
+                # 实测那样单段只有 ~200 KB/s（每次 read1 都要过一遍底层缓冲），
+                # 8 路并发加起来还不到 1.3 MB/s，比单流还慢。
+                return f.read() or b""
+        except Exception:
+            if attempt:
+                return b""
+    return b""
+
+
+def _stream(url: str, hdr: dict):
+    """带鉴权头的流式中转 —— 兼治夸克的「开区间限速」。
+
+    为什么必须自己当中转（2026-11-01 实证）：夸克 CDN 直链有防盗链，
+    **只带 UA 会 412 Precondition Failed**，必须 UA + Referer + Cookie
+    同时在请求头上。而电视上的 ExoPlayer 只会发一条光杆 GET（顶多带
+    Range），既不会带 Cookie 也不会带 Referer —— 302 过去必挂。
+
+    为什么还要**改写 Range**（同日实证，这是黑屏的真凶）：
+        Range: bytes=5992-          → 102 KB/s     ← 开区间，被限速
+        Range: bytes=0-             → 102 KB/s
+        Range: bytes=5992-104857599 → 2.2 MB/s     ← 限定范围，满速
+    夸克对「没有结束位置的 Range」一律掐到 100 KB/s。而 ExoPlayer 解析
+    mkv 时发的正是一条 `bytes=5992-`（读到文件末尾），于是黑屏、68 KB/s。
+    解法：对外照原样答应（Content-Range 仍写 start-末尾），内部按 64MB
+    分段去要，逐段拼给播放器 —— 分段请求带 end，就不触发限速。
+    """
+    rng = (request.headers.get("Range") or "").strip()
+    start, end = 0, None
+    if rng.lower().startswith("bytes="):
+        p = rng[6:].split("-", 1)
+        try:
+            start = int((p[0] or "0").strip() or 0)
+        except ValueError:
+            start = 0
+        if len(p) > 1 and p[1].strip():
+            try:
+                end = int(p[1].strip())
+            except ValueError:
+                end = None
+
+    # ---- 探测块的**大小要试**（2026-11-03 百度 3003 的真凶）-----------------
+    #
+    # 百度非会员（is_vip=0）只给 `rt=pr` 预览通道，除了限速 ~100 KB/s 之外，
+    # 还**限制单次 Range 的跨度**：
+    #     bytes=0-1MB   → 206
+    #     bytes=0-4MB   → 206（56 秒，≈75 KB/s）
+    #     bytes=0-8MB   → 403 {"error_code":31326,"hitcode":104}
+    # 而原来这里固定按 64MB 探测 → 百度必 403 → 我们回一段 12 字节的
+    # "upstream 403" 文本 → 播放器解不出媒体 → 界面就是 **3003**。
+    # 现在按 64→32→8→4→2MB 依次退让，谁先成功就用谁的步长往下吐。
+    CH = 64 * 1024 * 1024
+    up = None
+    _last = None
+    for _mb in (64, 32, 8, 4, 2):
+        _chunk = _mb * 1024 * 1024
+        _fe = (start + _chunk - 1) if end is None else min(start + _chunk - 1, end)
+        _h = dict(hdr)
+        _h["Range"] = "bytes=%d-%d" % (start, _fe)
+        try:
+            up = urllib.request.urlopen(urllib.request.Request(url, headers=_h),
+                                        timeout=30)
+            CH = _chunk
+            break
+        except urllib.error.HTTPError as e:
+            _last = e
+            if e.code == 416:      # 越界：跟块大小无关，直接回给播放器
+                return Response("416", status=416,
+                                headers={"Content-Range":
+                                         e.headers.get("Content-Range") or ""})
+            if e.code not in (400, 403, 503, 500):
+                return Response("upstream %s" % e.code, status=min(e.code, 599))
+            try:
+                e.read(2048)
+            except Exception:
+                pass
+            continue
+        except Exception as e:
+            return Response("upstream %s: %s" % (type(e).__name__, e), status=502)
+    if up is None:
+        code = getattr(_last, "code", 502) or 502
+        return Response("upstream %s" % code, status=min(code, 599))
+
+    cr = up.headers.get("Content-Range") or ""
+    m = re.match(r"bytes\s+(\d+)-(\d+)/(\d+)", cr)
+    total = int(m.group(3)) if m else 0
+    if end is None:
+        end = (total - 1) if total else None
+    if end is not None and total and end >= total:
+        end = total - 1
+
+    out = {"Content-Type": up.headers.get("Content-Type") or "application/octet-stream",
+           "Accept-Ranges": "bytes", "Cache-Control": "no-store"}
+    status = 200
+    if end is not None:
+        out["Content-Length"] = str(end - start + 1)
+        if rng.lower().startswith("bytes="):
+            status = 206
+            out["Content-Range"] = "bytes %d-%d/%s" % (
+                start, end, total or "*")
+    if request.method == "HEAD":
+        try:
+            up.close()
+        except Exception:
+            pass
+        return Response(b"", status=status, headers=out)
+
+    # 并发预取参数（2026-11-01 实测标定）
+    #
+    # 夸克对**单条连接**掐在 2.2 MB/s，但**不限总带宽**：
+    #     1 路 2.20 MB/s │ 4 路 8.25 MB/s │ 8 路 18.0 MB/s
+    # 4K 高码率（~60 Mbps = 7.5 MB/s）单流根本喂不动，就是这个原因。
+    # 所以按 4MB 切块、8 路并发去拉，主线程**按序**吐给播放器 ——
+    # 对内并发，对外仍是一条连续的 206。
+    #
+    # 前两块故意做小（256KB）：播放器对「首字节」很敏感，等 4MB 攒齐
+    # 要 1.8 秒，实测直接报「连接超时」。首块 256KB 约 120ms 就能吐。
+    SIZE = 4 * 1024 * 1024
+    FIRST = 256 * 1024
+    WORKERS = 8
+    AHEAD = 10
+
+    def _fetch(s: int, e: int) -> bytes:
+        need = e - s + 1
+        for attempt in (0, 1):
+            try:
+                h = dict(hdr)
+                h["Range"] = "bytes=%d-%d" % (s, e)
+                with urllib.request.urlopen(
+                        urllib.request.Request(url, headers=h), timeout=20) as f:
+                    px = getattr(f, "read1", None) or f.read
+                    buf, got = [], 0
+                    while got < need:
+                        b = px(min(262144, need - got))
+                        if not b:
+                            break
+                        buf.append(b)
+                        got += len(b)
+                    return b"".join(buf)
+            except Exception:
+                if attempt:
+                    return b""
+        return b""
+
+    def gen():
+        # 上游没给总长度时退回单流顺序转发（少见：夸克都带 Content-Range）
+        if end is None:
+            cur = up
+            try:
+                while True:
+                    px = getattr(cur, "read1", None) or cur.read
+                    b = px(1024 * 1024)
+                    if not b:
+                        break
+                    yield b
+            except Exception:
+                pass
+            finally:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+            return
+
+        try:
+            up.close()             # 探测用的连接不再需要
+        except Exception:
+            pass
+
+        # **分段 + 有限并发**转发（2026-11-01 17:10 定稿）
+        #
+        # 为什么必须分段：开区间 Range（`bytes=5992-`）会被夸克/UC 掐到
+        # ~100 KB/s，ExoPlayer 解析 mkv 发的正是这种；切成定长段才有 2.2 MB/s。
+        #
+        # 为什么必须并发：夸克**单连接**上限 2.2 MB/s，UC 只有 ~220 KB/s。
+        # 实测叠加是线性的（1 路 2.2 / 4 路 8.2 / 8 路 18 MB/s）。
+        # 8 路并行才够 4K；UC 那种 220 KB/s 更需要（4 路 ≈ 900 KB/s）。
+        #
+        # 为什么这次不会卡死：池子**全局共享**（24 线程），但每条流同时最多
+        # 只挂 AHEAD=6 个任务。上一版是每流 AHEAD=16 + 共享池，一条流就把
+        # 池子占满，客户端一断残留任务不取消 → 后一个请求卡到超时
+        #（真机「连接超时」）。现在 4 条并发流才 24 个任务，且 finally 里
+        # 全部 cancel，断流即回收。
+        # 单线程分段（2026-11-01 17:20 定稿，并发版实测更慢）
+        #
+        # 实测对比（同一夸克直链、同一台服务器）：
+        #   单线程分段 32MB、read1(1MB) 边下边吐 ......... 3.40 MB/s
+        #   6 路并发 4MB 块、整块 read() 再吐 ........... 1.73 MB/s
+        #   裸跑 t_multi.py 8 路（不受 Flask 影响）...... 7.80 MB/s
+        # 并发版慢是因为「整块读完才吐」把流水线拖平了，而且首块之后
+        # 任何一块慢都会卡住整条流。单线程边下边吐反而更稳更快。
+        # 想让播放器真跑满千兆，只有让它**直连 CDN**（带 Cookie），
+        # 那需要改 APK 给 ExoPlayer 注入请求头，不是服务端能解决的。
+        # 32MB 单线程分段、read1(1MB) 边下边吐 —— 实测最快的形态
+        #（2026-11-01 17:45 定稿，三种切片都量过）：
+        #   32MB 单线程 ......... 3.40 MB/s   ← 保留这个
+        #   4MB 块 × 6 路并发 ... 1.73 MB/s
+        #   1MB 块 × 8 路并发 ... 2.48 MB/s
+        #   裸跑 8 路（绕过 Flask）7.80 MB/s
+        # 结论：Flask 中转吃不满并发，「整块读完再吐」会把流水线拖平。
+        # 想真正跑满千兆只有让播放器直连 CDN（PG 的 @Headers 机制），
+        # 那需要改 APK 给 OkHttpDataSource 注入请求头。
+        # 用**探测成功**的块长（上限 32MB）。夸克/UC 走 32MB 满速；
+        # 百度那种只认 2~4MB 的上游也能正常吐流，不会再 403。
+        CHUNK = min(CH, 32 * 1024 * 1024)
+        off, cur = start, None
+        try:
+            while off <= end:
+                ce = min(off + CHUNK - 1, end)
+                need = ce - off + 1
+                got = 0
+                try:
+                    h2 = dict(hdr)
+                    h2["Range"] = "bytes=%d-%d" % (off, ce)
+                    cur = urllib.request.urlopen(
+                        urllib.request.Request(url, headers=h2), timeout=20)
+                    px = getattr(cur, "read1", None) or cur.read
+                    while got < need:
+                        b = px(min(1024 * 1024, need - got))
+                        if not b:
+                            break
+                        got += len(b)
+                        yield b
+                except GeneratorExit:
+                    raise
+                except Exception:
+                    break
+                finally:
+                    if cur is not None:
+                        try:
+                            cur.close()
+                        except Exception:
+                            pass
+                        cur = None
+                if got <= 0:
+                    break
+                off += got
+        finally:
+            if cur is not None:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+
+    return Response(gen(), status=status, headers=out, direct_passthrough=True)
+
+
+@bp.route("/hai/pan/play")
+def hai_pan_play():
+    """任意网盘分享链接 → 可直接起播的 haiplay:// 地址。
+
+    用途：站源里搜不到、或者用户手上就有一条分享链接时，不必做成剧集，
+    直接把 `pan.quark.cn/s/xxx` / `drive.uc.cn/s/xxx` 丢进来就能播。
+
+    参数：
+        url   分享链接（必填，可带 ?pwd=）
+        ep    第几集（默认 1）
+        name  片名（只用于播放器标题）
+        raw   1 = 只返回直链 json，不拼 haiplay://
+    """
+    from core import panck as _pk
+
+    u = (request.args.get("url") or "").strip()
+    if not u:
+        return jsonify(ok=0, error="缺少 url")
+    # 用户从 App 复制的分享文案里常带前后缀，抠出干净链接
+    import re as _re
+    m = _re.search(r"https?://[^\s一-龥]+", u)
+    if m:
+        u = m.group(0).rstrip("，,。.)）")
+    ep = 1
+    try:
+        ep = max(1, int(request.args.get("ep") or 1))
+    except Exception:
+        ep = 1
+    name = (request.args.get("name") or "").strip()
+    pan = (request.args.get("pan") or "").strip().lower()
+
+    res = _pk.ep_direct(u, ep, name, pan=pan)
+    if not res.get("ok"):
+        return jsonify(ok=0, error=res.get("error") or "取链失败",
+                       url=u, pan=_pk.pan_of(u))
+
+    ck = (_pk.load() or {}).get(_pk._cfg(res["pan"])["root"]) or ""
+    hdr = _pk.dl_headers(res["pan"])
+    hdr["Cookie"] = ck
+
+    if request.args.get("raw"):
+        return jsonify(ok=1, mode="raw", url=res["url"], header=hdr,
+                       pan=res["pan"], size=res.get("size") or 0,
+                       file=res.get("name") or "")
+
+    base = _ext_base().rstrip("/")
+    tok = _dp_pack(res["url"], hdr, int(res.get("size") or 0))
+    # HLS（百度试看 m3u8）必须让播放器看到 `.m3u8` 后缀，否则 ExoPlayer
+    # 会走 ProgressiveMediaSource，把 m3u8 当普通文件读 → 只有音频没有画面。
+    # preview = HLS：**不能**用 /hai/dp/（APK 拦截器会把它直接改写到百度域名，
+    # 分片随之落到 bdcm06.baidupcs.com，被 PG 拦到 9978）。改用 /hai/hls/，
+    # 拦截器不认这个前缀 → 请求落到服务端 → 服务端下发改写过的 m3u8。
+    if res.get("mode") == "preview":
+        # HLS 必须让播放器看到 .m3u8 才会选 HlsMediaSource。
+        # PG 会把它包装成 http://127.0.0.1:9978/m3u8?url=...，由 APK 里的
+        # OkHttp 拦截器（com.hai.HaiDp）剥掉包装，直接请求内层地址。
+        #
+        # 用 hlsraw（**不改写分片**）：实测电视能直接解析并连 bdcm06.baidupcs.com，
+        # 视频数据全程不经过服务器 —— 和夸克直连 CDN 是一样的路径。
+        # 需要请求头才能取的分片，把这里换成 "/hai/hls/" 即可（走 /hai/ts 中转）。
+        path = "/hai/hlsraw/" + tok + ".m3u8"
+    else:
+        path = "/hai/dp/" + tok
+    label = res.get("name") or name or "网盘"
+    href = ("haiplay://play?site=push_agent&id="
+            + urllib.parse.quote("push://" + base + path, safe="")
+            + "&ep=" + str(ep)
+            + "&name=" + urllib.parse.quote(label, safe=""))
+    return jsonify(ok=1, mode="direct", href=href, pan=res["pan"],
+                   play_mode=res.get("mode") or "origin",
+                   ep=ep, file=res.get("name") or "",
+                   size=res.get("size") or 0, no_xfer=res.get("no_xfer") or 0,
+                   note=res.get("note") or "")
+
+
+# HLS 分片真地址表：{token: [url, url, ...]}。
+# 每次请求 m3u8 都会重新解析并覆盖，所以不需要持久化。
+_PPTS: dict = {}
+
+# ---- HLS 分片「并发预取」缓存（2026-11-03）-------------------------------
+#
+# 为什么需要：百度每个分片都是**独立的一次 GET**，单条连接被限到
+# 60~140 KB/s；但不同分片并发可以把总带宽叠起来。同一出口实测：
+#     8 并发 → 212 KB/s    16 → 510 KB/s
+#    24 并发 → 2130 KB/s   32 → 2770 KB/s（还会继续涨）
+# PG 原生播百度 4K 能到 3.4 MB/s、25GB 的片子能冲到 14 MB/s，用的就是
+# 同一招「多连接分片」（它内置 127.0.0.1:8096/kaiser?thread=16）。
+# 那个本地代理只在它自己播网盘时才起，外部连不上，所以这里自己实现一份：
+# 播放器顺序请求 /hai/ts/<tok>/<n>，后台同时把 n..n+22 分片全下好放内存，
+# 播放器按序取时基本直接命中，等效带宽 = 并发数 × 单连接速度。
+_TSC_LOCK = threading.Lock()
+_TSC_DATA = {}        # (tok, idx) -> bytes
+_TSC_EVT = {}         # (tok, idx) -> threading.Event
+_TSC_WANT = set()     # 正在下载的 key
+_TSC_ORDER = []       # 插入顺序（淘汰用）
+# 这台机器只有 1.8GB 内存（J1900 四核，应用自身已占 ~500MB），缓存别开太大。
+_TSC_CAP = int(os.environ.get("HAI_TS_CAP_MB") or 128) * 1024 * 1024
+# 实测（同一出口、分享 4K 转码分片）：
+#   1 连接 60~140 KB/s；8→212KB/s；16→510；24→2.1MB/s；
+#   32→2.7MB/s；**64 并发 → 4.4MB/s（64/64 全成功）**
+# 分片本身也支持 Range（206），所以每片再切 8 块 ⇒ 首片也能并行拉，起播不干等。
+# 这里：窗口 8 片 × 每片 8 块 ≈ 64 条连接。
+# 三个旋钮（可用环境变量覆盖，不必改代码）：
+#   HAI_TS_WINDOW 预取窗口：一次排进队列多少个分片（排队长度，不是并发数）
+#   HAI_TS_PARTS  每片切几块 Range 并行
+#   HAI_TS_POOL   同时“装配”几个分片
+# **真实并发连接数 ≈ POOL × PARTS**（窗口只决定队列有多长）
+#   默认 24 × 6 = 144 条连接 ⇒ 按实测每连接约 62KB/s 估，约 8~9 MB/s。
+_TSC_WINDOW = int(os.environ.get("HAI_TS_WINDOW") or 40)
+_TS_PARTS = int(os.environ.get("HAI_TS_PARTS") or 8)
+_TSC_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=int(os.environ.get("HAI_TS_POOL") or 8))
+
+
+def _tsc_put(key, data):
+    ev = None
+    with _TSC_LOCK:
+        _TSC_DATA[key] = data
+        _TSC_ORDER.append(key)
+        _TSC_WANT.discard(key)
+        ev = _TSC_EVT.get(key)
+        total = sum(len(v) for v in _TSC_DATA.values())
+        while total > _TSC_CAP and _TSC_ORDER:
+            old = _TSC_ORDER.pop(0)
+            d = _TSC_DATA.pop(old, None)
+            if d:
+                total -= len(d)
+            _TSC_EVT.pop(old, None)
+    if ev:
+        ev.set()
+
+
+def _tsc_part(url, hdr, a, b, out, slot):
+    h = dict(hdr)
+    h["Range"] = "bytes=%d-%d" % (a, b)
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=h),
+                                    timeout=60) as f:
+            out[slot] = f.read()
+    except Exception:
+        out[slot] = b""
+
+
+def _tsc_fetch(tok, idx, url, hdr, parts=None):
+    """取一个分片：先拉第一块拿总长，再按 Range 并行切剩下的块。
+
+    单个分片约 1.29MB、单连接只有 60~140KB/s，串行要 10 秒，而它只覆盖 2 秒
+    播放，播放器必然越播越卡。切成 8 块并行，1~2 秒就能凑齐。
+    """
+    try:
+        first = 512 * 1024
+        h = dict(hdr)
+        h["Range"] = "bytes=0-%d" % (first - 1)
+        with urllib.request.urlopen(urllib.request.Request(url, headers=h),
+                                    timeout=45) as f:
+            head = f.read()
+            cr = f.headers.get("Content-Range") or ""
+        m = re.match(r"bytes[ ]+[0-9]+-[0-9]+/([0-9]+)", cr)
+        total = int(m.group(1)) if m else 0
+        if not total or total <= len(head):
+            _tsc_put((tok, idx), head)
+            return
+        # 首片影响起播速度：给它更多分块（一次 10 条连接抢）
+        n = int(parts or _TS_PARTS)
+        step = (total + n - 1) // n
+        ranges = []
+        a = len(head)
+        while a < total:
+            b = min(a + step - 1, total - 1)
+            ranges.append((a, b))
+            a = b + 1
+        out = [None] * len(ranges)
+        ths = []
+        for k, (a, b) in enumerate(ranges):
+            t = threading.Thread(target=_tsc_part,
+                                 args=(url, hdr, a, b, out, k))
+            t.daemon = True
+            t.start()
+            ths.append(t)
+        for t in ths:
+            t.join(75)
+        buf = [head]
+        for piece in out:
+            if piece:
+                buf.append(piece)
+        data = b"".join(buf)
+        # 校验：某些分片 302 到忽略 Range 的节点，会把整片重复返回。
+        # 长度对不上就丢掉，退回「单条整取」这条最稳的路。
+        if abs(len(data) - total) > 1:
+            app.logger.info("tsc assemble mismatch idx=%s got=%s want=%s",
+                            idx, len(data), total)
+            with urllib.request.urlopen(
+                    urllib.request.Request(url, headers=dict(hdr)),
+                    timeout=60) as f2:
+                data = f2.read()
+        _tsc_put((tok, idx), data)
+    except Exception:
+        ev = None
+        with _TSC_LOCK:
+            _TSC_WANT.discard((tok, idx))
+            ev = _TSC_EVT.pop((tok, idx), None)
+        if ev:
+            ev.set()
+
+
+def _tsc_warm(tok, idx, segs, hdr):
+    """后台预取 idx..idx+WINDOW（幂等）。
+
+    注意：预取**只开 1 条连接**。之前每片都切 8 块，40 片一起上就是 320 条连接，
+    把播放器正等的首片挤到 7 秒以上 ⇒ EXO 读超时（就是"连接超时 0KB/s"）。
+    现在的策略是：播放器要哪片，那片单独走 16 块优先车道；其余慢慢来。
+    """
+    for i in range(idx, min(idx + _TSC_WINDOW, len(segs))):
+        key = (tok, i)
+        with _TSC_LOCK:
+            if key in _TSC_DATA or key in _TSC_WANT:
+                continue
+            _TSC_WANT.add(key)
+            _TSC_EVT.setdefault(key, threading.Event())
+        _TSC_POOL.submit(_tsc_fetch, tok, i, segs[i], hdr, 1)
+
+
+def _tsc_slice(data, rng):
+    """按 Range 头切已经缓存的整片。"""
+    m = re.match(r"bytes=(\d+)-(\d*)", rng or "")
+    if not m:
+        return data, None
+    a = int(m.group(1))
+    b = int(m.group(2)) if m.group(2) else len(data) - 1
+    b = min(b, len(data) - 1)
+    if a > b:
+        return b"", None
+    return data[a:b + 1], "bytes %d-%d/%d" % (a, b, len(data))
+
+
+@bp.route("/hai/hlsraw/<b>")
+def hai_hlsraw(b):
+    """原样透传上游 m3u8（分片保持上游地址），用于验证直连可行性。"""
+    tok = str(b or "").split(".")[0]
+    hit = _PP.get(tok)
+    if not hit or hit[1] < time.time():
+        return Response("#EXTM3U", status=410,
+                        mimetype="application/vnd.apple.mpegurl")
+    try:
+        with urllib.request.urlopen(
+                urllib.request.Request(hit[0], headers=dict(hit[2] or {})),
+                timeout=20) as f:
+            txt = f.read().decode("utf-8", "ignore")
+    except Exception:
+        return Response("#EXTM3U", status=502,
+                        mimetype="application/vnd.apple.mpegurl")
+    return Response(txt, mimetype="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@bp.route("/hai/hls/<b>")
+def hai_hls(b):
+    """把上游 m3u8 改写成「分片走本机」的版本。
+
+    为什么必须改写：百度 m3u8 里的分片是 `bdcm06.baidupcs.com`，
+    **PG 会把非白名单域名的请求拦到它内置 URL 代理 127.0.0.1:9978**
+    （那个服务没起）→ ExoPlayer 报 `Failed to connect to /127.0.0.1:9978`，
+    状态在 BUFFERING/IDLE 之间死循环。实测日志见 2026-11-02 03:36。
+
+    改成 `http://10.0.0.11:8099/hai/ts/<tok>/<n>`（内网 IP）后 PG 不再拦截。
+    """
+    tok = str(b or "").split(".")[0]
+    hit = _PP.get(tok)
+    if not hit or hit[1] < time.time():
+        return Response("#EXTM3U\n", mimetype="application/vnd.apple.mpegurl",
+                        status=410)
+    url, _exp, hdr = hit[0], hit[1], hit[2]
+    try:
+        req = urllib.request.Request(url, headers=dict(hdr or {}))
+        with urllib.request.urlopen(req, timeout=20) as f:
+            txt = f.read().decode("utf-8", "ignore")
+    except Exception:
+        app.logger.exception("hls fetch fail")
+        return Response("#EXTM3U\n", mimetype="application/vnd.apple.mpegurl",
+                        status=502)
+
+    base = _ext_base().rstrip("/")
+    segs = []
+    out = []
+    for ln in txt.split("\n"):
+        st = ln.strip()
+        if st.startswith("http"):
+            idx = len(segs)
+            segs.append(st)
+            out.append("%s/hai/ts/%s/%d" % (base, tok, idx))
+        elif st.startswith("#EXT-X-KEY") and "URI=" in st:
+            # 加密流：key 也换成本机代理
+            m = re.search(r'URI="([^"]+)"', st)
+            if m:
+                idx = len(segs)
+                segs.append(m.group(1))
+                st = st.replace(m.group(1), "%s/hai/ts/%s/%d" % (base, tok, idx))
+            out.append(st)
+        else:
+            out.append(ln)
+    _PPTS[tok] = segs
+    # 播放器拿到列表后立刻会要第 0 片：先把开头几片丢进并发队列抢时间。
+    try:
+        _tsc_warm(tok, 1, segs, {k: v for k, v in (hdr or {}).items()
+                                 if k != "Cookie"})
+    except Exception:
+        app.logger.exception("ts warm fail")
+    return Response("\n".join(out), mimetype="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "no-cache"})
+
+
+@bp.route("/hai/ts/<b>/<int:idx>", methods=["GET", "HEAD"])
+def hai_ts(b, idx):
+    """HLS 分片代理：按 index 取真地址再转发（支持 Range）。"""
+    tok = str(b or "").split(".")[0]
+    segs = _PPTS.get(tok) or []
+    if idx < 0 or idx >= len(segs):
+        return Response("no seg", status=404)
+    hit = _PP.get(tok)
+    hdr = dict((hit[2] if hit else {}) or {})
+    # 分片只认 UA，带上 Cookie 反而可能被风控
+    hdr.pop("Cookie", None)
+    url = segs[idx]
+    rng = request.headers.get("Range")
+
+    # ① 缓存命中：并发预取已经把这一片下好了
+    key = (tok, idx)
+    with _TSC_LOCK:
+        data = _TSC_DATA.get(key)
+        ev = _TSC_EVT.get(key)
+    if data is None:
+        # ② 没命中：**当前这片走优先车道**（16 块并行，直接同步拉），
+        #    顺便把后面 40 片丢进后台单连接预取。
+        #    以前是"等后台任务"，而后台一次开几十片 × 8 块，播放器等的这片
+        #    被挤到 7 秒以上 → EXO 读超时（电视上显示"连接超时 0KB/s"）。
+        _tsc_warm(tok, idx + 1, segs, hdr)
+        _tsc_fetch(tok, idx, url, hdr, 16)
+        with _TSC_LOCK:
+            data = _TSC_DATA.get(key)
+    if data is not None:
+        body, cr = _tsc_slice(data, rng)
+        out = {"Content-Type": "video/mp2t", "Accept-Ranges": "bytes"}
+        if cr:
+            out["Content-Range"] = cr
+        return Response(body, status=206 if (rng and cr) else 200, headers=out)
+
+    # ③ 并发也没拿到（上游 403/过期）：退回单条直取
+    if rng:
+        hdr["Range"] = rng
+    try:
+        with urllib.request.urlopen(
+                urllib.request.Request(url, headers=hdr), timeout=30) as f:
+            data = f.read()
+            st = f.status
+            ct = f.headers.get("Content-Type") or "video/mp2t"
+            cr = f.headers.get("Content-Range")
+    except Exception:
+        return Response("seg fail", status=502)
+    out = {"Content-Type": ct, "Accept-Ranges": "bytes"}
+    if cr:
+        out["Content-Range"] = cr
+    return Response(data, status=st if st in (200, 206) else 200, headers=out)
+
+
+@bp.route("/hai/h2ts/<b>", methods=["GET", "HEAD"])
+def hai_h2ts(b):
+    """HLS 分片串成一条连续 MPEG-TS（绕开 PG 对 .m3u8 的强制包装）。"""
+    tok = str(b or "").split(".")[0]
+    hit = _PP.get(tok)
+    if not hit or hit[1] < time.time():
+        return Response("expired", status=410)
+    m3u_url, hdr = hit[0], dict(hit[2] or {})
+
+    segs = _PPTS.get(tok) or []
+    if not segs:
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(m3u_url, headers=hdr), timeout=20) as f:
+                txt = f.read().decode("utf-8", "ignore")
+        except Exception:
+            return Response("m3u8 fetch fail", status=502)
+        segs = [ln.strip() for ln in txt.split("\n") if ln.strip().startswith("http")]
+        _PPTS[tok] = segs
+    if not segs:
+        return Response("no segs", status=404)
+
+    if request.method == "HEAD":
+        return Response(status=200, headers={"Content-Type": "video/mp2t",
+                                             "Accept-Ranges": "none"})
+
+    seg_hdr = {k: v for k, v in hdr.items() if k.lower() != "cookie"}
+
+    def gen():
+        for u in segs:
+            for attempt in (0, 1):
+                try:
+                    with urllib.request.urlopen(
+                            urllib.request.Request(u, headers=seg_hdr),
+                            timeout=30) as f:
+                        while True:
+                            chunk = f.read(262144)
+                            if not chunk:
+                                break
+                            yield chunk
+                    break
+                except Exception:
+                    if attempt:
+                        break
+
+    return Response(gen(), mimetype="video/mp2t",
+                    headers={"Cache-Control": "no-cache", "Accept-Ranges": "none"})
+
+
+@bp.route("/hai/dp/<b>", methods=["GET", "HEAD"])
+def hai_dp(b):
+    """自包含播放地址。
+
+    APK 侧拦截器认得这个前缀会把它改写成真 CDN 地址（客户端直连、满速）；
+    没改的话（比如原版包没打补丁）请求会真落在这里，这里解码后当中转，
+    行为等价于 /hai/pp/。`?hdr=1` 只吐 json（调试用）。
+    """
+    cfg = _dp_unpack(b)
+    if not cfg.get("u"):
+        return Response("bad token", status=400)
+    url, hdr = cfg["u"], cfg.get("h") or {}
+    if request.args.get("hdr"):
+        # meta.size 给 APK 侧多线程数据源切段用（它据此算 Content-Range）
+        return jsonify(url=url, header=hdr,
+                       meta={"size": int(cfg.get("size") or 0)})
+    return _stream(url, hdr)
+
+
+@bp.route("/hai/pp/<t>", methods=["GET", "HEAD"])
+def hai_pp(t):
+    """短链落地。
+
+    无 header 的（本机 9978 直链那种）：默认 302，带 ?json=1 吐纯文本。
+    有 header 的（夸克/UC 需要鉴权的 CDN 直链）：本函数亲自当代理转发，
+    绝不 302 —— 播放器补不上 Cookie。
+    """
+    g = _pp_get(t)
+    if not g:
+        return Response("expired", status=410)
+    url, hdr = g[0], g[1]
+    if request.args.get("json"):
+        # 给 spider 的「换真链」口子。带鉴权的直链把请求头一并吐出去，
+        # 格式照 app 自己的内层接口来：`<真链>@Headers={"Cookie":"..."}`
+        #（见 tmdb.js 里 9978/proxy 那段注释）。这样播放器能拿直链+头
+        # **直连 CDN**，不吃中枢中转的带宽。
+        txt = url
+        if hdr:
+            txt = url + "@Headers=" + json.dumps(hdr, ensure_ascii=False)
+        return Response(txt, mimetype="text/plain; charset=utf-8",
+                        headers={"Cache-Control": "no-store"})
+    if hdr:
+        return _stream(url, hdr)
+    return redirect(url, code=302)
+
+
+def _pan_rank(pan: str) -> int:
+    p = str(pan or "")
+    for k, v in _PAN_RANK.items():
+        if k in p:
+            return v
+    return 9
+
+
+def _eps_build(vid: str) -> dict:
+    """选集数据（含**多源聚合**）—— 详情页选集区 和 「▶ 播放」共用这一份。
+
+    聚合的意义（2026-11-01 海哥）：四个站源各自挂夸克 / UC / 百度，同一部剧
+    的集数很少一致 —— 花卷只给百度（解析不了）、木偶·UC 只到 18-19 集、
+    蜡笔·夸克给满 40 集。按「季 + 集号」把各源同集并成一组，前端只显示一条
+    完整集列表，每集背后挂 N 条线路：点第 N 集永远播第 N 集，不必来回切站源试。
+
+    返回结构：
+      sources  —— 原始分源明细（调试 / 兼容用）
+      merged   —— [{season,label,eps:[{ep,label,routes:[{site,pan,href}]}]}]
+      stats    —— {srcs,eps,routes} 给页面显示「共 N 集 · M 条线路」
+    """
+    vid = str(vid or "").strip()
+    if not vid:
+        return {"ok": 0, "error": "缺少 vid", "sources": [], "merged": [], "stats": {}}
+    d = tmdbwall.detail(vid, with_plays=False)
+    if not d:
+        return {"ok": 0, "error": "未找到影片", "sources": [], "merged": [], "stats": {}}
+    title = d.get("vod_name") or ""
+    year = d.get("vod_year") or ""
+    try:
+        from core import pan_ep
+        r = pan_ep.source_eps(title, year, budget=11.0)
+    except Exception as e:
+        return {"ok": 0, "error": "%s: %s" % (type(e).__name__, e),
+                "sources": [], "merged": [], "stats": {}}
+
+    # 给每一集拼出**可直接起播**的 haiplay 地址（2026-11-01）
+    #
+    # 链路：网盘 fid + share_fid_token → app 本地代理 127.0.0.1:9978/proxy?...
+    #   （logcat 实测就是 app 自己播单集时用的那条 URL）
+    #   → 交给 HaiDirect 直连站（assets/js/paidirect.js，二级把 id 直接当播放
+    #   地址）→ VideoActivity 起播。这样从我们自己的详情页点「第7集」就能
+    #   直接播第 7 集，不必再进站源的选集页手动翻。
+    q = urllib.parse.quote
+    cap = 400
+    total = 0
+    for s in r.get("sources") or []:
+        link = s.get("link") or ""
+        for sea in s.get("seasons") or []:
+            for ep in sea.get("eps") or []:
+                if total >= cap:
+                    ep["href"] = ""
+                    continue
+                total += 1
+                # 自定义线路（data/pan_extra.json）：href 已经自己拼好了，
+                # 不用 `playurl()`（那个地址是历史遗留、已停用）。
+                if ep.get("custom"):
+                    continue
+                u = ""
+                try:
+                    u = pan_ep.playurl(link, ep, title)
+                except Exception:
+                    u = ""
+                if not u:
+                    ep["href"] = ""
+                    continue
+                # id 用短 token，不要让 800 字符的编码 URL 走进 WebView/播放器
+                ep["href"] = ("haiplay://play?site=HaiDirect&id="
+                              + q(_ext_base() + "/hai/pp/" + _pp_make(u), safe="")
+                              + "&name=" + q("%s %s" % (title, ep.get("label") or ""), safe="")
+                              + "&pic=" + q("", safe=""))
+
+    # ---- 按 (季, 集号) 聚合各站源线路 --------------------------------------
+    groups: dict = {}
+    srcs_ok = set()
+    for s in r.get("sources") or []:
+        site, pan = s.get("site") or "", s.get("pan") or ""
+        if not (s.get("seasons") and s.get("ok")):
+            continue
+        got = False
+        for sea in s["seasons"]:
+            try:
+                sn = int(sea.get("season") or 1)
+            except (TypeError, ValueError):
+                sn = 1
+            for ep in sea.get("eps") or []:
+                if not ep.get("href"):
+                    continue
+                got = True
+                # ep=0 是「认不出集号的散文件」，同季里按 label 分桶
+                try:
+                    en = int(ep.get("ep") or 0)
+                except (TypeError, ValueError):
+                    en = 0
+                key = (sn, en, "" if en else str(ep.get("label") or ""))
+                g = groups.get(key)
+                if g is None:
+                    g = {"season": sn, "ep": en,
+                         "label": ep.get("label") or "", "routes": []}
+                    groups[key] = g
+                # name/size 是给「点集 → 线路浮层」用的：用户想看清楚这集到底
+                # 有几个网盘、文件多大，再决定用哪一路（2026-11-01）。
+                g["routes"].append({"site": site, "pan": pan,
+                                    "href": ep["href"],
+                                    # 该源原始分享链接（push:// 直入要用）。
+                                    # 前端拼 `site=push_agent&id=push://<它>`
+                                    # 就能直接开网盘文件列表，跳过站源选集页。
+                                    "push": s.get("link") or "",
+                                    "name": ep.get("name") or "",
+                                    "size": ep.get("size") or 0})
+        if got:
+            srcs_ok.add(site + "·" + pan)
+    for g in groups.values():
+        g["routes"].sort(key=lambda x: (_pan_rank(x["pan"]), x["site"]))
+
+    by_sea: dict = {}
+    for g in groups.values():
+        by_sea.setdefault(g["season"], []).append(g)
+    merged = []
+    for sn in sorted(by_sea):
+        eps = sorted(by_sea[sn], key=lambda x: (x["ep"] or 10 ** 6, x["label"]))
+        merged.append({"season": sn,
+                       "label": ("第%d季" % sn) if len(by_sea) > 1 else "全集",
+                       "eps": eps})
+
+    r["merged"] = merged
+    r["stats"] = {"srcs": len(srcs_ok),
+                  "eps": sum(len(x["eps"]) for x in merged),
+                  "routes": sum(len(e["routes"]) for x in merged for e in x["eps"])}
+    # 线路来源（"木偶·UC / 玩偶·夸克"），选集标题右边显示一行，让人一眼知道
+    # 这 N 集是从哪几个网盘扫出来的。
+    r["srclist"] = sorted(srcs_ok)
+    return r
+
+
+# 同一部片会被并发问两次：详情页一打开，选集区拉 /eps、播放按钮拉 /play。
+# 不合并的话站源要被完整抓两遍（花卷/木偶/蜡笔各一次，≈10 秒 ×2），
+# 既慢又容易被站源当爬虫。这里做 in-flight 去重：同 vid 并发只跑一次，
+# 后来的直接等第一个的结果（2026-11-01）。
+_eps_lock = threading.Lock()
+_eps_inflight: dict = {}
+
+
+def _eps_forget(vid: str) -> None:
+    """把这部剧的两级缓存都作废（磁盘 eps_cache + panwall 内存缓存）。
+
+    什么时候要作废：缓存里一个能算直链的网盘都没有 —— 最常见的原因是
+    `source_eps` 内部 `collect_full(budget=11.0)` 写死 11 秒，夸克那个站
+    11 秒内没回来就被丢掉了，只留下百度/115（我们还解析不了）。
+    这份残缺结果会卡住整整 30 分钟，用户看到的就是一直「播放无数据」。
+    """
+    try:
+        fp = os.path.join(C.DATA_DIR, "eps_cache", str(vid) + ".json")
+        if os.path.exists(fp):
+            os.remove(fp)
+    except Exception:
+        pass
+    try:
+        from core import panwall as _pw
+        with _pw._lock:
+            for k in list(_pw._cache):
+                if k.startswith("panfull:") or k.startswith("pan:"):
+                    _pw._cache.pop(k, None)
+    except Exception:
+        pass
+
+
+def _eps_payload(vid: str, force: bool = False) -> dict:
+    vid = str(vid or "").strip()
+    if not vid:
+        return {"ok": 0, "error": "缺少 vid", "sources": [], "merged": [], "stats": {}}
+    # ---- 落盘缓存（2026-11-01）------------------------------------------
+    # 首次解析一部剧要跑完三个网盘站 + 列目录，实测 20~40 秒。用户滚到选集区
+    # 时经常还在转圈，而且**服务一重启内存缓存就没了**。这里把最终结果写进
+    # data/eps_cache/<vid>.json，30 分钟内同一个 vid 直接秒开（跨重启有效）。
+    hit = None if force else _eps_disk_get(vid)
+    if hit is not None:
+        return hit
+    with _eps_lock:
+        slot = _eps_inflight.get(vid)
+        mine = slot is None
+        if mine:
+            slot = {"ev": threading.Event(), "val": None}
+            _eps_inflight[vid] = slot
+    if not mine:
+        slot["ev"].wait(40)
+        return slot["val"] or {"ok": 0, "error": "等待超时", "sources": [],
+                               "merged": [], "stats": {}}
+    try:
+        slot["val"] = _eps_build(vid)
+        _eps_disk_put(vid, slot["val"])
+        return slot["val"]
+    finally:
+        slot["ev"].set()
+        with _eps_lock:
+            _eps_inflight.pop(vid, None)
+
+
+_EPS_CDIR = os.path.join(C.DATA_DIR, "eps_cache")
+_EPS_TTL = 1800
+# 缓存结构版本（2026-11-01 加）：routes 里新增了 push 字段，旧缓存里没有，
+# 读出来前端就拼不出 push:// 直入地址 —— 而且 TTL 内不会自己更新，表现为
+# 「改了后端，页面行为却还是老的」。版本号一变，旧缓存自动作废。
+_EPS_VER = 2
+
+
+def _eps_disk_get(vid: str):
+    """读 data/eps_cache/<vid>.json；过期、损坏、版本不符都当没命中。"""
+    try:
+        p = os.path.join(_EPS_CDIR, urllib.parse.quote(vid, safe="") + ".json")
+        if not os.path.exists(p):
+            return None
+        if time.time() - os.path.getmtime(p) > _EPS_TTL:
+            return None
+        with open(p, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        if not (isinstance(d, dict) and d.get("merged")):
+            return None
+        if int(d.get("_v") or 0) != _EPS_VER:
+            return None
+        return d
+    except Exception:
+        return None
+
+
+def _eps_disk_put(vid: str, val) -> None:
+    """只有解析出集数才落盘 —— 0 集的结果不要缓存，下次还得重试。"""
+    try:
+        if not isinstance(val, dict) or not val.get("merged"):
+            return
+        if not os.path.isdir(_EPS_CDIR):
+            os.makedirs(_EPS_CDIR, exist_ok=True)
+        p = os.path.join(_EPS_CDIR, urllib.parse.quote(vid, safe="") + ".json")
+        tmp = p + ".tmp"
+        out = dict(val)
+        out["_v"] = _EPS_VER
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False)
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+
+@bp.route("/hai/panck", methods=["GET", "POST"])
+def hai_panck():
+    """网盘 CK 读写口（2026-11-01）。
+
+    GET  —— 只回摘要（每家「是否已配 / 长度 / 尾 4 位」），**绝不回显整条 CK**。
+    POST —— body 是 {"quark": "...", "uc": "...", "baidu": "..."}，空串表示删。
+
+    为什么要这个口：PG 的 CK 在 native 层加密（真机反查过，两个包的私有目录
+    都只有 WebView 那一个文件），抓不到也不该抓。要做「点完就播」不露 PG
+    界面，只能自己存 CK、自己算直链。
+
+    安全：只允许内网来源。公网出口（CF tunnel / gost）上这个路径会被挡；
+    就算漏了，GET 也只回长度和尾 4 位，拿不到可用凭据。
+    """
+    from core import panck
+    if request.method == "POST":
+        ip = request.remote_addr or ""
+        if not (ip.startswith("10.") or ip.startswith("127.")
+                or ip.startswith("192.168.") or ip == "::1"):
+            return jsonify(ok=0, error="只允许内网写入"), 403
+        d = request.get_json(silent=True) or {}
+        panck.save(d)
+    return jsonify(ok=1, ck=panck.summary())
+
+
+@bp.route("/hai/poster/eps")
+def hai_poster_eps():
+    """详情页「选集」数据口（2026-10-31 建，11-01 加多源聚合）
+
+    详情页首屏不等它：页面渲染完由 JS 后台 fetch，拿到就画出季/集按钮，
+    点某一集直接 `haiplay://play?site=HaiDirect&id=<定向直链>` —— 走 app
+    本地代理（127.0.0.1:9978）直接起播那一集，不再进站源的选集页。
+
+    为什么集数要从网盘侧拿：四个网盘站详情页只给整包分享链接，
+    一个「第N集」都没有 —— 集数只存在于分享内的文件名里（`...S01E05...`）。
+    详见 core/pan_ep.py 顶部注释。
+    """
+    return jsonify(**_eps_payload(str(request.args.get("vid") or "").strip()))
 
 
 @bp.route("/hai/poster/watch", methods=["POST", "GET"])
@@ -1021,8 +2767,14 @@ def hai_dbimg(rest):
     和 TMDB 代理共用同一个磁盘缓存目录（key 前缀 d 区分，不会撞）。
     """
     safe = "/".join(x for x in rest.split("/") if x and x not in (".", ".."))
-    if not re.match(r"^view/photo/[A-Za-z0-9_]+/[A-Za-z0-9_]+/[A-Za-z0-9_\-]+\.(jpg|jpeg|png|webp)$",
-                    safe or ""):
+    # 豆瓣的图有三类路径，都要放行（2026-11-01 加后两类）：
+    #   海报  view/photo/m_ratio_poster/public/pXXXX.jpg
+    #   剧照  view/photo/l/public/pXXXX.jpg
+    #   头像  view/personage/m/public/xxxx.jpg
+    #         view/celebrity/m/public/p1588679059.75.jpg  ← 文件名带两个点，必须放行
+    if not re.match(r"^(?:view/[A-Za-z0-9_]+/[A-Za-z0-9_]+/[A-Za-z0-9_]+/"
+                    r"[A-Za-z0-9_.\-]+\.(?:jpg|jpeg|png|webp)"
+                    r"|icon/[A-Za-z0-9_.\-]+\.(?:jpg|jpeg|png|webp))$", safe or ""):
         return Response("bad path", status=400)
 
     ext = safe.rsplit(".", 1)[-1].lower()
@@ -1087,6 +2839,26 @@ def _img_gc(limit: int = 3000) -> None:
         pass
 
 
+def _ext_base() -> str:
+    """当前请求对外的真实基地址：`http(s)://host[:port]`，无尾斜杠。
+
+    为什么不能直接用 `request.host_url`（2026-11-01 外网手机实测）：
+    请求走到源站时已经被 Cloudflare / gost 脱掉 TLS，Flask 看到的 scheme
+    永远是 http。于是接口吐出来的图片来源是 `http://…`，而外网页面是
+    https —— 混合内容直接被浏览器/WebView 拦掉，海报墙整墙灰块。同理
+    Host 也要认 X-Forwarded-Host（CF 会把源站 host 换掉）。
+
+    本机/局域网直连没有这些头，自动退回 request.scheme / request.host。
+    """
+    proto = (request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+    if proto not in ("http", "https"):
+        proto = request.scheme
+    host = (request.headers.get("X-Forwarded-Host") or "").split(",")[0].strip()
+    if not host:
+        host = request.host
+    return "%s://%s" % (proto, host)
+
+
 @bp.route("/hai/tmdb/api.php/provide/vod/", methods=["GET", "POST"])
 def hai_tmdb_vod():
     """「TMDB 海报墙」数据源（苹果CMS V10 兼容）
@@ -1112,8 +2884,9 @@ def hai_tmdb_vod():
     # 对象，之前直接就地改写，第一个访问者（比如本机 curl）把地址改写成
     # 127.0.0.1 后就钉在缓存里 30 分钟 —— 电视拿到的全是 127.0.0.1 的图，
     # 整墙海报变灰块。复制一份再改，缓存里永远是原始 TMDB 地址。
-    host = request.host_url.rstrip("/") + "/hai/img"
-    hostdb = request.host_url.rstrip("/")
+    base = _ext_base()
+    host = base + "/hai/img"
+    hostdb = base
     body["list"] = [dict(it) for it in (body.get("list") or [])]
     for it in body["list"]:
         for k in ("vod_pic", "vod_pic_slide"):
@@ -1134,10 +2907,40 @@ def hai_lib(p):
     if p.replace("\\", "/").lower() == "tokenm.json":
         return _tokenm(p)
     d = os.path.join(_pkg_dir(), "lib")
+    # 2026-11-01：tmdb.js / tmdb.json 里 HOST 是写死的内网 IP，外网手机取到
+    # 这个文件后所有数据请求都发不出去（海报墙整页空白）—— 按请求 Host 现算。
+    _n = p.replace("\\", "/")
+    if _n in ("tmdb.js", "tmdb.json"):
+        return _lib_hostfix(os.path.join(d, _n))
     # max_age：包内 lib 资源是静态的（换包才变），给 5 分钟缓存能让设备
     # 重新打开时直接命中本地缓存，少一轮往返。tokenm.json 走上面的动态分支，
     # 不受影响（它是 CK/代理的载体，必须每次现取）。
     return _safe_send(d, p, max_age=300)
+
+
+def _lib_hostfix(path: str):
+    """把 tmdb.js / tmdb.json 里写死的 HOST 换成本次请求的真实基地址。
+
+    电视端 / 局域网走 `http://10.0.0.11:8099` 没问题，但外网手机从穿透域名
+    取这个文件时，脚本里的数据源仍是内网 IP —— 一个请求都发不出去，海报墙
+    整页空白。这里按 Host 现算：内网请求给内网地址，穿透请求给穿透地址。
+
+    必须 no-store：内容随 Host 变化，一旦被 Cloudflare 边缘缓存，内网版本
+    会发给外网用户（反之亦然），等于把问题固化在 CDN 上。
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+    except OSError:
+        return Response("not found", status=404)
+    base = _ext_base()
+    src = re.sub(r"var HOST = '[^']*';", "var HOST = '%s';" % base, src, count=1)
+    src = re.sub(r'"api"\s*:\s*"[^"]*"',
+                 '"api": "%s/hai/tmdb/api.php/provide/vod/"' % base, src, count=1)
+    mt = "application/javascript" if path.endswith(".js") else "application/json"
+    return Response(src, mimetype=mt + "; charset=utf-8",
+                    headers={"Cache-Control": "no-store, no-cache, must-revalidate",
+                             "Vary": "X-Forwarded-Proto, X-Forwarded-Host, Host"})
 
 
 # ----------------------------------------------------------------------------
@@ -2575,6 +4378,20 @@ def api_preview():
 app.register_blueprint(bp)
 if C.PREFIX:
     app.register_blueprint(bp, url_prefix=C.PREFIX, name="oktv_prefixed")
+
+# ----------------------------------------------------------------------------
+# 后台预热（2026-11-03）：类目列表 + 详情元数据 + 焦点选集
+# ----------------------------------------------------------------------------
+# 只读缓存，多 worker 各跑一份也安全（重复请求会被 TMDB 自己的缓存吸收）。
+# 目的：类目来回切不再等 0.3~1.5 秒；详情页第二次打开秒开。
+try:
+    warm.set_eps_loader(_eps_payload)
+    warm.start()
+except Exception as _e:                                  # noqa: BLE001
+    try:
+        store.log_event("boot", "warm 启动失败: %s" % _e)
+    except Exception:
+        pass
 
 
 # ----------------------------------------------------------------------------

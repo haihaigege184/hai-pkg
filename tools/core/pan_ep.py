@@ -735,8 +735,57 @@ def source_eps(title: str, year: str = "", budget: float = 6.0) -> dict:
 
     # 有集数的排前面，同按集数多少
     done.sort(key=lambda x: (-(x.get("total") or 0), x.get("site") or ""))
+    # ---- 自定义网盘线路（data/pan_extra.json）--------------------------
+    # 用途：站源搜不到的片子、或手里就有某条网盘分享 —— 直接塞进选集区，
+    # 点它就会走中枢的 ep_direct（转存 → 原盘直链 → 电视直连 CDN）。
+    done.extend(extra_sources())
     return {"ok": 1 if done else 0, "title": title, "sources": done,
             "pending": pending}
+
+
+def extra_sources() -> list:
+    """`data/pan_extra.json` 里的自定义网盘线路。
+
+    格式（数组，每条一个网盘分享）：
+        [{"title": "片名", "url": "<分享链接>", "pan": "baidu",
+          "ep": 1, "label": "自定义", "site": "自定义"}]
+
+    这些 ep 带 `custom=1` 标记：**不再走 `playurl()` 拼地址**（那个地址是
+    历史遗留、已停用），href 直接给 `push_agent` 形式；真正起播时前端会
+    问中枢 `/hai/poster/play?direct=1&ep=N`，中枢在候选里找到这条分享，
+    用 `panck.ep_direct()` 算出**原盘直链**再回给电视。
+    """
+    import os as _os
+    p = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                       "data", "pan_extra.json")
+    try:
+        if not _os.path.exists(p):
+            return []
+        items = json.load(open(p, encoding="utf-8")) or []
+    except Exception:
+        return []
+    out = []
+    for it in items:
+        u = str(it.get("url") or "").strip()
+        if not u:
+            continue
+        try:
+            ep = max(1, int(it.get("ep") or 1))
+        except (TypeError, ValueError):
+            ep = 1
+        lbl = str(it.get("label") or it.get("title") or "自定义")
+        out.append({
+            "site": str(it.get("site") or "自定义"),
+            "pan": str(it.get("pan") or ""),
+            "link": u, "ok": 1, "total": 1, "custom": 1,
+            "seasons": [{"season": 1, "label": "自定义", "eps": [
+                {"ep": ep, "label": lbl, "name": lbl, "size": 0, "custom": 1,
+                 "href": ("haiplay://play?site=push_agent&id="
+                          + urllib.parse.quote("push://" + u, safe="")
+                          + "&ep=" + str(ep)
+                          + "&name=" + urllib.parse.quote(lbl, safe=""))}]}],
+        })
+    return out
 
 
 def human_size(n: int) -> str:
