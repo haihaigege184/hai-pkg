@@ -1183,14 +1183,16 @@ _JS_EPS = """
     try {
       if (ep) { localStorage.setItem('hai.ep.' + VID, String(ep)); }
     } catch (x) {}
-    // 兜底：`site=push_agent&id=push://<分享>`（会让 app 渲染成一条列表，
-    // 靠 APK 的自动确定键起播）。主路是下面问中枢要**这一集的直链**。
+    // 兜底：本地 + 服务端都算不出来时，**退聚合搜索**，绝不拼死链。
+    //
+    // 2026-11-05 修（真 bug，海哥「所有资源找不到数据」的根因）：
+    // 旧版这里用 `r.push`（分享链，不是可播直链）+ 真实集号 ep 拼
+    //   haiplay://play?site=HaiDirect&id=<分享链>&ep=N
+    // HaiDirect 蜘蛛只回单集（1 条），fongmi 用 **0 基** ep 取
+    // playUrls[N]（N>=1）→ 越界取到 null → Objects.requireNonNull →
+    // 播放器弹「找不到数据」。分享链本身也不可播。两个坑叠加，必挂。
+    // 现在失败就跳聚合搜索（SEL），至少让用户能搜到片、重选源再播。
     var fb = SEL;
-    if (r && r.push) {
-      fb = 'haiplay://play?site=push_agent&id='
-        + encodeURIComponent('push://' + r.push)
-        + '&ep=' + ep + '&name=' + encodeURIComponent(TITLE);
-    }
     var lbl = curEp.label || '';
     closeUI();
     pushed = false;          // 马上要跳走，别再去回退 history
@@ -2600,8 +2602,7 @@ def page_detail(vid: str, retry: int = 0, sm: bool = False) -> str:
     # 站源选集页）；真正下发给按钮的是下面 push 直入那条。
     _h = ("haiplay://play?site=TMDBWall&id="
           + urllib.parse.quote(str(vid), safe="")
-          + "&name=" + q + "&pic=" + urllib.parse.quote(
-              d.get("vod_pic") or "", safe=""))
+          + "&name=" + q)
     # 起播遮罩用的海报（中枢代理后的相对路径）。播放器窗口里 HaiCover 要的是
     # 绝对地址，由 haiplay.js 的 href() 拼 location.origin 后带过去。
     _picrel = _pic_raw(d.get("vod_pic_slide") or d.get("vod_pic") or "")
@@ -2613,7 +2614,9 @@ def page_detail(vid: str, retry: int = 0, sm: bool = False) -> str:
         "var _eps=null,_epsQ=[],_epsBooting=false,_pre={ep:0,h:''};"
         # ---------------- 直链缓存 ----------------
         "function readPl(ep){try{var d=JSON.parse(localStorage.getItem(CKEY)||'{}');"
-        "var v=d[ep];if(v&&v.t>Date.now())return v.h;}catch(e){}return '';}"
+        # 2026-11-05：拒收含 127.0.0.1 的历史缓存 —— 那是旧版写死的设备回环地址，
+        # HaiDp 未生效时是死链。命中就当作没缓存，强制重算（新算出来的是页面 origin）。
+        "var v=d[ep];if(v&&v.t>Date.now()&&!/127[.]0[.]0[.]1/.test(String(v.h||'')))return v.h;}catch(e){}return '';}"
         "function writePl(ep,h){try{var d=JSON.parse(localStorage.getItem(CKEY)||'{}');"
         "d[ep]={h:h,t:Date.now()+600000};localStorage.setItem(CKEY,JSON.stringify(d));}catch(e){}}"
         # ---------------- 选集数据（带缓存） ----------------

@@ -24,9 +24,14 @@
   var UC = {
     base: 'https://pc-api.uc.cn/1/clouddrive/',
     q: '?pr=UCBrowser&fr=pc',
+    // **必须是客户端 UA**（2026-11-04 修）：`file/download` 用浏览器 UA 恒 403，
+    // 跟夸克一个道理。对齐服务端 core/panck.py 的 UC_UA。
     ua: ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-         + '(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36'),
-    ref: 'https://drive.uc.cn/'
+         + '(KHTML, like Gecko) Chrome/100.0.4896.160 '
+         + 'Electron/18.3.5.12 Safari/537.36 Channel/pckk_other_ch'),
+    ref: 'https://drive.uc.cn/',
+    // UC 转存的 to_pdir_fid 必须是 "0"（写真实根 fid 报 token 校验异常）
+    rootFid: '0'
   };
   var CHROME_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       + '(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36');
@@ -195,7 +200,8 @@
   }
 
   async function qkSave(cfg, ck, sid, stoken, f) {
-    var root = await qkRoot(cfg, ck);
+    // UC 的 to_pdir_fid 固定 "0"；夸克必须用自己根目录的真实 fid（写 "0" 报异常）
+    var root = (cfg.rootFid === '0') ? '0' : await qkRoot(cfg, ck);
     var r = await req('POST', cfg.base + 'share/sharepage/save' + cfg.q,
       apiHeaders(cfg, ck),
       jbody({
@@ -224,6 +230,33 @@
     return { ok: false, error: '转存超时' };
   }
 
+  /** 探文件真实总长（字节）。
+   *
+   * 2026-11-04：UC 的 `file/download` 返回的 size 是**假的** ——
+   * 「177 4K.mp4」报 15,340,287 字节（4K 片子不可能这么小）。
+   * APK 的 HaiDp 拿这个 size 去算 Content-Range，多线程拉 15MB 就"读完"
+   * ⇒ 播放器卡在启动画面，出不来画面。
+   *
+   * 办法：`Range: bytes=0-0` 读响应头 Content-Range 的 `/total`。
+   * 必须走 `global.hai.http`（APK 的 OkHttp）而不是 XHR —— XHR 会被 CORS 挡
+   * （夸克/UC 的 CDN 根本不返回 Access-Control-Allow-Origin）。
+   */
+  async function probeLen(url, header) {
+    try {
+      var h = {};
+      for (var k in (header || {})) { h[k] = header[k]; }
+      h['Range'] = 'bytes=0-0';
+      var r = JSON.parse(global.hai.http('GET', url, JSON.stringify(h), ''));
+      var hs = r.headers || {};
+      var cr = hs['content-range'] || hs['Content-Range'] || '';
+      var m = String(cr).match(/\/(\d+)\s*$/);
+      if (m) { return parseInt(m[1], 10) || 0; }
+      return parseInt(hs['content-length'] || hs['Content-Length'] || '0', 10) || 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
   async function qkLink(cfg, ck, fid) {
     // file/download **必须**用夸克 PC 客户端 UA（否则恒报 23018），body 也是 JSON
     var r = await req('POST', cfg.base + 'file/download' + cfg.q,
@@ -238,31 +271,49 @@
     }
     var it = arr[0];
     if (!it.download_url) return { ok: false, error: '无 download_url' };
-    return { ok: true, url: it.download_url, size: it.size || 0 };
+    var url = it.download_url;
+    var hdr = { 'User-Agent': cfg.ua, 'Referer': cfg.ref, 'Cookie': ck || '' };
+    // 真实总长必须探 —— 网盘报的 size 不可信（见 probeLen 注释）。
+    var real = await probeLen(url, hdr);
+    return { ok: true, url: url, size: real || it.size || 0 };
   }
 
-  async function quarkEp(shareUrl, ep, title) {
-    var ck = global.hai.ck('quark');
-    if (!ck) return { ok: false, error: '没有夸克凭据（/sdcard/TV/.quark_user.pg）' };
-    var t = await qkToken(QK, ck, shareUrl);
+  async function quarkEp(shareUrl, ep, title, cfg, pan) {
+    // 2026-11-04：夸克 / UC 共用一套 API，但**配置必须分开** ——
+    // 原来这里写死 QK + 'quark'，于是 UC 分享被扔进夸克接口取 token，
+    // 必然失败 → 电视本地路径对 UC 永远是死的 → 只能回落服务端，
+    // 白白多花 5~10 秒（服务端还要转存+轮询）。
+    cfg = cfg || QK; pan = pan || 'quark';
+    var ck = global.hai.ck(pan);
+    if (!ck) return { ok: false, error: '没有' + pan + '凭据（/sdcard/TV/.' + pan + '_user.pg）' };
+    var t = await qkToken(cfg, ck, shareUrl);
     if (!t || !t.stoken) return { ok: false, error: '分享失效或需要提取码' };
-    var files = await qkTree(QK, ck, t.sid, t.stoken, '0');
+    var files = await qkTree(cfg, ck, t.sid, t.stoken, '0');
     if (!files.length) return { ok: false, error: '分享里没扫到视频' };
     var f = pickEp(files, ep, title);
     if (!f) return { ok: false, error: '找不到第 ' + ep + ' 集', total: files.length };
 
     // ① 免转存先试（UC 可通，夸克一般回 21001）
-    var lk = await qkLink(QK, ck, f.fid);
+    //    **但 <8MB 的一律当试看片段**：实测 UC 对未转存的分享只给 15MB 试看
+    //    （分享页报 1.35GB，直链 /total 只有 15,340,287）。
+    //    UC 转存后也一样（账号无下载权限）⇒ 直接报错，别浪费时间转存。
+    var lk = await qkLink(cfg, ck, f.fid);
+    if (lk.ok && lk.size && lk.size < 8 * 1024 * 1024) {
+      return { ok: false, error: 'UC 只提供 15MB 试看（账号无下载权限），换夸克/百度' };
+    }
     if (!lk.ok) {
-      var sv = await qkSave(QK, ck, t.sid, t.stoken, f);
+      var sv = await qkSave(cfg, ck, t.sid, t.stoken, f);
       if (!sv.ok) return { ok: false, error: sv.error };
-      lk = await qkLink(QK, ck, sv.fid);
+      lk = await qkLink(cfg, ck, sv.fid);
+      if (lk.ok && lk.size && lk.size < 8 * 1024 * 1024) {
+        return { ok: false, error: '转存后仍只给试看片段（账号无下载权限）' };
+      }
     }
     if (!lk.ok) return { ok: false, error: lk.error };
     return {
       ok: true, url: lk.url, size: lk.size || f.size,
-      name: f.name, pan: 'quark', mode: 'origin',
-      header: dlHeaders(QK, ck)
+      name: f.name, pan: pan, mode: 'origin',
+      header: dlHeaders(cfg, ck)
     };
   }
 
@@ -332,8 +383,16 @@
     var h = { 'User-Agent': BD.ua, 'Referer': o.ref,
               'X-Requested-With': 'XMLHttpRequest' };
     if (o.bdclnd) { h.Cookie = 'BDCLND=' + o.bdclnd; }
-    var r = await req('GET', 'https://pan.baidu.com/share/list' + q, h);
-    return (r.json && r.json.list) || [];
+    // 百度这个接口偶尔空回（同一条分享上一秒 5 项、下一秒 0 项），空结果重试两次
+    var last = null;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      var r = await req('GET', 'https://pan.baidu.com/share/list' + q, h);
+      last = r;
+      var lst = (r.json && r.json.list) || [];
+      if (lst.length || (r.json && Number(r.json.errno) !== 0)) { return lst; }
+      await new Promise(function (z) { setTimeout(z, 350); });
+    }
+    return (last && last.json && last.json.list) || [];
   }
 
   async function bdSignTs(ck, o) {
@@ -370,28 +429,16 @@
   }
 
   async function baiduEp(shareUrl, ep, title) {
-    var ck = global.hai.ck('baidu');
-    var o = await bdOpen(ck, shareUrl);
-    if (!o || !o.shareid || !o.uk) return { ok: false, error: '百度分享页解析失败' };
-    var pwd = (shareUrl.match(/[?&]pwd=([0-9a-zA-Z]+)/) || [])[1] || '';
-    if (pwd) await bdVerify(ck, o, pwd);
-
-    var files = await bdTree(ck, o, '/');
-    if (!files.length) return { ok: false, error: '分享里没扫到文件' };
-    var f = pickEp(files, ep, title);
-    if (!f) return { ok: false, error: '找不到第 ' + ep + ' 集', total: files.length };
-
-    var st = await bdSignTs(ck, o);
-    if (!st.sign) return { ok: false, error: '取 sign 失败' };
-    // 百度非会员只给前 ~100 秒的转码流（m3u8）
-    var m3u = 'https://pan.baidu.com/share/streaming?channel=chunlei'
-      + '&uk=' + o.uk + '&fid=' + f.fid
-      + '&sign=' + st.sign + '&timestamp=' + st.ts + '&shareid=' + o.shareid
-      + '&type=M3U8_AUTO_1080&vip=0&jsToken=undefined&isplayer=1&check_blue=1&adToken=';
+    // 2026-11-03：百度**全部交给服务端**，这里直接秒退，别再本地扫一遍。
+    //
+    // 原因（实测）：非会员的下载直链被限到 ~100KB/s、大 Range 直接 403；
+    // 真正能播的是服务端的 PCS 在线播放（`method=streaming` → m3u8）。
+    // 而本地要判断这些必须先 open_share + 扫目录（110 个文件要好几秒），
+    // 扫完还是得回服务端 —— 纯浪费。这里立刻返回 needServer，让上层直接
+    // 走 /hai/poster/play，省掉每次点击的 5~10 秒。
     return {
-      ok: true, url: m3u, size: f.size, name: f.name, pan: 'baidu',
-      mode: 'preview',
-      header: { 'User-Agent': BD.ua, 'Referer': o.ref }
+      ok: false, needServer: 1, pan: 'baidu',
+      error: '百度走服务端在线播放（HLS）'
     };
   }
 
@@ -410,8 +457,8 @@
       var ep = (opt && opt.ep) || 1;
       var title = (opt && opt.title) || '';
       try {
-        if (/pan\.quark\.cn/.test(share)) return await quarkEp(share, ep, title);
-        if (/drive\.uc\.cn|uc\.cn/.test(share)) return await quarkEp(share, ep, title); // UC 同 API
+        if (/pan\.quark\.cn/.test(share)) return await quarkEp(share, ep, title, QK, 'quark');
+        if (/drive\.uc\.cn|uc\.cn/.test(share)) return await quarkEp(share, ep, title, UC, 'uc');
         if (/pan\.baidu\.com/.test(share)) return await baiduEp(share, ep, title);
         return { ok: false, error: '不支持的网盘: ' + share.slice(0, 40) };
       } catch (e) {
@@ -423,11 +470,63 @@
     href: function (r, ep, title) {
       if (!r || !r.ok) return '';
       var tok = global.hai.dp(r.url, JSON.stringify(r.header || {}), r.size || 0);
-      var id = 'push://http://127.0.0.1/hai/dp/' + tok;
-      return 'haiplay://play?site=push_agent&id=' + encodeURIComponent(id)
-        + '&ep=' + (ep || 1) + '&name=' + encodeURIComponent(title || '');
+      // 用 **HaiDirect**（我们自己的站源）：id 就是播放地址本身，
+      // detail()/play() 原样交出去，**不启任何原生 Activity**。
+      // 之前用 PG 内建的 push_agent，它会渲染一个原生「推送」详情页
+      // （紫底那页），全播时看不出来，一按返回就露出来 —— 已废。
+      // 2026-11-05 修（海哥「所有资源找不到数据」的真因之一）：
+      // 原来写死 127.0.0.1 —— 那条只有 APK 的 HaiDp 拦截器认得。HaiDp 一旦
+      // 没挂到播放器实际取流的 OkHttpClient 上，127.0.0.1 就是死地址（电视
+      // 本地 80 口没人听）⇒ 播放器打不开 ⇒ 报「找不到数据」。
+      // 改用页面 origin（= 中枢 10.0.0.11:8099）：HaiDp 在 → 仍按路径
+      // `/hai/dp/` 拦截、电视直连 CDN 满速；HaiDp 不在 → 由中枢 `/hai/dp`
+      // 代拉兜底。两条路都活，不再把「能不能播」押在 HaiDp 必须注册上。
+      var _org = (typeof location !== 'undefined' && location.origin)
+        ? location.origin : 'http://10.0.0.11:8099';
+      var id = _org + '/hai/dp/' + tok;
+      // 注意：**不要**往这条 URL 上加 `pic=`（2026-11-03 实测）。
+      // 我们自己改的 WebDetailActivity.a() 拿到带 pic 的 haiplay:// 之后
+      // 就不再启动 VideoActivity（点播放只留网页遮罩，永远进不了播放器）。
+      // 海报由网页遮罩（_JS_CURTAIN）负责，播放器窗口那层以后另找通道。
+      // ep 必须为 0：HaiDirect 直连蜘蛛 detail() 永远只回「一条已解析好的直链」
+      // = 单集（索引 0）。fongmi 用 0 基 ep 取 playUrls[ep]，带剧集号（1/2/7…）
+      // 会越界取到 null → requireNonNull → 找不到数据。
+      return 'haiplay://play?site=HaiDirect&id=' + encodeURIComponent(id)
+        + '&ep=0' + '&name=' + encodeURIComponent(title || '');
     }
   };
 
   global.HaiPlay = HaiPlay;
+
+
+  // ---- 网盘 CK 自动上送中枢（2026-11-03）---------------------------------
+  //
+  // 事故复盘：电视上重新扫码只写 `/sdcard/TV/.<pan>_user.pg`，中枢那份
+  // `data/panck.json` 不跟着变。于是直链照样签得出来，但夸克 CDN 判
+  // `412 third-party-remote-auth`（__puus / Video-Auth 还是旧会话）⇒ 播放 3003。
+  // 这里页面加载时把端上 CK 推一次（每小时最多一次），保持两边同源。
+  (function () {
+    var pans = ['quark', 'uc', 'baidu'];
+    try {
+      if (!global.hai || !global.hai.ck) { return; }
+      var last = 0;
+      try { last = +(global.localStorage.getItem('hai.ckpush') || 0); } catch (e) {}
+      if (new Date().getTime() - last < 3600 * 1000) { return; }
+      var body = {}, n = 0;
+      for (var i = 0; i < pans.length; i++) {
+        var v = '';
+        try { v = global.hai.ck(pans[i]) || ''; } catch (e) { v = ''; }
+        if (v && v.length > 20) { body[pans[i]] = v; n++; }
+      }
+      if (!n) { return; }
+      var x = new XMLHttpRequest();
+      x.open('POST', '/hai/panck', true);
+      x.setRequestHeader('Content-Type', 'application/json');
+      x.onload = function () {
+        try { global.localStorage.setItem('hai.ckpush', String(new Date().getTime())); } catch (e) {}
+      };
+      x.send(JSON.stringify(body));
+    } catch (e) {}
+  })();
+
 })(window);
