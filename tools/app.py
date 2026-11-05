@@ -1340,12 +1340,18 @@ def hai_poster_play():
                 else:
                     path = "/hai/dp/" + _dp_pack(res["url"], hdr,
                                                 int(res.get("size") or 0))
+                # 2026-11-05 回退：走 app **内建硬编码**的 push_agent。
+                # 自定义 HaiDirect 在本机 APK 上取详情会被当 HTTP 站源（null api）
+                # → requireNonNull(HttpUrl) NPE → 「找不到数据」。push_agent 不走 HTTP、
+                # 不依赖配置解析，直接用 id 造 Vod。id 需 `push://<中枢直链>`，ep 用真实集号。
+                _ep = int(pick.get("ep") or 1)
                 href = ("haiplay://play?site=" + site_dir + "&id="
-                        + urllib.parse.quote("push://" + base + path, safe="")
-                        + "&ep=" + str(int(pick.get("ep") or 1))
+                        + urllib.parse.quote(
+                            ("push://" if site_dir == "push_agent" else "") + base + path,
+                            safe="")
+                        + "&ep=" + str(_ep)
                         + "&name=" + urllib.parse.quote(
-                            "%s %s" % (title, pick.get("label") or ""), safe="")
-                        + "&pic=" + urllib.parse.quote(_pic_u, safe=""))
+                            "%s %s" % (title, pick.get("label") or ""), safe=""))
                 data = dict(ok=1, mode="direct",
                             direct=(0 if request.args.get("relay") else 1),
                             href=href, ep=pick.get("ep") or 0,
@@ -1439,10 +1445,9 @@ def hai_poster_play():
                 # 裸拼会被 Uri 的 query 解析从 `&`/`?` 处截断。
                 href = ("haiplay://play?site=push_agent&id="
                         + urllib.parse.quote("push://" + link, safe="")
-                        + "&ep=" + str(int(pick.get("ep") or 0))
+                        + "&ep=" + str(int(r0.get("ep") or 1))
                         + "&name=" + urllib.parse.quote(
-                            "%s %s" % (title, pick.get("label") or ""), safe="")
-                        + "&pic=" + urllib.parse.quote(_pic_u, safe=""))
+                            "%s %s" % (title, pick.get("label") or ""), safe=""))
                 return jsonify(ok=1, mode="push", href=href, link=link,
                                ep=pick.get("ep") or 0,
                                label=pick.get("label") or "",
@@ -1539,7 +1544,12 @@ def hai_poster_play():
 # 现在走的是 `site=push_agent&id=push://<分享>` —— app 内置的 Push 解析器
 # 实测对 UC 分享能列出文件并起播（11MB/s），对**夸克分享直接解析不出来**：
 # 页面只剩「推送 / 播放 / 原始链接」三行，等于播不了。所以 UC 优先。
-_PAN_RANK = {"UC": 0, "夸克": 1, "百度": 2, "阿里": 3, "115": 4}
+_PAN_RANK = {"夸克": 0, "百度": 1, "阿里": 2, "115": 3, "UC": 4}
+# 2026-11-04 改判：**UC 降到倒数** —— 实测这个账号在 UC 上只有**试看权限**
+# （分享页报 1,412,118,820 = 1.35GB，UC 直链的 Content-Range /total 只有
+# 15,340,287 = 15MB，转存到自己盘也一样）⇒ 优先夸克/百度，
+# 别再让用户点 UC 然后卡在启动画面出不来。
+# （老注释说"UC 优先"是 2026-11-01 的判断，当时没验证过文件完整性。）
 
 # 直链短化表：token -> (真实 9978 直链, 过期时间)
 #
@@ -1547,8 +1557,13 @@ _PAN_RANK = {"UC": 0, "夸克": 1, "百度": 2, "阿里": 3, "115": 4}
 # 的地址编码后 800+ 字符，WebView 拦截 → Uri 解析 → 播放器任何一环都可能截断
 # 或超限，出问题时日志里也是一团乱。换成 12 位 token，真地址留在服务端。
 # 直链走哪个站点：
-#   "push_agent" —— 内建，稳，但只会把 URL 渲染成一条列表，
-#                   要靠 APK 的自动确定键点进去（中间闪一下列表）
+#   "HaiDirect"  —— **我们自己的站源**（assets/js/paidirect.js）：
+#                   detail() 把 id 原样当播放地址交出去、play() 直接返回 url，
+#                   **不启任何原生 Activity** ⇒ 全屏播放、一次返回就回详情页。
+#   "push_agent" —— PG 内建的推送站源：会把 URL 渲染成一个**原生「推送」详情页**
+#                   （紫底 + 直连/嗅探/解析 标签），播放器只是它的小窗。
+#                   全屏时看不出来，**一按返回就露出来** —— 这就是"播放流程
+#                   冒出原生页面"的根源（2026-11-04 真机截图坐实）。
 #   "TMDBWall"   —— 自建 spider，play() 能直接返回「直链+请求头」，
 #                   播放器直连 CDN（理论上满速），但 app 未必加载它
 _SITE_DIRECT = "push_agent"
@@ -1980,9 +1995,11 @@ def hai_pan_play():
     else:
         path = "/hai/dp/" + tok
     label = res.get("name") or name or "网盘"
+    # 2026-11-05 回退：push_agent（app 内建特判，不走 HTTP/配置解析，不会 NPE）。
+    # id = `push://<中枢直链>`，ep 真实集号。
     href = ("haiplay://play?site=push_agent&id="
             + urllib.parse.quote("push://" + base + path, safe="")
-            + "&ep=" + str(ep)
+            + "&ep=" + str(int(ep or 1))
             + "&name=" + urllib.parse.quote(label, safe=""))
     return jsonify(ok=1, mode="direct", href=href, pan=res["pan"],
                    play_mode=res.get("mode") or "origin",
@@ -2441,11 +2458,12 @@ def _eps_build(vid: str) -> dict:
                 if not u:
                     ep["href"] = ""
                     continue
-                # id 用短 token，不要让 800 字符的编码 URL 走进 WebView/播放器
-                ep["href"] = ("haiplay://play?site=HaiDirect&id="
-                              + q(_ext_base() + "/hai/pp/" + _pp_make(u), safe="")
-                              + "&name=" + q("%s %s" % (title, ep.get("label") or ""), safe="")
-                              + "&pic=" + q("", safe=""))
+                # 2026-11-05 统一走 push_agent（app 内建特判，不走 HTTP，不会
+                # requireNonNull NPE）。id = push://<中枢直链>，ep 真实集号。
+                ep["href"] = ("haiplay://play?site=push_agent&id="
+                              + q("push://" + _ext_base() + "/hai/pp/" + _pp_make(u), safe="")
+                              + "&ep=" + str(int(ep.get("ep") or 1))
+                              + "&name=" + q("%s %s" % (title, ep.get("label") or ""), safe=""))
 
     # ---- 按 (季, 集号) 聚合各站源线路 --------------------------------------
     groups: dict = {}

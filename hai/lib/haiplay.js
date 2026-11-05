@@ -483,16 +483,17 @@
       // 代拉兜底。两条路都活，不再把「能不能播」押在 HaiDp 必须注册上。
       var _org = (typeof location !== 'undefined' && location.origin)
         ? location.origin : 'http://10.0.0.11:8099';
-      var id = _org + '/hai/dp/' + tok;
-      // 注意：**不要**往这条 URL 上加 `pic=`（2026-11-03 实测）。
-      // 我们自己改的 WebDetailActivity.a() 拿到带 pic 的 haiplay:// 之后
-      // 就不再启动 VideoActivity（点播放只留网页遮罩，永远进不了播放器）。
-      // 海报由网页遮罩（_JS_CURTAIN）负责，播放器窗口那层以后另找通道。
-      // ep 必须为 0：HaiDirect 直连蜘蛛 detail() 永远只回「一条已解析好的直链」
-      // = 单集（索引 0）。fongmi 用 0 基 ep 取 playUrls[ep]，带剧集号（1/2/7…）
-      // 会越界取到 null → requireNonNull → 找不到数据。
-      return 'haiplay://play?site=HaiDirect&id=' + encodeURIComponent(id)
-        + '&ep=0' + '&name=' + encodeURIComponent(title || '');
+      // 2026-11-05 回退定案：改回 PG **内建**的 `push_agent`。
+      // 自定义 `site=HaiDirect` 这条路在本机 APK 上取详情时会被当成「HTTP 站源」
+      // （getSite 拿不到就返回默认空 Site，type=0），拿 null api 建 OkHttp 请求
+      // → requireNonNull(HttpUrl) → NPE → 播放器弹「找不到数据」。
+      // push_agent 是 app 里**硬编码特判**的：不走 HTTP、不依赖配置解析，
+      // 直接用传入的 id 造一个 Vod 播放 —— 这是当初真机 11.6MB/s 能播的那条路。
+      var id = 'push://' + _org + '/hai/dp/' + tok;
+      // ep 对 push_agent 用真实集号（它内部按集索引）；`pic=` 依旧不加
+      // （带 pic 的 haiplay:// 会让 WebDetailActivity.a() 不进 VideoActivity）。
+      return 'haiplay://play?site=push_agent&id=' + encodeURIComponent(id)
+        + '&ep=' + (ep || 1) + '&name=' + encodeURIComponent(title || '');
     }
   };
 
