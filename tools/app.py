@@ -2400,6 +2400,58 @@ def _pan_rank(pan: str) -> int:
     return 9
 
 
+# ---- P0 · 原生内核灰度开关（2026-11-08）----------------------------------
+# legacy（默认）：现网真机验证 OK 的 push_agent + /hai/dp + HaiDp 直连 CDN。
+# native：整条分享链接交给 PG 原生 *Share 站源 → pg.jar 负责列文件树、
+#   选集、取流、解码。开关在 data/poster.cfg.json 的 play_mode，
+#   维护页 /live「海报墙配置」卡可改，改完即时生效、无需重启。
+# 【红线】不动 baseline/jsm.json；不注册新站源。电视 DB Config 激活行
+#   (id=49) 已核实含 QuarkShare/UCShare、不含 BaiduShare ⇒ 百度在 native
+#   模式下 nhref 为空，前端自动回落 legacy（顺带保住 origin=dlna 满速直链）。
+def _play_mode() -> str:
+    try:
+        from core import posterweb as _pw
+        v = str((_pw.load_cfg() or {}).get("play_mode") or "legacy").lower()
+        return "native" if v == "native" else "legacy"
+    except Exception:
+        return "legacy"
+
+
+def _native_site(pan: str) -> str:
+    p = str(pan or "")
+    low = p.lower()
+    if "quark" in low or "夸克" in p:
+        return "QuarkShare"
+    if "uc" in low:
+        return "UCShare"
+    return ""
+
+
+def _native_href(nsite: str, nid: str, title: str) -> str:
+    """原生直达：site=<*Share>&id=<分享链接本体> → VideoActivity → pg.jar。
+
+    注意 WebDetailActivity.a() 只解析 site/id/name/pic，ep 会被丢弃 ——
+    native 模式本来就是进原生选集页自己点集，不需要 ep。
+    """
+    if not (nsite and nid):
+        return ""
+    return ("haiplay://play?site=" + urllib.parse.quote(nsite, safe="")
+            + "&id=" + urllib.parse.quote(str(nid), safe="")
+            + "&name=" + urllib.parse.quote(str(title or ""), safe=""))
+
+
+def _special_label(name: str) -> str:
+    """剧场版/特典的中文标签：优先文件名里的中文片段，其次「剧场版 N」。"""
+    s = str(name or "")
+    zh = re.search(r"[\u4e00-\u9fff]{2,}", s)
+    if zh:
+        return "剧场版 · " + zh.group(0)
+    m = re.search(r"movie\s*(\d+)", s, re.I)
+    if m:
+        return "剧场版 " + m.group(1)
+    return "剧场版"
+
+
 def _eps_build(vid: str) -> dict:
     """选集数据（含**多源聚合**）—— 详情页选集区 和 「▶ 播放」共用这一份。
 
@@ -2464,6 +2516,17 @@ def _eps_build(vid: str) -> dict:
                               + q("push://" + _ext_base() + "/hai/pp/" + _pp_make(u), safe="")
                               + "&ep=" + str(int(ep.get("ep") or 1))
                               + "&name=" + q("%s %s" % (title, ep.get("label") or ""), safe=""))
+        # 2026-11-05：剧场版/特典也算 href，但 ep=0 单条（不当正片源）
+        for sp in s.get("specials") or []:
+            uu = ""
+            try:
+                uu = pan_ep.playurl(link, sp, title)
+            except Exception:
+                uu = ""
+            sp["href"] = (("haiplay://play?site=push_agent&id="
+                           + q("push://" + _ext_base() + "/hai/pp/" + _pp_make(uu), safe="")
+                           + "&ep=0&name=" + q(sp.get("name") or "剧场版", safe=""))
+                          if uu else "")
 
     # ---- 按 (季, 集号) 聚合各站源线路 --------------------------------------
     groups: dict = {}
@@ -2495,6 +2558,7 @@ def _eps_build(vid: str) -> dict:
                     groups[key] = g
                 # name/size 是给「点集 → 线路浮层」用的：用户想看清楚这集到底
                 # 有几个网盘、文件多大，再决定用哪一路（2026-11-01）。
+                _ns = _native_site(pan)
                 g["routes"].append({"site": site, "pan": pan,
                                     "href": ep["href"],
                                     # 该源原始分享链接（push:// 直入要用）。
@@ -2502,7 +2566,10 @@ def _eps_build(vid: str) -> dict:
                                     # 就能直接开网盘文件列表，跳过站源选集页。
                                     "push": s.get("link") or "",
                                     "name": ep.get("name") or "",
-                                    "size": ep.get("size") or 0})
+                                    "size": ep.get("size") or 0,
+                                    # P0 native：整条分享链接交回 pg.jar 原生解析
+                                    "nsite": _ns, "nid": s.get("link") or "",
+                                    "nhref": _native_href(_ns, s.get("link") or "", title)})
         if got:
             srcs_ok.add(site + "·" + pan)
     for g in groups.values():
@@ -2518,6 +2585,37 @@ def _eps_build(vid: str) -> dict:
                        "label": ("第%d季" % sn) if len(by_sea) > 1 else "全集",
                        "eps": eps})
 
+    # 剧场版/特典 → 单独条目，排在正片之前（海哥：用中文名独立于普通剧集之前）。
+    # 同一部剧场版的 1080P/4K 等不同版本按「标签」合并成一条、多线路。
+    spec_map: dict = {}
+    spec_order: list = []
+    for s in r.get("sources") or []:
+        site, pan = s.get("site") or "", s.get("pan") or ""
+        for sp in s.get("specials") or []:
+            if not sp.get("href"):
+                continue
+            nm = sp.get("name") or ""
+            lbl = _special_label(nm)
+            g = spec_map.get(lbl)
+            if g is None:
+                g = {"ep": 0, "label": lbl, "routes": []}
+                spec_map[lbl] = g
+                spec_order.append(g)
+            _ns = _native_site(pan)
+            g["routes"].append({"site": site, "pan": pan, "href": sp["href"],
+                                "push": s.get("link") or "", "name": nm,
+                                "size": sp.get("size") or 0,
+                                "nsite": _ns, "nid": s.get("link") or "",
+                                "nhref": _native_href(_ns, s.get("link") or "", title)})
+    spec_eps = spec_order
+    for g in spec_eps:
+        g["routes"].sort(key=lambda x: (_pan_rank(x["pan"]), x["site"]))
+    if spec_eps:
+        if merged:
+            merged[0]["eps"] = spec_eps + merged[0]["eps"]
+        else:
+            merged = [{"season": 0, "label": "正片", "eps": spec_eps}]
+
     r["merged"] = merged
     r["stats"] = {"srcs": len(srcs_ok),
                   "eps": sum(len(x["eps"]) for x in merged),
@@ -2525,6 +2623,7 @@ def _eps_build(vid: str) -> dict:
     # 线路来源（"木偶·UC / 玩偶·夸克"），选集标题右边显示一行，让人一眼知道
     # 这 N 集是从哪几个网盘扫出来的。
     r["srclist"] = sorted(srcs_ok)
+    r["play_mode"] = _play_mode()
     return r
 
 
@@ -2570,6 +2669,8 @@ def _eps_payload(vid: str, force: bool = False) -> dict:
     # data/eps_cache/<vid>.json，30 分钟内同一个 vid 直接秒开（跨重启有效）。
     hit = None if force else _eps_disk_get(vid)
     if hit is not None:
+        # 开关是实时的，不能让 30 分钟磁盘缓存把旧模式带回来
+        hit["play_mode"] = _play_mode()
         return hit
     with _eps_lock:
         slot = _eps_inflight.get(vid)
@@ -2583,6 +2684,7 @@ def _eps_payload(vid: str, force: bool = False) -> dict:
                                "merged": [], "stats": {}}
     try:
         slot["val"] = _eps_build(vid)
+        slot["val"]["play_mode"] = _play_mode()
         _eps_disk_put(vid, slot["val"])
         return slot["val"]
     finally:
@@ -2596,7 +2698,7 @@ _EPS_TTL = 1800
 # 缓存结构版本（2026-11-01 加）：routes 里新增了 push 字段，旧缓存里没有，
 # 读出来前端就拼不出 push:// 直入地址 —— 而且 TTL 内不会自己更新，表现为
 # 「改了后端，页面行为却还是老的」。版本号一变，旧缓存自动作废。
-_EPS_VER = 2
+_EPS_VER = 3
 
 
 def _eps_disk_get(vid: str):

@@ -32,7 +32,9 @@ from . import tmdbwall as T
 # ---------------------------------------------------------------------------
 _CFG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                          "data", "poster.cfg.json")
-_CFG_DEFAULT = {"rotate": True, "interval": 3, "effect": "random", "imgs": 6}
+_CFG_DEFAULT = {"rotate": True, "interval": 3, "effect": "random", "imgs": 6,
+                # P0：播放链灰度开关，legacy=现网验证链路 / native=pg.jar 原生内核
+                "play_mode": "legacy"}
 _FX = ("fade", "zoom", "slide", "ken")
 _cfg_lock = threading.Lock()
 
@@ -52,6 +54,8 @@ def load_cfg() -> dict:
     if out["effect"] not in _FX + ("random",):
         out["effect"] = "random"
     out["rotate"] = bool(out["rotate"])
+    out["play_mode"] = ("native" if str(out.get("play_mode") or "legacy").lower()
+                        == "native" else "legacy")
     return out
 
 
@@ -65,6 +69,8 @@ def save_cfg(d: dict) -> dict:
     if cur["effect"] not in _FX + ("random",):
         cur["effect"] = "random"
     cur["rotate"] = bool(cur["rotate"])
+    cur["play_mode"] = ("native" if str(cur.get("play_mode") or "legacy").lower()
+                        == "native" else "legacy")
     with _cfg_lock:
         try:
             os.makedirs(os.path.dirname(_CFG_PATH), exist_ok=True)
@@ -241,10 +247,11 @@ body.below .hero .info{opacity:0;pointer-events:none}
 
 /* 海报墙 */
 .wall{display:flex;flex-wrap:wrap;margin:0 -9px}
-.card{width:16.66%;padding:0 9px;margin-bottom:26px}
-@media (max-width:1180px){.card{width:20%}}
-@media (max-width:900px){.card{width:25%}}
-@media (max-width:640px){.card{width:33.33%}}
+/* 2026-11-03 海哥：每行 4 个（电视 1280 宽下原先是 6 个，海报太小） */
+.card{width:25%;padding:0 9px;margin-bottom:26px}
+@media (max-width:1180px){.card{width:25%}}
+@media (max-width:900px){.card{width:33.33%}}
+@media (max-width:640px){.card{width:50%}}
 .card .pic{position:relative;border-radius:12px;overflow:hidden;background:#111722;
  border:1px solid rgba(255,255,255,.07)}
 .card .pic img{display:block;width:100%;height:auto;min-height:120px}
@@ -381,6 +388,18 @@ body.below .hero .info{opacity:0;pointer-events:none}
 #curtain .ctname{font-size:40px;font-weight:700;color:#fff;letter-spacing:2px;
  text-shadow:0 4px 24px rgba(0,0,0,.8)}
 #curtain .ctsub{margin-top:12px;font-size:16px;color:#9ff5cd;letter-spacing:3px}
+/* 状态行（2026-11-03 海哥要「加载状态/片源信息/缓冲」）：一行一行的短句，
+   解析阶段由 /hai/poster/progress 轮询刷新，字号比片名小、比副标题亮。 */
+#curtain .ctstat{margin-top:14px;font-size:19px;color:#cfe9ff;letter-spacing:1px;
+ line-height:1.5;text-shadow:0 2px 12px rgba(0,0,0,.85);min-height:26px}
+#curtain .ctstat b{color:#00e08a;font-weight:600}
+#curtain .ctstat .slow{color:#ffcc55}
+#curtain .ctstat .dim{color:#8fa8bd}
+#curtain .cbar{margin-top:16px;width:320px;height:4px;border-radius:2px;
+ background:rgba(255,255,255,.14);overflow:hidden}
+#curtain .cbar i{display:block;height:100%;width:30%;border-radius:2px;
+ background:linear-gradient(90deg,#00e08a,#39d0ff);animation:cbar 1.1s ease-in-out infinite}
+@keyframes cbar{0%{margin-left:-30%}100%{margin-left:100%}}
 #curtain .cspin{position:absolute;right:78px;bottom:11vh;width:34px;height:34px;
  border-radius:50%;border:2px solid rgba(0,224,138,.20);border-top-color:#00e08a;
  animation:cspin .85s linear infinite}
@@ -468,9 +487,9 @@ body.backfade #epSec,body.backfade #castSec,body.backfade #recSec{
 .cip{color:#d8f7ea}
 .ci a.sel,.cip.sel{color:#04120c;background:#00e08a;padding:1px 6px;border-radius:6px}
 /* 影人作品墙：一行 6 张，比首页小一号，能一屏看到更多作品 */
-#workSec .wall .card{width:16.66%}
-@media(max-width:1180px){#workSec .wall .card{width:20%}}
-@media(max-width:900px){#workSec .wall .card{width:25%}}
+#workSec .wall .card{width:25%}
+@media(max-width:1180px){#workSec .wall .card{width:25%}}
+@media(max-width:900px){#workSec .wall .card{width:33.33%}}
 
 /* 演职员表（圆形头像 + 角色） */
 .cast{display:flex;flex-wrap:wrap;margin:0 -7px 8px}
@@ -571,6 +590,7 @@ _JS_NAV = """
   var ORDER = ['hero', 'ep', 'cast', 'rec'];
   var state = 'hero';
   var grid = [], row = 0, col = 0;
+  var epRow = 0, epCol = 0;   // 选集区最后停留位置（从演职员移回来时回位用）
   var recRowsShown = 1;          // 推荐区当前展开的行数
   var recFull = [];              // 推荐区**完整**的行 × 列（隐藏行也在里面）
   var tcTimer = null;
@@ -682,6 +702,9 @@ _JS_NAV = """
 
   function enter(st) {
     if (!avail(st)) { st = step(st, st === 'hero' ? 1 : -1); }
+    // 2026-11-05：离开选集区前记下当前光标位置。从演职员/推荐移回选集时
+    // 回到原来那一集，不再跳到第一集（海哥实测反馈）。
+    if (state === 'ep') { epRow = row; epCol = col; }
     state = st;
     if (st === 'hero') {
       grid = [btns]; row = 0; col = 0;
@@ -689,7 +712,10 @@ _JS_NAV = """
       document.body ? document.body.classList.remove('below') : 0;
       smoothTo(0);
     } else if (st === 'ep') {
-      grid = makeGrid(epEls); row = 0; col = 0;
+      grid = makeGrid(epEls);
+      // 回位：恢复上次选集光标（clamp 到当前 grid 范围，避免越界）
+      row = Math.min(Math.max(0, epRow), Math.max(0, grid.length - 1));
+      col = Math.min(Math.max(0, epCol), Math.max(0, (grid[row] || []).length - 1));
       titleCard('cast');
       document.body ? document.body.classList.add('below') : 0;
       smoothTo(secTop('epSec'));
@@ -1166,23 +1192,31 @@ _JS_EPS = """
   function playRoute(i) {
     if (!curEp) { return; }
     var r = (curEp.routes && curEp.routes[i]) || (curEp.routes && curEp.routes[0]);
+    window.__haiRoute = r || null;   // P0 native：把用户选中的线路带下去
     var ep = curEp.ep || 0;
     try {
       if (ep) { localStorage.setItem('hai.ep.' + VID, String(ep)); }
     } catch (x) {}
-    // 兜底：`site=push_agent&id=push://<分享>`（会让 app 渲染成一条列表，
-    // 靠 APK 的自动确定键起播）。主路是下面问中枢要**这一集的直链**。
+    // 兜底：本地 + 服务端都算不出来时，**退聚合搜索**，绝不拼死链。
+    //
+    // 2026-11-05 修（真 bug，海哥「所有资源找不到数据」的根因）：
+    // 旧版这里用 `r.push`（分享链，不是可播直链）+ 真实集号 ep 拼
+    //   haiplay://play?site=HaiDirect&id=<分享链>&ep=N
+    // HaiDirect 蜘蛛只回单集（1 条），fongmi 用 **0 基** ep 取
+    // playUrls[N]（N>=1）→ 越界取到 null → Objects.requireNonNull →
+    // 播放器弹「找不到数据」。分享链本身也不可播。两个坑叠加，必挂。
+    // 现在失败就跳聚合搜索（SEL），至少让用户能搜到片、重选源再播。
     var fb = SEL;
-    if (r && r.push) {
-      fb = 'haiplay://play?site=push_agent&id='
-        + encodeURIComponent('push://' + r.push)
-        + '&ep=' + ep + '&name=' + encodeURIComponent(TITLE);
-    }
     var lbl = curEp.label || '';
     closeUI();
     pushed = false;          // 马上要跳走，别再去回退 history
     if (window.__haiCurtain) { window.__haiCurtain(TITLE, lbl); }
-    function jump(u) { setTimeout(function () { window.location.href = u; }, 300); }
+    // 遮罩上显示「正在解析第 N 集（夸克）/ 已就绪」—— 服务端每步都会写进度
+    var _watch = window.__haiWatch ? window.__haiWatch(VID, ep || 0) : null;
+    function jump(u) {
+      if (_watch) { _watch.stop(); }
+      setTimeout(function () { window.location.href = u; }, 300);
+    }
     // 点第 N 集 = 服务端现算第 N 集的夸克直链（扫目录→转存→取链，3~4 秒，
     // 遮罩挡着不难受）。算不出来再退回 push 兜底。
     // 本地优先（2026-11-02）：电视自己算这一集直链，不碰服务器；
@@ -1191,7 +1225,8 @@ _JS_EPS = """
     function askServer() {
       var x2 = new XMLHttpRequest();
       x2.open('GET', '/hai/poster/play?vid=' + encodeURIComponent(VID)
-        + '&direct=1&ep=' + encodeURIComponent(ep), true);
+        + '&direct=1&ep=' + encodeURIComponent(ep)
+        + (r && r.push ? '&link=' + encodeURIComponent(r.push) : ''), true);
       x2.onload = function () {
         var d = null;
         try { d = JSON.parse(x2.responseText); } catch (e) {}
@@ -1206,7 +1241,8 @@ _JS_EPS = """
     }
     var x = new XMLHttpRequest();
     x.open('GET', '/hai/poster/play?vid=' + encodeURIComponent(VID)
-      + '&direct=1&ep=' + encodeURIComponent(ep), true);
+      + '&direct=1&ep=' + encodeURIComponent(ep)
+      + (r && r.push ? '&link=' + encodeURIComponent(r.push) : ''), true);
     x.onload = function () {
       var d = null;
       try { d = JSON.parse(x.responseText); } catch (e) {}
@@ -1297,7 +1333,8 @@ _JS_CURTAIN = """
   var cov = document.createElement('div');
   cov.id = 'curtain';
   cov.innerHTML = '<img class="cbg" alt=""><div class="cshade"></div>'
-    + '<div class="ctbox"><div class="ctname"></div><div class="ctsub"></div></div>'
+    + '<div class="ctbox"><div class="ctname"></div><div class="ctsub"></div>'
+    + '<div class="ctstat"></div><div class="cbar"><i></i></div></div>'
     + '<div class="cspin"></div>';
   document.body.appendChild(cov);
   var im = cov.querySelector('.cbg');
@@ -1305,7 +1342,16 @@ _JS_CURTAIN = """
   window.__haiCurtain = function (name, sub) {
     cov.querySelector('.ctname').textContent = name || '';
     cov.querySelector('.ctsub').textContent = sub || '';
+    cov.querySelector('.ctstat').textContent = '';
     cov.className = 'on';
+  };
+  // 状态行：解析阶段由调用方轮询 /hai/poster/progress 后写进来。
+  // html 只由本文件拼（不接收远端字符串），不会 XSS。
+  window.__haiCurtainStatus = function (html) {
+    var el = cov.querySelector('.ctstat');
+    if (el) { el.innerHTML = html || ''; }
+    var bar = cov.querySelector('.cbar');
+    if (bar) { bar.style.display = html ? 'block' : 'none'; }
   };
   window.__haiCurtainHide = function () { cov.className = ''; };
   document.addEventListener('visibilitychange', function () {
@@ -1318,6 +1364,42 @@ _JS_CURTAIN = """
   }, false);
   window.addEventListener('pageshow', function () { window.__haiCurtainHide(); }, false);
   setTimeout(function () { window.__haiCurtainHide(); }, 9000);
+
+  // ---- 解析状态轮询（2026-11-03）----------------------------------------
+  // 点「▶ 播放」之后服务端要 3~15 秒（汇总站源 → 转存 → 取链 → 量速度），
+  // 这段时间遮罩只写片名，看着像卡死。这里每 400ms 拉一次 /hai/poster/progress
+  // 把「正在解析第 N 集（夸克）」「已就绪 · 夸克 · 5.5 GB」写进状态行。
+  function _esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  window.__haiWatch = function (vid, ep) {
+    var stop = false, n = 0, t0 = new Date().getTime();
+    function paint(d) {
+      if (!window.__haiCurtainStatus) { return; }
+      var txt = _esc(d.text || '');
+      if (d.stage === 'ready') { txt = '<b>' + txt + '</b>'; }
+      else if (d.stage === 'slow') { txt = '<span class="slow">' + txt + '</span>'; }
+      var sec = Math.round((new Date().getTime() - t0) / 1000);
+      window.__haiCurtainStatus(txt + ' <span class="dim">' + sec + 's</span>');
+    }
+    function tick() {
+      if (stop || n++ > 120) { return; }
+      var x = new XMLHttpRequest();
+      x.open('GET', '/hai/poster/progress?vid=' + encodeURIComponent(vid)
+        + '&ep=' + encodeURIComponent(ep || 0), true);
+      x.onload = function () {
+        var d = null;
+        try { d = JSON.parse(x.responseText); } catch (e) {}
+        if (d && d.text) { paint(d); }
+        tick();
+      };
+      x.onerror = function () { setTimeout(tick, 900); };
+      x.send();
+    }
+    setTimeout(tick, 300);
+    return { stop: function () { stop = true; } };
+  };
 })();
 """
 
@@ -1621,21 +1703,119 @@ _JS_WALL = """
     if (r.top < 8) { window.scrollBy(0, r.top - 40); }
     else if (r.bottom > h - 8) { window.scrollBy(0, r.bottom - h + 40); }
   }
+  // ---- 焦点预热（2026-11-03）------------------------------------------
+  // 光标停在哪张卡上超过 0.7 秒，就把它的选集聚合排进后台队列（串行、最多
+  // 排 6 个）。这样点进去选集区往往已经有数据，不用等 20~40 秒。
+  // 只排「用户下一眼可能点开的那一部」，绝不批量预扫（见 core/warm.py）。
+  var warmTimer = null, warmDone = {};
+  function warmFocus(el) {
+    clearTimeout(warmTimer);
+    if (!el) { return; }
+    var h = el.getAttribute('href') || '';
+    var m = h.indexOf('/hai/poster/d/') === 0 ? [h, h.slice(14)] : null;
+    if (!m || warmDone[m[1]]) { return; }
+    warmTimer = setTimeout(function () {
+      warmDone[m[1]] = 1;
+      var nm = '';
+      try {
+        var h3 = el.querySelector('h3');
+        nm = h3 ? h3.textContent : '';
+      } catch (e) {}
+      var x = new XMLHttpRequest();
+      x.open('GET', '/hai/poster/warm?vid=' + encodeURIComponent(m[1])
+        + '&name=' + encodeURIComponent(nm || ''), true);
+      x.send();
+    }, 700);
+  }
+
   function go(dr, dc) {
     if (!grid.length) { return; }
+    // 2026-11-03：翻页改成**后台预取**，不阻塞按键。
+    // 之前那版把方向键卡住了：XHR 没回来就一直 return，方向键像死了一样。
+    // 现在的语义：焦点进到最后 3 行就去后台拉下一批；拉回来 grid 自然变长，
+    // 用户继续按下就能进新的一行；拉不到也不会影响任何按键。
     var nr = Math.min(Math.max(0, row + dr), grid.length - 1);
     var c = (dr === 0) ? col + dc : Math.min(col, grid[nr].length - 1);
     c = Math.min(Math.max(0, c), grid[nr].length - 1);
     row = nr; col = c;
     hi(); ensure(grid[row][col]);
-    // 焦点落到类目上就自动切（海哥：点确定才显示很多余）
-    if (isTab(grid[row][col])) { autoConfirm(); } else { clearTimeout(acTimer); }
+    warmFocus(grid[row][col]);
+    // 焦点落到类目上就把这一类的内容换进来（2026-11-02 海哥第二次纠正）：
+    // **不要「自动点确定」** —— 整页重载会让焦点回到「我的追剧」、还往历史里
+    // 堆一条记录（返回键于是变成网页式无限回退）。改成原地换内容：请求一次
+    // 同一套服务端渲染的 HTML，只换 hero / 类目条 / 海报区，URL 用
+    // replaceState 替换，焦点留在类目条上 —— 手感就是「翻页」。
+    if (isTab(grid[row][col])) { queueSwitch(grid[row][col]); } else { clearTimeout(tabTimer); }
+    // 快到底了 → 后台补下一页（不阻塞按键；提前 3 行，贴底时已经有货）
+    if (row >= grid.length - 3 && !wallMore.done) { loadMore(null); }
   }
+  // ---- 无限翻页：滚到最后一行再取下一批（2026-11-03）-------------------
+  var wallMore = { busy: false, done: false, page: 1 };
+  (function () {
+    var m = location.search.match(/[?&]pg=([0-9]+)/);
+    wallMore.page = m ? +m[1] : 1;
+  })();
+
+  function moreUrl(n) {
+    var q = location.search.replace(/^[?]/, "");
+    var parts = q ? q.split("&") : [], out = [], has = false;
+    for (var i = 0; i < parts.length; i++) {
+      if (!parts[i]) { continue; }
+      if (/^pg=/.test(parts[i])) { out.push("pg=" + n); has = true; }
+      else { out.push(parts[i]); }
+    }
+    if (!has) { out.push("pg=" + n); }
+    return location.pathname + (out.length ? "?" + out.join("&") : "");
+  }
+
+  function loadMore(cb) {
+    if (wallMore.busy || wallMore.done) { if (cb) { cb(false); } return; }
+    wallMore.busy = true;
+    var x = new XMLHttpRequest();
+    x.open("GET", moreUrl(wallMore.page + 1), true);
+    x.onload = function () {
+      wallMore.busy = false;
+      if (x.status !== 200 || !x.responseText) { wallMore.done = true; if (cb) { cb(false); } return; }
+      var doc = null;
+      try { doc = new DOMParser().parseFromString(x.responseText, "text/html"); } catch (e) {}
+      var nb = doc && doc.getElementById("wallbox");
+      var box = document.getElementById("wallbox");
+      var added = 0;
+      if (nb && box) {
+        var kids = nb.querySelectorAll(".card");
+        for (var i = 0; i < kids.length; i++) {
+          box.appendChild(document.importNode(kids[i], true));
+          added++;
+        }
+      }
+      if (!added) { wallMore.done = true; }
+      else {
+        wallMore.page++;
+        // 关键：grid 由 tabs+cards 构建，而 cards 是页面加载时抓的静态数组。
+        // 只 append DOM 不刷新 cards ⇒ grid 不变长 ⇒ 焦点永远停在最后一张老卡片
+        // 上（海哥 2026-11-03 实测：只能移到第 19 个）。这里重新抓一次。
+        cards = [].slice.call(document.querySelectorAll('.wall a.card'));
+        build(); hi();
+      }
+      if (cb) { cb(added > 0); }
+    };
+    x.onerror = function () { wallMore.busy = false; wallMore.done = true; if (cb) { cb(false); } };
+    x.ontimeout = x.onerror;
+    try { x.timeout = 9000; } catch (e) {}
+    x.send();
+  }
+
   function openItem() {
     var el = grid[row] && grid[row][col];
     if (!el) { return; }
     var href = el.getAttribute('href');
-    if (el.getAttribute('data-filter') === '1') { openPanel(); return; }
+    if (el.getAttribute('data-act') === 'home') { goHome(); return; }
+    if (isTab(el)) {
+      // 当前类目上按 OK = 呼筛选（老行为）；其它类目 = 立刻切过去，不等防抖
+      if (el.getAttribute('data-filter') === '1') { openPanel(); return; }
+      if (href) { switchTab(href, el); }
+      return;
+    }
     if (href) { savePos(); location.href = href; }
   }
 
@@ -1677,20 +1857,41 @@ _JS_WALL = """
     var el = frows[fr] && frows[fr][fc];
     if (!el) { return; }
     var href = el.getAttribute('href');
-    if (href && href !== '#') { location.href = href; }
+    if (!href || href === '#') { closePanel(); return; }
+    // replace 而不是 href：筛条件不往历史里堆（返回键要像 app，不是浏览器）
+    savePos();
+    closePanel(true);
+    location.replace(href);
   }
+  // 筛选面板也垫一条历史：按返回先关面板，而不是直接退出 app。
+  // （Activity 的 onKeyDown 会先吃掉返回键 → canGoBack 就 goBack，所以只有
+  //   垫历史才能让「返回」落在浮层上。）
+  var fpPushed = false;
   function openPanel() {
     if (!panel) { return; }
     panel.classList.add('show');
     if (!frows.length) { initPanel(); }
     fr = 0; fc = fsel[0] || 0;
     fHi();
+    if (!fpPushed) {
+      fpPushed = true;
+      try { history.pushState({ fp: 1 }, '', location.href); } catch (e) { fpPushed = false; }
+    }
   }
-  function closePanel() {
+  function closePanel(noback) {
     if (!panel) { return; }
     panel.classList.remove('show');
     hi();
+    if (fpPushed && !noback) {
+      fpPushed = false;
+      try { history.back(); } catch (e) {}
+    } else {
+      fpPushed = false;
+    }
   }
+  window.addEventListener('popstate', function () {
+    if (fpPushed) { fpPushed = false; closePanel(true); }
+  }, false);
 
   // ---- 焦点/滚动记忆（从详情页返回要回到原位）----
   // 海哥 2026-11-02：从详情页返回海报墙，焦点总是跳回第一格，得重新找。
@@ -1714,42 +1915,178 @@ _JS_WALL = """
         for (var i = 0; i < grid.length; i++) {
           for (var j = 0; j < grid[i].length; j++) {
             if (grid[i][j].getAttribute('href') === d.m) {
-              row = i; col = j; hi(); ensure(grid[i][j]); return;
+              row = i; col = j; hi(); ensure(grid[i][j]); return true;
             }
           }
         }
       }
     } catch (e) {}
+    return false;
   }
 
-  // ---- 类目「聚焦即确认」（不用再按 OK）----
-  var acTimer = null, upCount = 0, upTimer = null;
-  function isTab(el) { return el && tabs.indexOf(el) >= 0; }
-  function autoConfirm() {
-    clearTimeout(acTimer);
-    var el = grid[row] && grid[row][col];
-    if (!isTab(el)) { return; }
-    acTimer = setTimeout(function () {
-      var cur = grid[row] && grid[row][col];
-      if (cur !== el) { return; }
-      var href = el.getAttribute('href');
-      if (!href) { return; }
-      savePos();
-      location.href = href;
-    }, 260);
+  // ---- 类目切换：原地换内容，像翻页（2026-11-02 海哥纠正版）----
+  //
+  // 老的写法是「焦点落到类目上 → 260ms 后整页 location.href」。三个毛病：
+  //   1. 整页重载 ⇒ 焦点回到「我的追剧」，得重新找位置；
+  //   2. 每切一次就往 WebView 历史里堆一条 ⇒ 返回键变成网页式无限回退；
+  //   3. 页面白闪一下，像刷新，不像翻页。
+  // 现在：XHR 取同一套服务端渲染的 HTML，只替换 hero / 类目条 / 海报 / 筛选
+  // 面板，history.replaceState 改地址（不新增历史），焦点留在类目条原位。
+  var tabTimer = null, tabSeq = 0, swCache = {}, upCount = 0, upTimer = null;
+  function isTab(el) {
+    // 只认真正的「类目」——影人页 / 搜索页的「← 返回」也在 .tabs 里，
+    // 但它们不是类目，不能让焦点挪过去就触发换内容。
+    return !!(el && el.getAttribute && el.getAttribute('data-tab') === '1');
   }
 
-  build(); hi(); restorePos();
+  function queueSwitch(el) {
+    clearTimeout(tabTimer);
+    if (!el) { return; }
+    tabTimer = setTimeout(function () { switchTab(el.getAttribute('href'), el); }, 200);
+  }
 
-  // ---- 「⚙ 设置」：进 PG 原生设置页（扫网盘 CK / 换站源）----
+  function switchTab(href, el) {
+    if (!href || !el) { return; }
+    // 已经是这一类（服务端给了 on），不用重复拉
+    if (/(^|\\s)on(\\s|$)/.test(el.className)) { return; }
+    if (href === urlKey()) { return; }
+    var seq = ++tabSeq;
+    var cached = swCache[href];
+    if (cached) { applyTab(href, el, cached, seq); return; }
+    var x = new XMLHttpRequest();
+    x.open('GET', href, true);
+    x.onload = function () {
+      if (seq !== tabSeq) { return; }
+      if (x.status !== 200 || !x.responseText) { location.replace(href); return; }
+      swCache[href] = x.responseText;
+      applyTab(href, el, x.responseText, seq);
+    };
+    x.onerror = function () { if (seq === tabSeq) { location.replace(href); } };
+    x.send();
+  }
+
+  function applyTab(href, el, html, seq) {
+    if (seq !== tabSeq) { return; }
+    var doc = null;
+    try { doc = new DOMParser().parseFromString(html, 'text/html'); } catch (e) {}
+    if (!doc || !doc.getElementById('wallbox')) { location.replace(href); return; }
+    var onTabRow = isTab(grid[row] && grid[row][col]) || (row === 0);
+    applyDoc(doc);
+    wallMore.page = 1; wallMore.done = false; wallMore.busy = false;
+    try { history.replaceState(null, '', href); } catch (e) {}
+    if (onTabRow) {
+      // 焦点跟到新类目条上（不再回「我的追剧」）。
+      // 注意类目条会折成两行（正在上映/即将上映/⌂ 主页 在第二行），所以
+      // 必须按元素在 grid 里的真实 (row,col) 定位，不能拿数组下标硬顶。
+      var target = null;
+      for (var i = 0; i < tabs.length; i++) {
+        if (tabs[i].getAttribute('href') === href) { target = tabs[i]; }
+      }
+      if (target) { focusEl(target); } else { row = 0; col = 0; hi(); }
+    } else {
+      row = Math.min(row, grid.length - 1);
+      col = Math.min(col, grid[row].length - 1);
+      hi(); ensure(grid[row][col]);
+    }
+  }
+
+  // 把焦点挪到某个元素（按 grid 的真实行列）
+  function focusEl(el) {
+    if (!el) { return false; }
+    for (var i = 0; i < grid.length; i++) {
+      for (var j = 0; j < grid[i].length; j++) {
+        if (grid[i][j] === el) { row = i; col = j; hi(); ensure(el); return true; }
+      }
+    }
+    return false;
+  }
+
+  // 把新页面的动态块搬进当前页（顺序：hero → 品牌行 → 类目条 → 海报 → 筛选）
+  function applyDoc(doc) {
+    var tb = document.querySelector('.tabs');
+    var nh = doc.querySelector('.whero'), oh = document.querySelector('.whero');
+    if (nh && oh) { oh.parentNode.replaceChild(nh, oh); }
+    else if (nh && tb) { tb.parentNode.insertBefore(nh, tb); }
+    else if (!nh && oh) { oh.parentNode.removeChild(oh); }
+
+    var nb = doc.querySelector('.brand'), ob = document.querySelector('.brand');
+    if (nb && ob) { ob.innerHTML = nb.innerHTML; }
+
+    var nt = doc.querySelector('.tabs');
+    if (tb && nt) { tb.innerHTML = nt.innerHTML; }
+
+    var nw = doc.getElementById('wallbox'), ow = document.getElementById('wallbox');
+    if (nw && ow) { ow.innerHTML = nw.innerHTML; }
+
+    var nfp = doc.getElementById('fpanel'), ofp = document.getElementById('fpanel');
+    if (nfp && ofp) { ofp.parentNode.replaceChild(nfp, ofp); }
+    else if (nfp && ow) { ow.parentNode.insertBefore(nfp, ow.nextSibling); }
+    else if (!nfp && ofp) { ofp.parentNode.removeChild(ofp); }
+
+    tabs = [].slice.call(document.querySelectorAll('.tabs a'));
+    cards = [].slice.call(document.querySelectorAll('.wall a.card'));
+    panel = document.getElementById('fpanel');
+    frows = []; fsel = []; fr = 0; fc = 0;
+    fpPushed = false;
+    build();
+  }
+
+  // ---- 「⌂ 主页」：进壳的原生主页（点播 → 网盘与弹幕配置 → 站点扫 CK）----
+  // 之前走 hai.nav('setting') 直接落到壳的「设置」页，海哥要的是**主页**：
+  // 网盘/弹幕的 CK 是在「点播」里的站点管理扫的，设置页里没有那一项。
+  // 走 `haiplay://native` 而不是 hai.nav('home')：这条路由 WebDetailActivity
+  // 拦截后会给 HomeActivity 打 hai.wall 标记 —— 它按返回就直接回海报墙。
+  // （原生 onBackPressed 是「再按一次退出」，不打标记返回键会被吞掉，回不来。）
+  function goHome() {
+    try { location.href = 'haiplay://native'; } catch (e) {}
+    return true;
+  }
+
+  build(); hi();
+  // ---- 类目页后台预取（2026-11-03）--------------------------------------
+  // 切类目要服务端现渲染一页（TMDB 冷缓存 0.5~1.5 秒），来回切就一顿一顿。
+  // 页面停住 0.9 秒后开始**串行**把其它类目的 HTML 拉一遍存进 swCache，
+  // 之后任何一次切换都是内存里取 —— 真正像「翻页」。
+  // 串行 + 150ms 间隔：别把电视那点带宽一次性占满，也别把 TMDB 打到限流。
+  (function prefetchTabs() {
+    var i = 0;
+    function step() {
+      if (i >= tabs.length) { return; }
+      var a = tabs[i++];
+      if (!a || !isTab(a)) { step(); return; }
+      var href = a.getAttribute('href');
+      if (!href || href === urlKey() || swCache[href]
+          || /(^|\\s)on(\\s|$)/.test(a.className)) { step(); return; }
+      var x = new XMLHttpRequest();
+      x.open('GET', href, true);
+      x.onload = function () {
+        if (x.status === 200 && x.responseText
+            && x.responseText.indexOf('id="wallbox"') > 0) {
+          swCache[href] = x.responseText;
+        }
+        setTimeout(step, 150);
+      };
+      x.onerror = function () { setTimeout(step, 300); };
+      x.send();
+    }
+    setTimeout(step, 900);
+  })();
+  // 焦点默认落在**当前类目**上（服务端给了 on 的那个），不要固定在第一格 ——
+  // 否则一进来光标在「我的追剧」，看着就像被踢回去了（海哥 2026-11-02）。
+  if (!restorePos()) {
+    for (var ti = 0; ti < tabs.length; ti++) {
+      if (/(^|\\s)on(\\s|$)/.test(tabs[ti].className)) {
+        if (focusEl(tabs[ti])) { break; }
+      }
+    }
+  }
+
+  // ---- 「⚙ 主页」（旧名「设置」）：进壳的原生主页 ----
   var bs = document.getElementById('btnSet');
   if (bs) {
     bs.addEventListener('click', function (ev) {
       ev.preventDefault();
-      try {
-        if (window.hai && window.hai.nav) { window.hai.nav('setting'); return false; }
-      } catch (e) {}
-      location.href = 'haiplay://native';
+      goHome();
       return false;
     });
   }
@@ -1796,7 +2133,30 @@ _JS_WALL = """
     return false;
   }, false);
 
-  // 触屏/鼠标也能用：点分类条上的「筛选」或当前类目
+  // 触屏/鼠标也能用：点类目条 / 筛选条件 —— 和遥控同一套（原地切、不堆历史）
+  document.addEventListener('click', function (ev) {
+    var a = ev.target;
+    while (a && a.nodeType === 1 && a.tagName !== 'A') { a = a.parentNode; }
+    if (!a || a.tagName !== 'A') { return; }
+    var p = a, inPanel = false;
+    while (p) { if (p.id === 'fpanel') { inPanel = true; break; } p = p.parentNode; }
+    if (inPanel) {
+      var h = a.getAttribute('href');
+      ev.preventDefault();
+      if (!h || h === '#') { closePanel(); return false; }
+      savePos(); closePanel(true); location.replace(h);
+      return false;
+    }
+    if (a.getAttribute('data-act') === 'home') {
+      ev.preventDefault(); goHome(); return false;
+    }
+    if (a.getAttribute('data-tab') === '1') {
+      ev.preventDefault();
+      if (a.getAttribute('data-filter') === '1') { openPanel(); return false; }
+      switchTab(a.getAttribute('href'), a);
+      return false;
+    }
+  }, false);
   var fb = document.getElementById('fbtn');
   if (fb) {
     fb.addEventListener('click', function (e) {
@@ -1932,25 +2292,26 @@ def _tabs(src: str, tid: int, page: int, country: str, sort: str,
     wcid = _cid_of(src, T.WATCH_TYPE)
     on = " on" if tid == T.WATCH_TYPE else ""
     attr = " data-filter=\"1\"" if tid == T.WATCH_TYPE else ""
-    out.append(f"<a class=\"{on.strip()}\"{attr} href=\""
+    out.append(f"<a class=\"{on.strip()}\" data-tab=\"1\"{attr} href=\""
                f"{_e(_q(wcid, 1, country, sort, genre, src))}\">我的追剧</a>")
     for cid, name in _classes(src):
         c_tid = _base_tid(cid)
         on = " on" if c_tid == tid else ""
         attr = " data-filter=\"1\"" if c_tid == tid else ""
-        out.append(f"<a class=\"{on.strip()}\"{attr} href=\""
+        out.append(f"<a class=\"{on.strip()}\" data-tab=\"1\"{attr} href=\""
                    f"{_e(_q(cid, 1, country, sort, genre, src))}\">{_e(name)}</a>")
     # 末尾留一个「⚙ 设置」—— 回原生首页的唯一入口（2026-11-01）。
     # 启动器换成海报墙之后，app 自己的「设置 / 网盘扫码登录」就没地方进了；
     # 网盘 CK 不登录，Push 解析夸克/百度分享恒返回空，播放必然失败。
     # 用 <a> 放在 .tabs 里，天生进焦点池，遥控按到底就能选到。
     out.append('<i class="tsep"></i>')
-    # 「⚙ 设置」= 进 PG 原生设置页（网盘扫码登录 / 换站源）。
-    # 走 JS 桥 hai.nav("setting") 直接 startActivity —— 之前用
-    # `haiplay://native` 这条 scheme，这个包根本没注册，点了没反应，
-    # 海哥就进不去设置、也就更新不了网盘 CK。
-    out.append('<a class="srcbtn" id="btnSet" href="javascript:void(0)">'
-               '\u2699 \u8bbe\u7f6e</a>')
+    # 「⌂ 主页」= 进壳的原生**主页**（不是设置页）。
+    # 2026-11-02 海哥纠正：壳的设置页里没有网盘扫码入口 —— CK 是「点播」里的
+    # 「网盘与弹幕配置 → 站点管理」扫的，所以按钮必须落在主页上。走 JS 桥
+    # hai.nav('home') 直接 startActivity（启动器换成海报墙后，这是回原生的
+    # 唯一入口）；遥控 OK 走 _JS_WALL 的 openItem → data-act="home"。
+    out.append('<a class="srcbtn" id="btnSet" data-act="home" '
+               'href="javascript:void(0)">\u2302 \u4e3b\u9875</a>')
     return "".join(out)
 
 
@@ -2255,16 +2616,26 @@ def page_detail(vid: str, retry: int = 0, sm: bool = False) -> str:
     # 站源选集页）；真正下发给按钮的是下面 push 直入那条。
     _h = ("haiplay://play?site=TMDBWall&id="
           + urllib.parse.quote(str(vid), safe="")
-          + "&name=" + q + "&pic=" + urllib.parse.quote(
-              d.get("vod_pic") or "", safe=""))
+          + "&name=" + q)
+    # 起播遮罩用的海报（中枢代理后的相对路径）。播放器窗口里 HaiCover 要的是
+    # 绝对地址，由 haiplay.js 的 href() 拼 location.origin 后带过去。
+    _picrel = _pic_raw(d.get("vod_pic_slide") or d.get("vod_pic") or "")
     play_js = (
+        "window.__haiPic=" + json.dumps(_picrel, ensure_ascii=False) + ";"
+        # P0：模式由**页面渲染时**的服务端配置直接注入，不依赖 /eps 异步返回。
+        # 之前靠 loadEps 的 onload 设置，prewarm(600ms) 会抢在它前面跑，
+        # 于是 native 模式下仍然走 legacy 算链（真机 access log 实锤）。
+        "window.__haiNative=" + ("true" if cfg["play_mode"] == "native" else "false") + ";"
         "(function(){var b=document.getElementById('btnPlay');if(!b)return;"
         "var TITLE=" + _tname + ";var VID=" + _vid_js + ";"
         "var CKEY='hai.pl.'+VID,EKEY='hai.eps.'+VID;"
         "var _eps=null,_epsQ=[],_epsBooting=false,_pre={ep:0,h:''};"
         # ---------------- 直链缓存 ----------------
-        "function readPl(ep){try{var d=JSON.parse(localStorage.getItem(CKEY)||'{}');"
-        "var v=d[ep];if(v&&v.t>Date.now())return v.h;}catch(e){}return '';}"
+        "function readPl(ep){if(window.__haiNative)return '';"
+        "try{var d=JSON.parse(localStorage.getItem(CKEY)||'{}');"
+        # 2026-11-05：拒收含 127.0.0.1 的历史缓存 —— 那是旧版写死的设备回环地址，
+        # HaiDp 未生效时是死链。命中就当作没缓存，强制重算（新算出来的是页面 origin）。
+        "var v=d[ep];if(v&&v.t>Date.now()&&!/127[.]0[.]0[.]1/.test(String(v.h||'')))return v.h;}catch(e){}return '';}"
         "function writePl(ep,h){try{var d=JSON.parse(localStorage.getItem(CKEY)||'{}');"
         "d[ep]={h:h,t:Date.now()+600000};localStorage.setItem(CKEY,JSON.stringify(d));}catch(e){}}"
         # ---------------- 选集数据（带缓存） ----------------
@@ -2274,7 +2645,7 @@ def page_detail(vid: str, retry: int = 0, sm: bool = False) -> str:
         "if(_eps){return cb(_eps);}"
         "_epsQ.push(cb);if(_epsBooting)return;_epsBooting=true;"
         "try{var c=localStorage.getItem(EKEY);if(c){_eps=JSON.parse(c);}}catch(e){}"
-        "if(_eps)flushEps();"
+        "if(_eps){flushEps();}"
         "var x=new XMLHttpRequest();"
         "x.open('GET','/hai/poster/eps?vid='+encodeURIComponent(VID),true);"
         "x.onload=function(){var d=null;try{d=JSON.parse(x.responseText);}catch(e){}"
@@ -2294,6 +2665,18 @@ def page_detail(vid: str, retry: int = 0, sm: bool = False) -> str:
         "return out;}"
         # ---------------- 本地算直链：缓存 → 预取 → 并行 2 条 ----------------
         "function localHref(ep,cb){"
+        # P0 native（2026-11-08）：整条分享链接交回 pg.jar 的 *Share 站源，
+        # 由原生列文件树 / 选集 / 取流 / 解码。这里是所有起播入口的唯一汇聚点
+        # （▶ 播放、选集浮层、预取），只在此分流，legacy 全链路原样保留。
+        "if(window.__haiNative){"
+        "var nh=(window.__haiRoute&&window.__haiRoute.nhref)||'';"
+        "if(nh){return cb(nh);}"
+        "loadEps(function(d){var ms=(d&&d.merged)||[],f='',i,j,k;"
+        "for(i=0;i<ms.length&&!f;i++){var es=ms[i].eps||[];"
+        "for(j=0;j<es.length&&!f;j++){var rs=es[j].routes||[];"
+        "for(k=0;k<rs.length&&!f;k++){if(rs[k].nhref)f=rs[k].nhref;}}}"
+        # 全剧都没有原生站源 → cb('') 回落 legacy 直链，绝不拼死链
+        "cb(f);});return;}"
         "if(!window.HaiPlay||!window.HaiPlay.ep){return cb(null);}"
         "var h=readPl(ep);if(h){return cb(h);}"
         "if(_pre.ep===ep&&_pre.h){return cb(_pre.h);}"
@@ -2302,24 +2685,34 @@ def page_detail(vid: str, retry: int = 0, sm: bool = False) -> str:
         "if(!cs.length){return cb(null);}"
         "var done=false,i=0,inflight=0,left=cs.length;"
         "function good(x){if(done)return;done=true;writePl(ep,x);_pre={ep:ep,h:x};cb(x);}"
+        # 2026-11-04 修（真 bug）：原来只在「最后一个候选失败」时才调 bad()，
+        # 而 bad() 里 `--left<=0` —— left 初值 = 候选数，**只减一次**永远减不到 0
+        # ⇒ cb(null) 永不触发 ⇒ 不回落 askServer ⇒ 页面卡在遮罩不动。
+        # 单线路的集（left=1）刚好能减到 0，所以只有**多线路**的集点不动。
+        # 现在每失败一个候选就 left--，失败光了才回落。
         "function bad(){if(done)return;if(--left<=0){done=true;cb(null);}}"
         "function launch(){while(!done&&inflight<2&&i<cs.length){"
         "var c=cs[i++];inflight++;"
         "(function(c){window.HaiPlay.ep({share:c.push,ep:c.ep||0,title:TITLE})"
         ".then(function(r){inflight--;"
         "if(r&&r.ok){good(window.HaiPlay.href(r,c.ep||ep||1,r.name||TITLE));}"
-        "else{if(i<cs.length){launch();}else{bad();}}})"
-        ".catch(function(){inflight--;if(i<cs.length){launch();}else{bad();}});})(c);}}"
+        "else{left--;if(left<=0){done=true;cb(null);}else{launch();}}})"
+        ".catch(function(){inflight--;left--;"
+        "if(left<=0){done=true;cb(null);}else{launch();}});})(c);}}"
         "launch();});}"
         # ---------------- 服务端兜底（本地算不出来才走） ----------------
         "function askThen(){if(!window.__haiAskServer){return;}"
-        "window.__haiAskServer(want(),function(u){if(u)location.href=u;});}"
+        # 本地算不出来才问中枢 —— 这一步是 3~15 秒的等待，遮罩必须显示进度
+        "var _w=window.__haiWatch?window.__haiWatch(VID,want()||1):null;"
+        "window.__haiAskServer(want(),function(u){if(_w)_w.stop();"
+        "if(u)location.href=u;});}"
         "function want(){var p=window.__haiPick&&window.__haiPick(0);"
         "if(p&&p.ep)return p.ep;"
         "try{return parseInt(localStorage.getItem('hai.ep.'+VID),10)||0;}catch(e){}"
         "return 0;}"
         # ---------------- 点播放：缓存命中 → 立刻全屏 ----------------
         "b.addEventListener('click',function(ev){ev.preventDefault();"
+        "window.__haiRoute=null;"
         "var ep=want()||1;"
         "try{localStorage.setItem('hai.ep.'+VID,String(ep));}catch(e){}"
         "var p=window.__haiPick&&window.__haiPick(0);"
@@ -2333,7 +2726,13 @@ def page_detail(vid: str, retry: int = 0, sm: bool = False) -> str:
         "function prewarm(){var ep=want()||1;"
         "localHref(ep,function(h){if(h){b.setAttribute('href',h);"
         "b.setAttribute('data-ready','1');"
-        "b.innerHTML='\\u25b6 \\u64ad\\u653e \\u7b2c'+ep+'\\u96c6';}});}"
+        "b.innerHTML='\\u25b6 \\u64ad\\u653e \\u7b2c'+ep+'\\u96c6';}"
+        # 本地算不出来（百度：非会员只能走服务端；或冷门源）→ **现在就**让
+        # 服务端算好放进缓存。等用户真按播放时直接命中，省掉 3~15 秒。
+        "else{serverPre(ep);}});}"
+        "function serverPre(ep){try{var x=new XMLHttpRequest();"
+        "x.open('GET','/hai/poster/play?vid='+encodeURIComponent(VID)"
+        "+'&direct=1&ep='+encodeURIComponent(ep||1),true);x.send();}catch(e){}}"
         "setTimeout(prewarm,600);"
         "window.__haiLocal2=function(ep,cb){localHref(ep||0,cb||function(){});};"
         # 服务端兜底：本地算不出来（老 APK / 冷门源）才问中枢
