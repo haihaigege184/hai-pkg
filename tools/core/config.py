@@ -182,6 +182,11 @@ PROBE_ENABLED = os.environ.get("OKTV_PROBE", "1") == "1"
 # 需要恢复时置 OKTV_ABS_PATHS=1。公网入口若要配合，需让 CF ingress 放行
 # /lib 与 /js（见 deploy/cloudflared-ingress.yml）。
 ABS_PATHS = os.environ.get("OKTV_ABS_PATHS", "0") == "1"
+# jsm.json 渲染专用（2026-11-08 新增，默认开）：只把下发的配置正文里
+# ./lib/ ./js/ 相对路径按请求 Host 绝对化。与上面的 ABS_PATHS 分开，
+# 避免为了修「App 重选配置爆栈」而把 tokenm.json 的 CK 链路一起改动。
+# 真机证据见 app.py::_jsm_body 注释。回滚 OKTV_ABS_JSM=0。
+ABS_JSM = os.environ.get("OKTV_ABS_JSM", "1") == "1"
 # 外部中转改写：把 tokenm.json 里 open_api_url 之类「指向第三方」的地址改写成
 # 中枢自己的 /gw/<tag>/<path>，透传上游并旁路采集凭据。
 # 默认**关闭** —— 打开会改变端的凭据换取路径，确认中转链路可用后再启用。

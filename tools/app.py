@@ -724,7 +724,15 @@ def _jsm_body(req, tail):
     """
     jsm = get_config()
     suffix = ""
-    if getattr(C, "ABS_PATHS", True):
+    # 2026-11-08 真机定案：jsm.json 必须绝对化，与 ABS_PATHS（tokenm.json
+    # 那套歧义处理）解耦，单列 ABS_JSM 开关。电视在「设置 → 配置」重新拉
+    # 本文件时，若 sites[].api / ext / lives[].url 仍是 ./lib/xxx，改造版
+    # APK 的站源脚本加载器会在兜底分支 (.line 208) 拿原样返回的相对路径
+    # 无限递归 → StackOverflowError "stack size 1042KB" → 「配置解析失败」。
+    # 电视 DB Config 激活行 (id=49) 那份能用的配置正是全绝对化的：与下发
+    # 版逐字段对比 74 站点 / spider 全同，唯一差异 = 相对路径 1 vs 68。
+    # 回滚：OKTV_ABS_JSM=0（只影响 jsm.json 渲染，不动 CK 链路）。
+    if getattr(C, "ABS_JSM", True):
         base, pfx = absbase.site_base(req, renderbase.current() or "")
         if base:
             suffix = base
@@ -737,8 +745,14 @@ def _jsm_body(req, tail):
     # NullPointerException → 界面「找不到数据」。
     # 原版能播，是因为它的接口配的就是端上已有的本地 jar。
     # 这里改成端上实实在在存在的那份（用户机器上 /sdcard/pg/pg.jar）。
-    jsm["spider"] = "/data/data/com.hisen.android.tv/files/pg.jar"
-    key = (suffix, tail, _last_render["ts"], ckvault.version())
+    # 2026-11-08 追加：裸绝对路径会让站源/脚本加载器落进兜底分支
+    # (.line 208)：对未知 scheme 转换后原样返回，再递归调自己 →
+    # StackOverflowError "stack size 1042KB" → 设置里重选配置必报
+    # 「配置解析失败」。加载器只认 http/file/assets/img+ 前缀，file 分支
+    # 直接 new File → DexClassLoader，jar 仍指向端上同一份，语义不变。
+    jsm["spider"] = "file:///data/data/com.hisen.android.tv/files/pg.jar"
+    key = (suffix, tail, _last_render["ts"], ckvault.version(),
+           getattr(C, "ABS_JSM", True))
     if _jsm_cache["key"] == key and _jsm_cache["body"]:
         return _jsm_cache["body"]
     body = json.dumps(jsm, ensure_ascii=False, indent=1)
