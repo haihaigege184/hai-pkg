@@ -1,0 +1,84 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>影片详情 · APK 内置 UI 骨架</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+<div id="herobgshade"></div>
+
+<!-- 双层轮播背景：hero.js / curtain.js 依赖 #heroFx #fxA #fxB -->
+<div id="heroFx"><div id="fxA"></div><div id="fxB"></div></div>
+
+<span class="srcpill" id="srcpill">TMDB 海报墙</span>
+<div class="wrap">
+
+  <div class="brand">
+    <b>海报墙</b><span>影片详情</span>
+    <a class="btn ghost" href="index.html" style="margin-left:auto">← 返回</a>
+  </div>
+
+  <!-- 三态状态机 hero → cast → rec，容器由 nav.js 驱动 -->
+  <div class="hero" id="hero">
+    <div class="info">
+      <div id="titleCard"><div class="tlogo"></div><h1 id="tcMain">影片</h1></div>
+      <div id="tcSub" class="chips">
+        <span class="chip p">4K</span><span class="chip score">8.6</span>
+        <span class="chip">2019</span><span class="chip">科幻</span>
+      </div>
+      <p class="desc" id="dDesc">正在从 jar 本地服务读取影片信息…</p>
+      <div class="acts">
+        <a class="btn" id="btnPlay" href="#">▶ 播放</a>
+        <a class="btn ghost" id="btnEps" href="#">☰ 选集</a>
+        <a class="btn ghost" id="btnSrc" href="#">⇄ 线路</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- 选集：eps.js 依赖 #epBox / .elist / .esub / .eroute -->
+  <div class="ebox" id="epBox">
+    <h3>选集</h3>
+    <div class="esub"></div>
+    <div class="elist"></div>
+    <div class="efoot"></div>
+  </div>
+
+  <!-- 演职员：cast.js 依赖 #castSec .citem[data-nm] / .cface -->
+  <div class="cast" id="castSec">
+    <h3>演职员</h3>
+    <div class="crew" id="castList"></div>
+  </div>
+
+  <!-- 起播遮罩：curtain.js 依赖 .cbar .cbg .ctname .ctstat .ctsub -->
+  <div class="cbar" id="curtain" style="display:none">
+    <div class="cbg"></div>
+    <div class="ctbox">
+      <div class="ctname" id="ctName">影片</div>
+      <div class="ctstat" id="ctStat">准备中</div>
+      <div class="ctsub" id="ctSub">UI 已内置 APK · 播放链路由 jar 接管</div>
+      <div class="cspin"></div>
+    </div>
+  </div>
+
+  <div class="foot">UI 已内置 APK · 数据由 jar 本地服务提供 · 服务器只负责下发站源/配置</div>
+</div>
+
+<script src="bridge.js"></script>
+<script>
+/* 离线预览：无 jar 服务时用 URL 参数填充标题，避免骨架空白 */
+(function () {
+  var m = /[?&]name=([^&]*)/.exec(location.search);
+  var name = m ? decodeURIComponent(m[1]) : '影片';
+  var el = document.getElementById('tcMain');
+  if (el) { el.textContent = name; }
+  document.title = name + ' · APK 内置 UI';
+  window.HAI_MOCK = {
+    eps: { ok: true, merged: [], play_mode: 'native' },
+    play: { ok: true, href: '' },
+    cast: { ok: true, list: [] }
+  };
+})();
+</script>
+<script src="js/nav.js"></script>
+<script src="js/srcmenu.js"></script>
+<script src="js/selfheal.js"></script>
+<script src="inject.js"></script>
+</body></html>

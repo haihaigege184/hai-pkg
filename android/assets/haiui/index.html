@@ -1,0 +1,79 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>海报墙 · APK 内置 UI 骨架</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+<div id="herobgshade"></div>
+<span class="srcpill" id="srcpill">TMDB 海报墙</span>
+<div class="wrap">
+  <div class="brand"><b>海报墙</b><span>APK 内置 UI · 离线骨架</span></div>
+  <div class="tabs" id="tabs">
+    <a href="index.html?t=1" class="on">电影</a>
+    <a href="index.html?t=2">电视剧</a>
+    <a href="index.html?t=3">动漫</a>
+    <a href="index.html?t=4">综艺</a>
+    <a href="index.html?t=5">纪录片</a>
+    <i class="tsep"></i>
+    <a href="index.html?src=douban" class="srcbtn">⇄ TMDB/豆瓣</a>
+    <a href="index.html?f=1" class="fbtn">⚙ 数据源</a>
+  </div>
+  <div class="wall" id="wall"></div>
+  <div class="foot">UI 已内置 APK · 数据由 jar 本地服务提供 · 服务器只负责下发站源/配置</div>
+</div>
+
+<script src="bridge.js"></script>
+<script>
+/* 离线预览用的假数据。真机上由 jar 本地服务通过 HAI_BASE 提供同一份 JSON，
+   bridge.js 的 XHR 重写会把 /hai/* 请求接到 jar，UI 代码零改动。 */
+(function () {
+  var MOCK = [
+    { id: 'm535167', name: '流浪地球', year: '2019', badge: '4K', hue: 205 },
+    { id: 't223911', name: '仙逆', year: '2023', badge: '更新至159集', hue: 275 },
+    { id: 'm429', name: '霸王别姬', year: '1993', badge: '豆瓣 9.6', hue: 15 },
+    { id: 'm13', name: '阿甘正传', year: '1994', badge: '4K', hue: 140 },
+    { id: 'm660', name: '哪吒之魔童降世', year: '2019', badge: '国漫', hue: 35 },
+    { id: 't100', name: '繁花', year: '2023', badge: '全30集', hue: 330 },
+    { id: 'm301', name: '星际穿越', year: '2014', badge: 'IMAX', hue: 225 },
+    { id: 't778', name: '三体', year: '2023', badge: '全30集', hue: 190 }
+  ];
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function poster(it) {
+    var h = it.hue;
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450">' +
+      '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">' +
+      '<stop offset="0" stop-color="hsl(' + h + ',55%,32%)"/>' +
+      '<stop offset="1" stop-color="hsl(' + ((h + 60) % 360) + ',45%,10%)"/>' +
+      '</linearGradient></defs>' +
+      '<rect width="300" height="450" fill="url(#g)"/>' +
+      '<circle cx="225" cy="105" r="62" fill="rgba(255,255,255,.08)"/>' +
+      '<text x="24" y="300" fill="rgba(255,255,255,.92)" font-size="30" ' +
+      'font-family="sans-serif" font-weight="bold">' + esc(it.name) + '</text>' +
+      '<text x="24" y="338" fill="rgba(255,255,255,.55)" font-size="17" ' +
+      'font-family="sans-serif">' + esc(it.year) + '</text></svg>';
+  }
+  var html = MOCK.map(function (it) {
+    var src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(poster(it));
+    return '<a class="card" href="detail.html?vid=' + encodeURIComponent(it.id) + '">' +
+      '<div class="pic"><img src="' + src + '" loading="lazy" alt="">' +
+      '<span class="badge">' + esc(it.badge) + '</span></div>' +
+      '<h3>' + esc(it.name) + '</h3>' +
+      '<div class="sub">' + esc(it.year) + '</div></a>';
+  }).join('');
+  document.getElementById('wall').innerHTML = html;
+  window.HAI_MOCK = {
+    wall: { list: MOCK.map(function (i) { return { vod_id: i.id, vod_name: i.name }; }) },
+    eps: { ok: true, merged: [] },
+    play: { ok: true, href: '' }
+  };
+})();
+</script>
+<script src="js/nav.js"></script>
+<script src="js/wall.js"></script>
+<script src="js/srcmenu.js"></script>
+<script src="js/selfheal.js"></script>
+<script src="js/face.js"></script>
+</body></html>

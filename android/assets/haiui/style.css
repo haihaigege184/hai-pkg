@@ -1,0 +1,407 @@
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#070a10;color:#e8edf6;
+ font-family:-apple-system,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+ min-height:100vh;
+ background-image:radial-gradient(1200px 600px at 12% -8%,rgba(0,224,138,.16),transparent 60%),
+                  radial-gradient(900px 500px at 92% 4%,rgba(168,85,247,.18),transparent 60%),
+                  radial-gradient(700px 400px at 50% 110%,rgba(0,224,138,.08),transparent 65%);
+ background-attachment:fixed}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1440px;margin:0 auto;padding:28px 30px 60px}
+.brand{display:flex;align-items:baseline;margin-bottom:22px}
+.brand b{font-size:34px;letter-spacing:3px;color:#00e08a;
+ text-shadow:0 0 12px rgba(0,224,138,.75),0 0 34px rgba(0,224,138,.35)}
+.brand span{margin-left:14px;font-size:17px;color:#7d8aa3;letter-spacing:1px}
+
+/* 满屏背景大图（固定层，双层轮播见 #heroFx；内容在其上滚动） */
+/* 2026-11-01 海哥：第一屏全亮度看剧照，翻下去当背景时再压暗。
+   以前一进来就是 .50/.74/.95 的三段压暗，剧照基本看不出画面。 */
+#herobgshade{position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:-1;
+ pointer-events:none;transition:background .55s ease;
+ background:linear-gradient(180deg,rgba(7,10,16,0) 0%,rgba(7,10,16,.10) 46%,
+            rgba(7,10,16,.55) 82%,rgba(7,10,16,.78) 100%)}
+body.below #herobgshade{
+ background:linear-gradient(180deg,rgba(7,10,16,.72) 0%,rgba(7,10,16,.88) 55%,
+            rgba(7,10,16,.96) 100%)}
+/* 顶部信息区：透明容器，叠在满屏背景之上，标题/按钮位置不变。
+   2026-10-30 海哥：整体向上提（bottom 40→150）—— 二屏演职员上移后
+   左上不再露出播放按钮下沿；进演职员/推荐态再把整块淡出（双保险）。 */
+.hero{position:relative;min-height:100vh;margin-bottom:26px}
+.hero .info{position:absolute;left:38px;bottom:150px;right:44%;transition:opacity .45s ease}
+body.below .hero .info{opacity:0;pointer-events:none}
+.hero h1{font-size:42px;line-height:1.24;margin-bottom:12px;
+ text-shadow:0 2px 18px rgba(0,0,0,.85)}
+.chips{margin-bottom:12px}
+.chip{display:inline-block;margin:0 8px 8px 0;padding:4px 13px;border-radius:999px;
+ font-size:15px;letter-spacing:.6px;color:#9ff5cd;
+ border:1px solid rgba(0,224,138,.45);background:rgba(0,224,138,.10)}
+.chip.p{color:#dcc4ff;border-color:rgba(168,85,247,.5);background:rgba(168,85,247,.12)}
+.chip.score{color:#0a0d14;background:#00e08a;border-color:#00e08a;font-weight:700;
+ box-shadow:0 0 16px rgba(0,224,138,.6)}
+.hero p.desc{font-size:17px;line-height:1.75;color:#b9c4d6;max-height:5.2em;overflow:hidden}
+
+/* 分类 */
+.tabs{margin:0 0 14px}
+.tabs a{display:inline-block;margin:0 12px 12px 0;padding:10px 20px;border-radius:11px;
+ font-size:19px;color:#93a1b8;background:rgba(255,255,255,.035);
+ border:1px solid rgba(255,255,255,.07);transition:none}
+.tabs a.on{color:#00e08a;border-color:rgba(0,224,138,.55);
+ background:rgba(0,224,138,.10);box-shadow:0 0 18px rgba(0,224,138,.22)}
+.tabs a:focus,.card:focus{outline:none}
+.tabs a:focus,.tabs a.sel{color:#0a0d14;background:#00e08a;border-color:#00e08a;
+ box-shadow:0 0 22px rgba(0,224,138,.6)}
+.tabs a.fbtn{color:#dcc4ff;border-color:rgba(168,85,247,.5);
+ background:rgba(168,85,247,.12)}
+.tabs a.fbtn:focus,.tabs a.fbtn.sel{color:#0a0d14;background:#a855f7;border-color:#a855f7;
+ box-shadow:0 0 22px rgba(168,85,247,.65)}
+/* 数据源分段开关（豆瓣 / TMDB）—— 常驻在类目条最前面 */
+.tabs a.srcbtn{color:#dcc4ff;border-color:rgba(168,85,247,.45);
+ background:rgba(168,85,247,.10);font-weight:600;letter-spacing:1px}
+.tabs a.srcbtn.on{color:#0a0d14;background:linear-gradient(135deg,#a855f7,#7c3aed);
+ border-color:#a855f7;box-shadow:0 0 20px rgba(168,85,247,.5)}
+.tabs a.srcbtn.sel{color:#0a0d14;background:#fff;border-color:#fff;
+ box-shadow:0 0 22px rgba(255,255,255,.55)}
+.tabs i.tsep{display:inline-block;width:1px;height:20px;margin:0 4px 10px 2px;
+ background:rgba(255,255,255,.16);vertical-align:middle}
+.fsum{font-size:12px;color:#6ea88f;letter-spacing:1px;margin-left:2px}
+.fsum b{color:#00e08a;font-weight:600}
+/* 海报墙首图横幅（2026-11-01 新做）。
+   原来首页 hero 用的是详情页那套 .hero/.bg/.shade，但那三条样式**从来没定义过**
+   ——结果是竖版海报被当成普通图片流式排版，撑满 100vh、类目条被顶到屏外。
+   这里给首页一套独立的横幅样式：横图铺满 + 左侧渐变压暗 + 文案压底。 */
+.whero{position:relative;height:44vh;min-height:260px;border-radius:16px;
+ overflow:hidden;margin:2px 0 20px;background:#0b1018;
+ border:1px solid rgba(0,224,138,.14);
+ box-shadow:0 18px 46px rgba(0,0,0,.55)}
+.whero .bg{position:absolute;top:0;left:0;width:100%;height:100%;
+ object-fit:cover;object-position:center 28%}
+.whero .shade{position:absolute;top:0;left:0;width:100%;height:100%;
+ background:linear-gradient(90deg,rgba(7,10,16,.96) 0%,rgba(7,10,16,.80) 42%,
+            rgba(7,10,16,.25) 72%,rgba(7,10,16,.55) 100%)}
+.whero .info{position:absolute;left:34px;right:44%;bottom:30px}
+.whero h1{font-size:30px;line-height:1.25;margin-bottom:10px;
+ text-shadow:0 2px 18px rgba(0,0,0,.9)}
+.whero p.desc{font-size:13.5px;line-height:1.75;color:#b9c4d6;
+ display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;
+ max-height:5.25em;overflow:hidden}
+
+/* 海报墙 */
+.wall{display:flex;flex-wrap:wrap;margin:0 -9px}
+/* 2026-11-03 海哥：每行 4 个（电视 1280 宽下原先是 6 个，海报太小） */
+.card{width:25%;padding:0 9px;margin-bottom:26px}
+@media (max-width:1180px){.card{width:25%}}
+@media (max-width:900px){.card{width:33.33%}}
+@media (max-width:640px){.card{width:50%}}
+.card .pic{position:relative;border-radius:12px;overflow:hidden;background:#111722;
+ border:1px solid rgba(255,255,255,.07)}
+.card .pic img{display:block;width:100%;height:auto;min-height:120px}
+.card .pic .badge{position:absolute;top:8px;right:8px;padding:2px 8px;border-radius:8px;
+ font-size:12px;font-weight:700;color:#00e08a;background:rgba(7,10,16,.82);
+ border:1px solid rgba(0,224,138,.45)}
+.card h3{margin-top:9px;font-size:14px;font-weight:500;line-height:1.45;color:#dfe7f3;
+ max-height:2.9em;overflow:hidden}
+.card .sub{margin-top:4px;font-size:12px;color:#6f7c93}
+.card:focus,.card.sel{outline:none}
+.card:focus .pic,.card.sel .pic{border-color:#00e08a;
+ box-shadow:0 0 0 2px rgba(0,224,138,.55),0 0 26px rgba(0,224,138,.35)}
+.card:focus h3,.card.sel h3{color:#9ff5cd}
+
+/* 类目筛选面板（2026-10-31）：按 OK 在类目条上呼出，三组条件，
+   每组一行横向 chip，选中即整页重渲染（服务端滤镜，翻页才不会断层） */
+#fpanel{display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;
+ z-index:60;background:rgba(4,6,10,.86)}
+#fpanel.show{display:block}
+#fpanel .fbox{position:absolute;top:50%;left:50%;width:1090px;max-width:92vw;
+ margin-top:-232px;margin-left:-545px;padding:26px 30px 20px;border-radius:18px;
+ background:linear-gradient(160deg,rgba(16,22,32,.99),rgba(9,12,18,.99));
+ border:1px solid rgba(0,224,138,.32);
+ box-shadow:0 0 60px rgba(0,0,0,.8),0 0 40px rgba(0,224,138,.14)}
+#fpanel .fh{font-size:19px;color:#00e08a;letter-spacing:3px;margin-bottom:6px;
+ text-shadow:0 0 14px rgba(0,224,138,.6)}
+#fpanel .fh i{font-style:normal;color:#8ea0bb;font-size:13px;letter-spacing:1px;
+ margin-left:12px;text-shadow:none}
+.frow{margin-top:18px}
+.frow .fl{font-size:12px;color:#6f7c93;letter-spacing:3px;margin-bottom:9px}
+.fopts{display:flex;flex-wrap:wrap;margin:0 -5px}
+.fopt{display:inline-block;margin:0 5px 9px;padding:7px 15px;border-radius:9px;
+ font-size:13.5px;color:#a9b6ca;background:rgba(255,255,255,.045);
+ border:1px solid rgba(255,255,255,.08)}
+.fopt.sel{color:#9ff5cd;border-color:rgba(0,224,138,.5);
+ background:rgba(0,224,138,.12)}
+.fopt:focus,.fopt.focus{outline:none;color:#0a0d14;background:#00e08a;border-color:#00e08a;
+ box-shadow:0 0 20px rgba(0,224,138,.55)}
+#fpanel .fk{margin-top:16px;font-size:12px;color:#5f6b80;letter-spacing:1px}
+
+/* 详情页 */
+.dtop{display:flex;margin-bottom:26px}
+.dtop .poster{width:300px;flex:none;margin-right:30px}
+.dtop .poster img{width:100%;border-radius:14px;border:1px solid rgba(0,224,138,.22);
+ box-shadow:0 0 34px rgba(0,224,138,.12),0 18px 44px rgba(0,0,0,.6)}
+.dtop .meta{flex:1;padding-top:6px}
+.dtop h1{font-size:32px;margin-bottom:14px;text-shadow:0 2px 16px rgba(0,0,0,.7)}
+.dtop .desc{font-size:15px;line-height:1.9;color:#c2cddd;white-space:pre-wrap}
+.kv{margin-top:16px;font-size:13px;color:#8d9bb2;line-height:2}
+.kv b{color:#9ff5cd;font-weight:500;margin-right:8px}
+.sect{margin:26px 0 14px;font-size:15px;letter-spacing:2px;color:#a855f7;
+ text-shadow:0 0 14px rgba(168,85,247,.55)}
+.ep{display:inline-block;margin:0 9px 9px 0;padding:8px 15px;border-radius:9px;
+ font-size:13px;color:#d8f7ea;background:rgba(0,224,138,.08);
+ border:1px solid rgba(0,224,138,.3)}
+/* ---- 选集（2026-11-01）：站源行 + 季行 + 集按钮 -----------------------
+   集数是从网盘分享的文件名里解析出来的（core/pan_ep.py），点某一集直接
+   走 app 本地代理起播，不再进站源的选集页手动翻。 */
+.epsrc,.epsea{display:flex;flex-wrap:wrap;margin:0 -5px 10px}
+.ep.src,.ep.sea{margin:0 5px 9px;color:#d5c2fb;
+ border-color:rgba(168,85,247,.42);background:rgba(168,85,247,.10)}
+.ep.on{color:#04120c;background:#a855f7;border-color:#a855f7;font-weight:700}
+.ep.off{opacity:.35}
+.ep.sel{color:#04120c;background:#00e08a;border-color:#eafff5;
+ box-shadow:0 0 0 3px rgba(0,224,138,.38),0 0 26px rgba(0,224,138,.72)}
+.ep.src.sel,.ep.sea.sel{background:#a855f7;border-color:#f3e8ff;
+ box-shadow:0 0 0 3px rgba(168,85,247,.38),0 0 26px rgba(168,85,247,.72)}
+.epgrid{margin-top:2px}
+.epwait{display:inline-block;padding:6px 0;font-size:13px;color:#6f7c93}
+/* 聚合后的集按钮：右上角小绿点 = 这集有备份线路（其它网盘也有） */
+.epgrid .ep{position:relative}
+.epgrid .ep i.dot{position:absolute;right:5px;top:5px;width:6px;height:6px;
+ border-radius:50%;background:#00e08a;box-shadow:0 0 7px rgba(0,224,138,.9)}
+.epstat{margin:0 0 12px;font-size:12.5px;color:#6ea88f;letter-spacing:1.5px}
+.epstat b{color:#00e08a;font-weight:600}
+.epstat .esrc{color:#7f8ba1;letter-spacing:0}
+/* ---- 点「第N集」弹出的线路浮层（2026-11-01）--------------------------
+   为什么要有它：选集是真数据（12 集 / 每集 2 条线路），但**播放**必须交给
+   原生播放器（网盘要转存、要 Cookie，网页播不了）。与其让集按钮假装能播、
+   点下去却跳到一个不相干的地方，不如把这一集的全部线路（网盘 / 文件名 /
+   体积）摊开给人看 —— 信息是真的，再一键交给播放器。
+   APK 改造完成后这里每条线路换成 haiplay 直链，结构一行都不用重写。 */
+#epBox{transition:opacity .2s ease}
+#epDlg{position:fixed;top:0;left:0;right:0;bottom:0;z-index:70;display:none;
+ background:rgba(4,6,11,.72);-webkit-backdrop-filter:blur(3px)}
+#epDlg.on{display:block}
+#epDlg .ebox{position:absolute;left:50%;top:50%;
+ width:720px;margin-left:-360px;transform:translateY(-50%);
+ background:linear-gradient(160deg,rgba(13,18,27,.985),rgba(9,13,20,.985));
+ border:1px solid rgba(0,224,138,.30);border-radius:18px;padding:24px 26px 20px;
+ box-shadow:0 0 0 1px rgba(168,85,247,.10) inset,0 24px 80px rgba(0,0,0,.75),
+            0 0 40px rgba(0,224,138,.10)}
+#epDlg .ebox:before{content:"";position:absolute;left:26px;right:26px;top:0;
+ height:1px;background:linear-gradient(90deg,transparent,
+ rgba(0,224,138,.85),rgba(168,85,247,.7),transparent)}
+#epDlg h3{margin:0 0 5px;font-size:26px;color:#eafff5;letter-spacing:1px;
+ text-shadow:0 0 16px rgba(0,224,138,.6)}
+#epDlg .esub{font-size:12px;color:#6f7c93;letter-spacing:1.4px;margin-bottom:18px}
+#epDlg .eroute{display:block;position:relative;padding:11px 15px;margin-bottom:9px;
+ border-radius:11px;background:rgba(255,255,255,.035);
+ border:1px solid rgba(255,255,255,.07)}
+#epDlg .eroute .pan{display:inline-block;min-width:42px;padding:2px 9px;
+ margin-right:11px;border-radius:6px;font-size:11.5px;font-weight:700;
+ color:#04120c;background:#00e08a}
+#epDlg .eroute .pan.uc{background:#7cc4ff}
+#epDlg .eroute .pan.baidu{background:#8fb4ff}
+#epDlg .eroute .pan.ali{background:#ffcf7a}
+#epDlg .eroute .fn{font-size:13px;color:#dbe4f2}
+#epDlg .eroute .sz{position:absolute;right:15px;top:11px;font-size:12px;color:#7f8ba1}
+#epDlg .eroute.sel{border-color:#eafff5;background:rgba(0,224,138,.13);
+ box-shadow:0 0 0 3px rgba(0,224,138,.30),0 0 26px rgba(0,224,138,.45)}
+#epDlg .eroute .fn{display:inline-block;vertical-align:middle;
+ max-width:430px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#epDlg .efoot{margin-top:16px;padding-top:14px;
+ border-top:1px solid rgba(255,255,255,.07)}
+#epDlg .efoot .btn{margin-bottom:0}
+#epDlg .enote{margin-top:11px;font-size:11.5px;color:#5d6a80;letter-spacing:.6px}
+/* ---- 起播过渡（2026-11-01）------------------------------------------
+   点「播放」或任一集时，先铺一张**全屏横版剧照**（就是屏幕上正在放的那张），
+   再切到原生播放器。中间不出现黑屏、不出现站源选集页，播放链条全程看不到
+   PG 原生界面。返回详情页时网页还在（Activity 栈在下面），遮罩自动撤掉并
+   做一次淡入，观感上是「从播放器特效回到详情页」。 */
+#curtain{position:fixed;top:0;left:0;right:0;bottom:0;z-index:9000;
+ opacity:0;pointer-events:none;transition:opacity .26s ease;
+ background:#05080d;overflow:hidden}
+#curtain.on{opacity:1;pointer-events:auto}
+#curtain .cbg{position:absolute;top:0;left:0;width:100%;height:100%;
+ object-fit:cover;animation:czoom 14s ease-out forwards}
+@keyframes czoom{from{transform:scale(1.02)}to{transform:scale(1.12)}}
+#curtain .cshade{position:absolute;top:0;left:0;width:100%;height:100%;
+ background:linear-gradient(180deg,rgba(5,8,13,.10) 0%,rgba(5,8,13,.28) 42%,
+ rgba(5,8,13,.90) 100%)}
+#curtain .ctbox{position:absolute;left:64px;bottom:10vh;max-width:60%}
+#curtain .ctname{font-size:40px;font-weight:700;color:#fff;letter-spacing:2px;
+ text-shadow:0 4px 24px rgba(0,0,0,.8)}
+#curtain .ctsub{margin-top:12px;font-size:16px;color:#9ff5cd;letter-spacing:3px}
+/* 状态行（2026-11-03 海哥要「加载状态/片源信息/缓冲」）：一行一行的短句，
+   解析阶段由 /hai/poster/progress 轮询刷新，字号比片名小、比副标题亮。 */
+#curtain .ctstat{margin-top:14px;font-size:19px;color:#cfe9ff;letter-spacing:1px;
+ line-height:1.5;text-shadow:0 2px 12px rgba(0,0,0,.85);min-height:26px}
+#curtain .ctstat b{color:#00e08a;font-weight:600}
+#curtain .ctstat .slow{color:#ffcc55}
+#curtain .ctstat .dim{color:#8fa8bd}
+#curtain .cbar{margin-top:16px;width:320px;height:4px;border-radius:2px;
+ background:rgba(255,255,255,.14);overflow:hidden}
+#curtain .cbar i{display:block;height:100%;width:30%;border-radius:2px;
+ background:linear-gradient(90deg,#00e08a,#39d0ff);animation:cbar 1.1s ease-in-out infinite}
+@keyframes cbar{0%{margin-left:-30%}100%{margin-left:100%}}
+#curtain .cspin{position:absolute;right:78px;bottom:11vh;width:34px;height:34px;
+ border-radius:50%;border:2px solid rgba(0,224,138,.20);border-top-color:#00e08a;
+ animation:cspin .85s linear infinite}
+@keyframes cspin{to{transform:rotate(360deg)}}
+/* 从播放器返回时整页淡入，别硬切 */
+body.backfade #heroFx,body.backfade .hero,body.backfade #titleCard,
+body.backfade #epSec,body.backfade #castSec,body.backfade #recSec{
+ animation:bfade .5s ease-out}
+@keyframes bfade{from{opacity:.2}to{opacity:1}}
+.back{display:inline-block;margin-bottom:18px;font-size:14px;color:#7d8aa3}
+.foot{font-size:15px;margin-top:38px;font-size:12px;color:#4d5769;letter-spacing:1px}
+
+/* ---- 数据源切换浮层（遥控「设置」键呼出）---- */
+#srcMenu{display:none;position:fixed;left:0;top:0;right:0;bottom:0;z-index:60;
+ background:rgba(4,7,12,.82)}
+#srcMenu.on{display:block}
+#srcMenu .srcbox{position:absolute;left:50%;top:50%;width:640px;max-width:86vw;
+ transform:translate(-50%,-50%);padding:26px 28px 20px;border-radius:18px;
+ background:rgba(12,17,26,.97);border:1px solid rgba(0,224,138,.38);
+ box-shadow:0 0 60px rgba(0,224,138,.22),0 24px 60px rgba(0,0,0,.6)}
+#srcMenu .srctitle{font-size:15px;letter-spacing:3px;color:#9ff5cd;margin-bottom:16px}
+#srcMenu .srcopts{display:flex;gap:14px}
+#srcMenu .srcopt{flex:1;display:block;padding:20px 18px;border-radius:14px;
+ text-decoration:none;color:#cfdae8;background:rgba(255,255,255,.04);
+ border:1px solid rgba(255,255,255,.09);font-size:19px;letter-spacing:1px}
+#srcMenu .srcopt small{display:block;margin-top:8px;font-size:12.5px;color:#77839a;
+ letter-spacing:0}
+#srcMenu .srcopt.sel{color:#04110b;background:#00e08a;border-color:#00e08a;
+ box-shadow:0 0 30px rgba(0,224,138,.6)}
+#srcMenu .srcopt.sel small{color:#0a3d28}
+#srcMenu .srcopt.close{flex:0 0 96px;text-align:center;font-size:22px}
+#srcMenu .srcopt.close small{font-size:12px}
+#srcMenu .srcopt.cur:after{content:"当前";position:absolute;margin:-4px 0 0 6px;
+ font-size:11px;color:#00e08a}
+#srcMenu .srcopt.cur.sel:after{color:#0a3d28}
+#srcMenu .srchint{margin-top:16px;font-size:12.5px;color:#5d697e;text-align:center}
+.srcpill{float:right;padding:5px 12px;border-radius:9px;font-size:12.5px;
+ text-decoration:none;color:#9ff5cd;border:1px solid rgba(0,224,138,.42);
+ background:rgba(0,224,138,.09)}
+
+/* 操作区：播放 / 追剧。电视上这两个是主按钮，所以做得比 chips 大一圈。
+   注意：**默认态不能是实心亮色** —— 遥控器焦点只有一个，如果两个按钮都亮着，
+   用户根本看不出光标在哪（实拍反馈过）。所以默认是描边态，只有 .sel 才实心。 */
+.acts{margin:22px 0 6px}
+.btn{display:inline-block;margin:0 12px 12px 0;padding:13px 30px;border-radius:12px;
+ font-size:16px;letter-spacing:2px;border:2px solid rgba(0,224,138,.5);
+ color:#9ff5cd;background:rgba(0,224,138,.07);font-weight:700;cursor:pointer;
+ box-shadow:none;transition:background .12s,color .12s,box-shadow .12s}
+.btn.ghost{color:#9ff5cd;background:rgba(0,224,138,.05);font-weight:500;
+ box-shadow:none;border-color:rgba(0,224,138,.35)}
+.btn.on{color:#dcc4ff;background:rgba(168,85,247,.10);border-color:rgba(168,85,247,.55);
+ box-shadow:none}
+.btn[disabled]{opacity:.42;box-shadow:none;cursor:default}
+.line{display:inline-block;margin:0 10px 10px 0;padding:11px 24px;border-radius:10px;
+ font-size:15px;color:#9ff5cd;background:rgba(0,224,138,.09);
+ border:1px solid rgba(0,224,138,.34);transition:background .12s,color .12s}
+/* 遥控器焦点：电视上没有鼠标，方向键左右切按钮，OK 键触发。
+   .sel 态用「实心 + 白边 + 双圈光晕」，和默认描边态拉开明显差异。 */
+.btn.sel{color:#04120c;background:#00e08a;border-color:#eafff5;
+ box-shadow:0 0 0 3px rgba(0,224,138,.38),0 0 34px rgba(0,224,138,.78)}
+.btn.on.sel{color:#0a0d14;background:#a855f7;border-color:#f3e8ff;
+ box-shadow:0 0 0 3px rgba(168,85,247,.38),0 0 34px rgba(168,85,247,.82)}
+.line.sel{color:#04120c;background:#00e08a;border-color:#eafff5;
+ box-shadow:0 0 0 3px rgba(0,224,138,.38)}
+.keys{margin-top:4px;font-size:12px;color:#4f5a6b;letter-spacing:1px}
+/* 2026-11-01 海哥：类目条下的遥控提示整块删了 —— 页面要简洁高级感，
+   筛选靠浮层自己说明（← → 选择　OK 确认），不再在页面上铺说明文字。 */
+.empty{padding:40px 0;font-size:15px;color:#6f7c93}
+.tip{margin-top:10px;font-size:12px;color:#5d6879;line-height:1.8}
+
+/* ---- 影人页（点头像进来）：左头像 + 右资料 + 作品墙 ---- */
+.phead{display:flex;margin:6px 0 26px}
+.phead .pav{width:280px;flex:none;margin-right:32px}
+.phead .pav img{width:100%;border-radius:16px;border:1px solid rgba(168,85,247,.3);
+ box-shadow:0 0 34px rgba(168,85,247,.18),0 18px 44px rgba(0,0,0,.62)}
+.phead .pinfo{flex:1;min-width:0;padding-top:4px;padding-right:56px}
+.phead h1{font-size:32px;margin-bottom:6px;color:#eafff5;
+ text-shadow:0 0 14px rgba(0,224,138,.55)}
+.phead .platin{font-size:14px;color:#7d8aa3;letter-spacing:1px;margin-bottom:16px}
+.phead .pintro{font-size:14px;line-height:1.9;color:#b9c4d6;
+ display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:7;
+ max-height:13.3em;overflow:hidden}
+.pinfo2{margin-top:14px;font-size:13px;color:#8d9bb2;line-height:2}
+.pinfo2 b{color:#9ff5cd;font-weight:500;margin-right:10px}
+.cip{color:#d8f7ea}
+.ci a.sel,.cip.sel{color:#04120c;background:#00e08a;padding:1px 6px;border-radius:6px}
+/* 影人作品墙：一行 6 张，比首页小一号，能一屏看到更多作品 */
+#workSec .wall .card{width:25%}
+@media(max-width:1180px){#workSec .wall .card{width:25%}}
+@media(max-width:900px){#workSec .wall .card{width:33.33%}}
+
+/* 演职员表（圆形头像 + 角色） */
+.cast{display:flex;flex-wrap:wrap;margin:0 -7px 8px}
+.citem{width:14.28%;padding:0 7px;margin-bottom:18px;text-align:center}
+@media(max-width:1180px){.citem{width:16.66%}}
+@media(max-width:900px){.citem{width:20%}}
+@media(max-width:640px){.citem{width:25%}}
+.cface{position:relative;width:100%;padding-top:100%;border-radius:50%;
+ overflow:hidden;background:#0e141f;border:1px solid rgba(0,224,138,.18)}
+.cface img{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover}
+.cface.noimg{display:flex;align-items:center;justify-content:center;
+ color:#5d6879;font-size:22px;font-weight:700}
+.cname{margin-top:8px;font-size:13px;color:#e6edf7;line-height:1.35}
+.crole{font-size:11px;color:#8d9bb2;line-height:1.35;max-height:2.8em;overflow:hidden}
+.crew{margin:0 -7px 6px}
+.crew .ci{display:inline-block;margin:0 8px 8px 0;padding:6px 14px;border-radius:9px;
+ font-size:13px;color:#d8f7ea;background:rgba(0,224,138,.07);
+ border:1px solid rgba(0,224,138,.3)}
+.crew .ci b{color:#9ff5cd;font-weight:500;margin-right:6px}
+/* 「主演」那一串人名可能几十个字，chip 会撑满整行；单行省略，遥控焦点不受影响 */
+.crew .ci.wide{max-width:100%;overflow:hidden;text-overflow:ellipsis;
+ white-space:nowrap;display:inline-block;vertical-align:top}
+
+/* 演职员头像：点按 = 在 App 里搜该演员（活链接） */
+.cast a.sel .cface{border-color:#00e08a;
+ box-shadow:0 0 0 3px rgba(0,224,138,.4),0 0 18px rgba(0,224,138,.5)}
+.cast a.sel .cname{color:#9ff5cd}
+
+/* 相关推荐卡：遥控选中态（和按钮共用 sel 机制） */
+.card.sel .pic{border-color:#00e08a;
+ box-shadow:0 0 0 3px rgba(0,224,138,.4),0 0 26px rgba(0,224,138,.6)}
+.card.sel h3{color:#9ff5cd}
+
+/* ---- 满屏背景双层轮播（转场：fade / zoom / slide / ken） ------------------
+   注意：**不能用 inset:0 简写** —— Android 9 电视的 WebView 是 Chrome 84，
+   inset 是 87+ 才有的简写，写了整层塌缩不可见（2026-10-30 真机黑屏实锤）。
+   必须显式 top/left/width/height。 */
+#heroFx{position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:-2;
+ overflow:hidden;background:#070a10}
+#heroFx img{position:absolute;top:0;left:0;width:100%;height:100%;
+ object-fit:cover;opacity:0;will-change:opacity,transform;
+ transition:opacity .9s ease,transform 2.8s ease}
+/* 相关推荐：进推荐态时一次只亮一行，按下键再展开下一行 */
+.rowhide{display:none}
+/* 推荐区大海报：一行 4 张（2026-10-30 海哥：再次加大尺寸） */
+#recSec .wall .card{width:25%}
+@media (max-width:1180px){#recSec .wall .card{width:25%}}
+@media (max-width:900px){#recSec .wall .card{width:33.33%}}
+#recSec .wall .card h3{font-size:16px}
+
+/* ---- 左上角片名动画条 ------------------------------------------------
+   hero 态隐藏；进演职员/推荐态时延迟 1 秒从左侧滑入 + 发光。
+   剧名优先用 TMDB 官方 logo 图（美化设计），没有就退回霓虹文字。 */
+#titleCard{position:fixed;top:26px;left:34px;z-index:40;max-width:44vw;
+ opacity:0;transform:translateX(-30px);pointer-events:none;
+ transition:opacity .55s ease,transform .55s ease}
+#titleCard.show{opacity:1;transform:translateX(0)}
+#titleCard .tcwrap{padding:14px 20px;border-radius:14px;
+ background:linear-gradient(135deg,rgba(7,10,16,.88),rgba(7,10,16,.55));
+ border:1px solid rgba(0,224,138,.32);
+ box-shadow:0 0 0 1px rgba(168,85,247,.10) inset,0 12px 38px rgba(0,0,0,.6),
+            0 0 28px rgba(0,224,138,.14)}
+#titleCard img.tlogo{display:block;max-width:300px;max-height:88px;margin-bottom:8px;
+ filter:drop-shadow(0 0 14px rgba(0,224,138,.35))}
+#titleCard h2{font-size:26px;line-height:1.3;color:#eafff5;letter-spacing:1px;
+ text-shadow:0 0 14px rgba(0,224,138,.8),0 0 36px rgba(0,224,138,.4);
+ margin:0 0 6px}
+#titleCard p{font-size:12.5px;line-height:1.62;color:#aeb9cc;margin:0;
+ max-height:3.4em;overflow:hidden;display:-webkit-box;
+ -webkit-line-clamp:2;-webkit-box-orient:vertical}
+/* 推荐态只留特效剧名卡：有 logo 图时把文字剧名也藏掉（2026-10-30 海哥） */
+#titleCard.nomin h2{display:none}
+#titleCard p b{color:#9ff5cd;font-weight:600;letter-spacing:2px;
+ text-shadow:0 0 10px rgba(0,224,138,.6)}
