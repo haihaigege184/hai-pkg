@@ -3,75 +3,96 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>站源与配置 · 海哥影视</title>
+<title>设置 · 站源与配置 · 海哥影视</title>
 <link rel="stylesheet" href="style.css">
 <style>
-/* 站源页：复刻原版设置页的信息结构，视觉走海哥的科技感深色透明 */
-:root{--neon:#56f5c8;--neon2:#b18cff;--warn:#ffb45c;--dim:#9aa7bd;--panel:rgba(10,18,34,.72)}
+/* 复刻原版设置页的信息结构（9 行 + 点播配置对话框 + 站源页），视觉走科技感深色透明 */
+:root{--neon:#56f5c8;--neon2:#b18cff;--warn:#ffb45c;--dim:#9aa7bd;--panel:rgba(10,18,34,.74)}
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;background:linear-gradient(135deg,#050a16,#0b1226 55%,#07101f);color:#eaf2ff;font-family:"Microsoft YaHei","PingFang SC",sans-serif}
-body{padding:36px 48px;overflow:hidden}
-h1{font-size:38px;margin:0 0 6px;letter-spacing:4px;color:var(--neon);text-shadow:0 0 18px rgba(86,245,200,.65)}
-.sub{font-size:16px;color:var(--dim);margin-bottom:24px;letter-spacing:1px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;height:calc(100% - 130px)}
-.card{background:var(--panel);border:1px solid rgba(120,160,220,.22);border-radius:14px;padding:22px 26px;
-  box-shadow:0 8px 40px rgba(0,0,0,.45),inset 0 0 40px rgba(86,245,200,.035);backdrop-filter:blur(8px);overflow:hidden}
-.card h2{font-size:22px;margin:0 0 16px;color:var(--neon2);letter-spacing:2px;text-shadow:0 0 12px rgba(177,140,255,.55)}
-.kv{display:flex;font-size:17px;line-height:2.1;border-bottom:1px dashed rgba(150,180,220,.14)}
-.kv .k{width:150px;color:var(--dim);flex:none}
-.kv .v{color:#eaf2ff;word-break:break-all}
-.badge{display:inline-block;padding:1px 10px;border-radius:20px;font-size:13px;margin-right:8px;
+html,body{margin:0;height:100%;background:linear-gradient(135deg,#050a16,#0b1226 55%,#07101f);color:#eaf2ff;
+  font-family:"Microsoft YaHei","PingFang SC",sans-serif}
+body{padding:30px 44px;overflow:hidden}
+h1{font-size:34px;margin:0 0 4px;letter-spacing:4px;color:var(--neon);text-shadow:0 0 18px rgba(86,245,200,.65)}
+.sub{font-size:15px;color:var(--dim);margin-bottom:20px;letter-spacing:1px}
+.wrap{display:grid;grid-template-columns:320px 1fr;gap:22px;height:calc(100% - 108px)}
+.card{background:var(--panel);border:1px solid rgba(120,160,220,.22);border-radius:14px;padding:20px 24px;
+  box-shadow:0 8px 40px rgba(0,0,0,.45),inset 0 0 40px rgba(86,245,200,.035);overflow:hidden}
+.card h2{font-size:21px;margin:0 0 14px;color:var(--neon2);letter-spacing:2px;text-shadow:0 0 12px rgba(177,140,255,.55)}
+/* 左：9 行设置导航 */
+.row{display:flex;align-items:center;gap:12px;padding:12px 16px;margin-bottom:6px;border-radius:10px;
+  border:1px solid rgba(120,160,220,.14);font-size:19px;outline:none;transition:.12s}
+.row .no{width:34px;color:var(--dim);font-size:14px;text-align:right;flex:none}
+.row .ar{margin-left:auto;color:var(--dim);font-size:14px}
+.row.focus{border-color:var(--neon);background:rgba(86,245,200,.12);box-shadow:0 0 22px rgba(86,245,200,.3);
+  transform:translateX(5px);text-shadow:0 0 10px rgba(86,245,200,.55)}
+.row.cur{border-color:rgba(177,140,255,.5)}
+/* 右：面板 */
+.kv{display:flex;font-size:16px;line-height:2.05;border-bottom:1px dashed rgba(150,180,220,.14)}
+.kv .k{width:140px;color:var(--dim);flex:none}
+.kv .v{word-break:break-all}
+.badge{display:inline-block;padding:1px 9px;border-radius:20px;font-size:12px;margin-right:7px;
   border:1px solid rgba(86,245,200,.5);color:var(--neon);text-shadow:0 0 8px rgba(86,245,200,.5)}
 .badge.csp{border-color:rgba(177,140,255,.55);color:var(--neon2)}
 .badge.js{border-color:rgba(255,180,92,.55);color:var(--warn)}
-#siteList{height:calc(100% - 60px);overflow-y:auto;padding-right:8px}
-.site{display:flex;align-items:center;gap:14px;padding:11px 16px;margin-bottom:8px;border-radius:10px;
-  border:1px solid rgba(120,160,220,.16);background:rgba(255,255,255,.025);font-size:18px;outline:none}
-.site .idx{width:44px;color:var(--dim);font-size:15px;text-align:right;flex:none}
-.site .nm{width:210px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.site .ky{color:var(--dim);font-size:15px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.site .st{font-size:14px;flex:none;color:var(--neon)}
-.site.focus{border-color:var(--neon);background:rgba(86,245,200,.12);box-shadow:0 0 22px rgba(86,245,200,.28);
-  transform:translateX(6px);text-shadow:0 0 10px rgba(86,245,200,.5)}
-.site.off .nm,.site.off .ky{opacity:.42;text-decoration:line-through}
-.hint{margin-top:16px;font-size:15px;color:var(--warn);letter-spacing:1px;text-shadow:0 0 10px rgba(255,180,92,.35)}
+.badge.off{border-color:rgba(255,120,120,.5);color:#ff9a9a}
+/* 点播配置对话框（原版 4 按钮 + 二维码） */
+.dlg{margin-top:14px;padding:16px 18px;border:1px solid rgba(86,245,200,.3);border-radius:12px;
+  background:rgba(86,245,200,.045)}
+.dlg .t{font-size:16px;color:var(--dim);margin-bottom:10px;letter-spacing:1px}
+.inp{width:100%;padding:11px 14px;font-size:17px;border-radius:9px;border:1px solid rgba(120,160,220,.4);
+  background:rgba(0,0,0,.35);color:#eaf2ff;outline:none}
+.inp:focus{border-color:var(--neon);box-shadow:0 0 14px rgba(86,245,200,.3)}
+.btns{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
+.btn{padding:8px 20px;font-size:16px;border-radius:9px;border:1px solid rgba(120,160,220,.45);
+  background:rgba(255,255,255,.04);color:#eaf2ff;cursor:pointer;font-weight:bold}
+.btn.pri{border-color:var(--neon);color:var(--neon);text-shadow:0 0 8px rgba(86,245,200,.6);
+  box-shadow:0 0 14px rgba(86,245,200,.18)}
+.btn.focus{outline:2px solid var(--neon);background:rgba(86,245,200,.16)}
+.qr{width:96px;height:96px;border:1px dashed rgba(150,180,220,.4);border-radius:8px;display:flex;
+  align-items:center;justify-content:center;color:var(--dim);font-size:13px;text-align:center;flex:none}
+.dlgrow{display:flex;gap:16px;align-items:flex-start}
+.dlgrow .flex1{flex:1}
+/* 历史列表 / 站源列表 */
+.list{margin-top:12px;height:230px;overflow-y:auto;padding-right:8px}
+.item{padding:9px 14px;margin-bottom:6px;border-radius:9px;border:1px solid rgba(120,160,220,.16);
+  background:rgba(255,255,255,.025);font-size:15px;word-break:break-all}
+.item.focus{border-color:var(--neon2);background:rgba(177,140,255,.14)}
+.site{display:flex;align-items:center;gap:10px;padding:9px 13px;margin-bottom:6px;border-radius:9px;
+  border:1px solid rgba(120,160,220,.16);background:rgba(255,255,255,.025);font-size:16px}
+.site .nm{width:170px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.site .ky{color:var(--dim);font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.site .mk{font-size:12px;padding:2px 8px;border-radius:14px;border:1px solid rgba(120,160,220,.35);flex:none}
+.site .mk.on{color:var(--neon);border-color:var(--neon)}
+.site.focus{border-color:var(--neon);background:rgba(86,245,200,.12);box-shadow:0 0 18px rgba(86,245,200,.25)}
+.hint{margin-top:12px;font-size:14px;color:var(--warn);text-shadow:0 0 10px rgba(255,180,92,.3)}
+.foot{margin-top:12px;font-size:13px;color:var(--dim)}
 .err{color:#ff7d7d}
 ::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:rgba(86,245,200,.35);border-radius:8px}
 </style>
 </head>
 <body>
-<h1>站源与配置</h1>
-<div class="sub">数据源：jar 本地服务 · 与原版 Config 表同一份配置 · 遥控器 ↑↓ 翻页 / OK 启用停用</div>
-<div class="grid">
-  <div>
-    <div class="card" style="height:44%">
-      <h2>当前激活配置</h2>
-      <div id="cfgBox"><div class="kv"><div class="v">读取中…</div></div></div>
-    </div>
-    <div class="card" style="height:52%;margin-top:20px">
-      <h2>播放代理链路</h2>
-      <div id="proxyBox"><div class="kv"><div class="v">读取中…</div></div></div>
-      <div class="hint" id="modeHint"></div>
-    </div>
-  </div>
-  <div class="card">
-    <h2>站源列表 <span id="siteCount" style="font-size:15px;color:var(--dim)"></span></h2>
-    <div id="siteList"></div>
-  </div>
+<h1>设置</h1>
+<div class="sub">原版 9 行结构复刻 · ↑↓ 选择 / OK 或 → 进入 / ← 或返回键 回设置项 · 数据来自 jar 本地服务</div>
+<div class="wrap">
+  <div class="card" id="navCard"><h2>设置项</h2><div id="nav"></div></div>
+  <div class="card" id="panelCard"><div id="panel"></div></div>
 </div>
 
 <script>
-/* 不依赖服务器：所有 /hai/* 指到 jar 本地服务（HAI_BASE 由 APK 注入，未注入时用同机默认） */
+/* 零服务器依赖：/hai/* 全部走 jar 本地服务（HAI_BASE 由 APK 注入） */
 (function(){
   'use strict';
   var BASE = String(window.HAI_BASE || 'http://127.0.0.1:10078').replace(/\/+$/,'');
-  var sites = [], focus = 0, disabled = {};
-  try { disabled = JSON.parse(localStorage.getItem('hai_site_off')||'{}'); } catch(e){}
+  var ROWS = ['点播','直播','壁纸','播放','网盘及弹幕配置','数据','字幕','其他','关于'];
+  var PNAME = {nav:'设置项',dlg:'配置对话框',hist:'配置历史',sites:'站源列表',play:'播放信息',info:'只读镜像'};
+
+  /* 焦点区状态机：nav=左栏；进入右栏后按行切成 hist/dlg/sites/play/info */
+  var row = 0, pane = 'nav', siteIx = 0, btnIx = 0, histIx = 0;
+  var sites = [], configs = [], active = null, ping = null, prefs = {}, toast = '';
 
   function api(path, cb){
     var x = new XMLHttpRequest();
-    x.open('GET', BASE + path, true);
-    x.timeout = 8000;
+    x.open('GET', BASE + path, true); x.timeout = 8000;
     x.onreadystatechange = function(){
       if (x.readyState !== 4) return;
       try { cb(x.status === 200 ? JSON.parse(x.responseText) : null); }
@@ -83,77 +104,232 @@ h1{font-size:38px;margin:0 0 6px;letter-spacing:4px;color:var(--neon);text-shado
   function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
   function kv(k,v){ return '<div class="kv"><div class="k">'+esc(k)+'</div><div class="v">'+v+'</div></div>'; }
+  function setToast(s){ toast = s; renderPanel(); }
+  function foot(){
+    return '<div class="foot">焦点区：'+esc(PNAME[pane]||pane)+' · ← / 返回键 回设置项'
+      + (toast ? '<br><span class="hint">'+esc(toast)+'</span>' : '') + '</div>';
+  }
 
-  api('/hai/site/active', function(d){
-    var box = document.getElementById('cfgBox');
-    if (!d || !d.ok) { box.innerHTML = '<div class="kv"><div class="v err">读取失败（jar 服务未启动？）</div></div>'; return; }
-    var cfg = d.config || {}, n = (cfg.sites||[]).length;
-    box.innerHTML = kv('配置地址', esc(d.url || '（本地缓存）'))
-      + kv('配置 ID', esc(d.id))
-      + kv('落库时间', d.time ? new Date(Number(d.time)).toLocaleString('zh-CN') : '—')
+  /* ---------- 左栏 9 行 ---------- */
+  function renderNav(){
+    var h = '';
+    for (var i=0;i<ROWS.length;i++){
+      var cls = 'row' + (i===row && pane==='nav' ? ' focus' : '') + (i===row && pane!=='nav' ? ' cur' : '');
+      h += '<div class="'+cls+'" data-i="'+i+'"><span class="no">'+String(i+1).padStart(2,'0')+'</span>'
+         + esc(ROWS[i]) + '<span class="ar">'+(i===row?'▶':'')+'</span></div>';
+    }
+    document.getElementById('nav').innerHTML = h;
+  }
+
+  /* ---------- 右栏：按行渲染 ---------- */
+  function renderPanel(){
+    var p = document.getElementById('panel'), i = row;
+    if (i === 0) return panelVod(p);
+    if (i === 3) return panelPlay(p);
+    if (i === 4) return panelSites(p);
+    p.innerHTML = '<h2>'+esc(ROWS[i])+'</h2>'
+      + kv('状态','<span class="badge">原版功能，本页只读镜像</span>')
+      + '<div class="hint">该行仍走原版设置页；本复刻页当前只接管「点播 / 播放 / 站源」三块。</div>'
+      + foot();
+  }
+
+  function panelVod(p){
+    var a = active || {}, cfg = a.config || {}, n = (cfg.sites||[]).length;
+    var cur = (configs.length && configs[0]) ? configs[0] : {};
+    var hist = '';
+    for (var j=0;j<configs.length;j++){
+      var c = configs[j];
+      hist += '<div class="item'+(pane==='hist' && j===histIx?' focus':'')+'">'
+        + '<span class="badge'+(j===0?'':' csp')+'">'+(j===0?'当前':'历史')+'</span>'
+        + esc(c.url||'') + ' <span style="color:#9aa7bd;font-size:13px">#'+esc(c.id)+'</span></div>';
+    }
+    var bf = (pane==='dlg');
+    p.innerHTML = '<h2>点播 · 配置地址</h2>'
+      + kv('配置 ID', esc(a.id))
+      + kv('落库时间', a.time ? new Date(Number(a.time)).toLocaleString('zh-CN') : '—')
       + kv('站源数量', '<span class="badge">'+n+' 个</span>')
-      + kv('spider', '<span class="badge csp">'+esc((cfg.spider||'').slice(0,60))+'</span>')
-      + kv('播放模式', '<span class="badge js">PG 原版内核</span>');
-  });
+      + kv('spider', '<span class="badge csp">'+esc((cfg.spider||'').slice(0,64))+'</span>')
+      + kv('当前指针', '<span class="badge js">config_0 = '+esc((a.url||cur.url||''))+'</span>')
+      + '<div class="dlg"><div class="dlgrow"><div class="flex1">'
+      +   '<div class="t">配置地址（原版对话框：输入框 + 4 按钮 + 二维码）</div>'
+      +   '<input class="inp" id="cfgInput" value="'+esc(a.url||cur.url||'http://10.0.0.11:8099/hai/jsm.json')+'">'
+      +   '<div class="btns">'
+      +     '<button class="btn'+(bf&&btnIx===0?' focus':'')+'" data-b="0">取消</button>'
+      +     '<button class="btn pri'+(bf&&btnIx===1?' focus':'')+'" data-b="1">确定</button>'
+      +     '<button class="btn'+(bf&&btnIx===2?' focus':'')+'" data-b="2">扫码</button>'
+      +     '<button class="btn'+(bf&&btnIx===3?' focus':'')+'" data-b="3">历史</button>'
+      +   '</div></div><div class="qr">二维码<br>（原版）</div></div></div>'
+      + '<h2 style="margin-top:16px">配置历史 <span style="font-size:14px;color:#9aa7bd">Config 表 type=0 按 time 倒序</span></h2>'
+      + '<div class="list">'+ (hist || '<div class="err">读取失败</div>') +'</div>'
+      + '<div class="hint">注：config_0/1/2 不是历史，是 Config.update() 按 type 写的当前 URL 指针；'
+      + '历史列表来自 SELECT … FROM Config WHERE type=? ORDER BY time DESC。</div>'
+      + foot();
+  }
 
-  api('/hai/ping', function(d){
-    var box = document.getElementById('proxyBox');
-    if (!d || !d.ok) { box.innerHTML = '<div class="kv"><div class="v err">jar 服务不可达</div></div>'; return; }
-    box.innerHTML = kv('R 加速服务', '<span class="badge">127.0.0.1:'+esc(d.proxy)+'</span>')
-      + kv('核心', esc(d.core))
+  function panelPlay(p){
+    var d = ping || {};
+    p.innerHTML = '<h2>播放 · 代理链路</h2>'
+      + kv('R 加速服务', '<span class="badge">127.0.0.1:'+esc(d.proxy||'?')+'</span>')
+      + kv('核心', esc(d.core||'jar'))
+      + kv('9978', 'APK NanoHTTPD · Proxy.proxy(Map) 站源分发（原版照搬）')
+      + kv('10079', 'Go 二进制流式媒体代理；10078 = iptables REDIRECT')
       + kv('流式策略', '单连接顺序透传 + 大缓冲预读')
-      + kv('缓冲段', '32 段 × 1MB（DEFAULT_BUFFER_SEGMENTS）')
-      + kv('并发加速', '可选（MODE_CONCURRENT）')
-      + kv('站源分发', '9978 / Proxy.proxy(Map) 原版照搬');
-    document.getElementById('modeHint').textContent =
-      '注：32 是缓冲段数，不是线程数；多线程下载在原版已实测禁用。';
-  });
+      + kv('缓冲段', '<span class="badge">32 段 × 1MB</span> DEFAULT_BUFFER_SEGMENTS')
+      + kv('并发加速', '可选 MODE_CONCURRENT（原版实测多线程更慢，已禁用）')
+      + '<div class="hint">32 是缓冲段数，不是线程数；峰值 50MB/s 来自零等待起播 + 大缓冲吸收抖动。</div>'
+      + foot();
+  }
 
-  api('/hai/site/list', function(d){
-    var list = document.getElementById('siteList');
-    if (!d || !d.ok) { list.innerHTML = '<div class="err">站源列表读取失败</div>'; return; }
-    sites = d.sites || [];
-    document.getElementById('siteCount').textContent = '共 ' + sites.length + ' 个';
-    render();
-  });
-
-  function render(){
-    var list = document.getElementById('siteList'), html = '';
+  function panelSites(p){
+    var h = '';
     for (var i=0;i<sites.length;i++){
       var s = sites[i], api0 = String(s.api||'');
       var cls = api0.indexOf('csp_')===0 ? 'csp' : (api0.indexOf('.js')>=0 ? 'js' : '');
       var tag = api0.indexOf('csp_')===0 ? '内置' : (s.type==3 ? 'JS' : 'HTTP');
-      var off = !!disabled[s.key];
-      html += '<div class="site'+(i===focus?' focus':'')+(off?' off':'')+'" data-i="'+i+'">'
-        + '<div class="idx">'+String(i+1).padStart(2,'0')+'</div>'
-        + '<div class="nm">'+esc(s.name||s.key)+'</div>'
-        + '<div class="ky"><span class="badge '+cls+'">'+tag+'</span>'+esc(s.key)+' · '+esc(api0.slice(0,48))+'</div>'
-        + '<div class="st">'+(off?'已停用':'启用')+'</div></div>';
+      var pr = prefs[s.key] || {searchable:s.searchable, changeable:s.changeable};
+      h += '<div class="site'+(pane==='sites' && i===siteIx?' focus':'')+'" data-i="'+i+'">'
+        + '<span class="nm">'+esc(s.name||s.key)+'</span>'
+        + '<span class="ky"><span class="badge '+cls+'">'+tag+'</span>'+esc(s.key)+' · '+esc(api0.slice(0,40))+'</span>'
+        + '<span class="mk'+(pr.searchable?' on':'')+'">可搜</span>'
+        + '<span class="mk'+(pr.changeable?' on':'')+'">可换</span></div>';
     }
-    list.innerHTML = html || '<div class="err">没有站源</div>';
-    var el = list.querySelector('.site.focus');
-    if (el && el.scrollIntoView) el.scrollIntoView({block:'nearest'});
+    p.innerHTML = '<h2>站源 <span style="font-size:14px;color:#9aa7bd">共 '+(sites.length)+' 个 · '
+      + '↑↓ 选择 / ←→ 切「可搜·可换」/ OK 保存</span></h2>'
+      + '<div class="list" style="height:330px">'+ (h || '<div class="err">读取失败</div>') +'</div>'
+      + '<div class="btns" style="margin-top:12px">'
+      +   '<button class="btn pri" onclick="window.__haiSave()">保存</button>'
+      +   '<button class="btn" onclick="window.__haiReload()">刷新</button>'
+      +   '<button class="btn" onclick="window.__haiAll(1)">全启用</button>'
+      +   '<button class="btn" onclick="window.__haiAll(0)">全停用</button>'
+      +   '<button class="btn" onclick="window.__haiReset()">还原</button></div>'
+      + '<div class="hint">勾选状态写回 App 原生 Site 表（key/searchable/changeable），'
+      + '与原版 Site.save() 同一份数据，不是 WebView 私有存储。</div>'
+      + foot();
   }
 
-  function move(d){
+  /* ---------- 站源操作 ---------- */
+  window.__haiSave = function(){
+    var keys = [];
+    for (var k in prefs) if (prefs.hasOwnProperty(k)) keys.push(k);
+    if (!keys.length){ setToast('没有需要保存的更改'); return; }
+    var left = keys.length, ok = 0;
+    for (var i=0;i<keys.length;i++){
+      (function(key){
+        api('/hai/site/prefs?key='+encodeURIComponent(key)
+            +'&searchable='+(prefs[key].searchable?1:0)
+            +'&changeable='+(prefs[key].changeable?1:0), function(d){
+          if (d && d.ok) ok++;
+          if (--left === 0){
+            setToast('已写回 Site 表：'+ok+'/'+keys.length+' 个站源');
+            setTimeout(function(){ window.__haiReload(); }, 700);
+          }
+        });
+      })(keys[i]);
+    }
+  };
+  window.__haiReload = function(){ loadSites(); };
+  window.__haiAll = function(v){
+    for (var i=0;i<sites.length;i++) prefs[sites[i].key] = {searchable:v,changeable:v};
+    renderPanel();
+  };
+  window.__haiReset = function(){ prefs = {}; loadSites(); };
+  function toggleMark(dir){
     if (!sites.length) return;
-    focus = Math.max(0, Math.min(sites.length-1, focus+d));
-    render();
+    var s = sites[siteIx]; if (!s) return;
+    var pr = prefs[s.key] || {searchable:s.searchable,changeable:s.changeable};
+    if (dir < 0) pr.searchable = pr.searchable?0:1; else pr.changeable = pr.changeable?0:1;
+    prefs[s.key] = pr; renderPanel();
   }
-  function toggle(){
-    if (!sites.length) return;
-    var k = sites[focus].key;
-    if (disabled[k]) delete disabled[k]; else disabled[k] = 1;
-    try { localStorage.setItem('hai_site_off', JSON.stringify(disabled)); } catch(e){}
-    render();
+
+  /* ---------- 数据加载 ---------- */
+  function loadSites(){
+    api('/hai/site/list', function(d){
+      if (!d || !d.ok) return;
+      sites = d.sites || []; prefs = {};
+      for (var i=0;i<sites.length;i++) prefs[sites[i].key] =
+        {searchable:sites[i].searchable, changeable:sites[i].changeable};
+      siteIx = Math.min(siteIx, Math.max(0, sites.length-1));
+      renderPanel();
+    });
+  }
+  api('/hai/site/active', function(d){ active = d; renderPanel(); });
+  api('/hai/site/configs', function(d){ configs = (d && d.configs) || []; renderPanel(); });
+  api('/hai/ping', function(d){ ping = d; renderPanel(); });
+  loadSites();
+  renderNav(); renderPanel();
+
+  /* ---------- 遥控（两套键码都认：WebView 送 DOM 37/38/39/40，原生是 19/20/21/22） ---------- */
+  function moveRow(d){
+    row = Math.max(0, Math.min(ROWS.length-1, row+d));
+    renderNav(); renderPanel();
+  }
+  function enterPane(){
+    if (row === 0) pane = 'hist';        // 点播 → 配置历史（OK 可回填地址、进对话框）
+    else if (row === 3) pane = 'play';   // 播放 → 代理链路信息
+    else if (row === 4) pane = 'sites';  // 网盘及弹幕配置 → 站源列表
+    else pane = 'info';
+    setToast(''); renderPanel();
+  }
+  function doBtn(i){
+    var el;
+    if (i === 0){ pane = 'nav'; setToast(''); return; }
+    if (i === 1){
+      el = document.getElementById('cfgInput');
+      setToast('「确定」需 App 侧 Config.update() 写库并重载（阶段 3 接入）；当前输入框 = '+(el?el.value:''));
+      return;
+    }
+    if (i === 2){ setToast('扫码：原版走相机 + 二维码，WebView 不支持，请用输入框粘贴地址'); return; }
+    if (i === 3){ pane = 'hist'; setToast(''); renderPanel(); return; }
   }
   document.addEventListener('keydown', function(e){
-    // 电视 DOM 键码是 37/38/39/40；部分盒子给 19/20/21/22，两套都认
     var k = e.keyCode;
-    if (k===38||k===19){ move(-1); e.preventDefault(); }
-    else if (k===40||k===20){ move(1); e.preventDefault(); }
-    else if (k===23||k===66||k===13){ toggle(); e.preventDefault(); }
-    else if (k===4||k===27){ location.href = 'index.html'; e.preventDefault(); }
+    var UP=(k===38||k===19), DOWN=(k===40||k===20),
+        LEFT=(k===37||k===21), RIGHT=(k===39||k===22),
+        OK=(k===23||k===66||k===13), BACK=(k===4||k===27);
+
+    if (BACK){
+      if (pane !== 'nav'){ pane = 'nav'; setToast(''); }
+      else { location.href = 'index.html'; }
+      e.preventDefault(); return;
+    }
+    if (pane === 'nav'){
+      if (UP){ moveRow(-1); e.preventDefault(); return; }
+      if (DOWN){ moveRow(1); e.preventDefault(); return; }
+      if (OK || RIGHT){ enterPane(); e.preventDefault(); return; }
+      return;
+    }
+    if (pane === 'hist'){
+      if (UP){ histIx = Math.max(0,histIx-1); renderPanel(); e.preventDefault(); return; }
+      if (DOWN){ histIx = Math.min(Math.max(0,configs.length-1),histIx+1); renderPanel(); e.preventDefault(); return; }
+      if (OK){
+        var c = configs[histIx], el = document.getElementById('cfgInput');
+        if (c && el) el.value = c.url || '';
+        pane = 'dlg';
+        setToast(c ? '已把历史地址填入输入框，按 ← → 选按钮' : '配置历史为空');
+        e.preventDefault(); return;
+      }
+      if (LEFT){ pane = 'nav'; setToast(''); e.preventDefault(); return; }
+      return;
+    }
+    if (pane === 'dlg'){
+      if (LEFT){
+        if (btnIx > 0){ btnIx--; renderPanel(); } else { pane = 'nav'; setToast(''); }
+        e.preventDefault(); return;
+      }
+      if (RIGHT){ btnIx = Math.min(3,btnIx+1); renderPanel(); e.preventDefault(); return; }
+      if (OK){ doBtn(btnIx); e.preventDefault(); return; }
+      return;
+    }
+    if (pane === 'sites'){
+      if (UP){ siteIx = Math.max(0,siteIx-1); renderPanel(); e.preventDefault(); return; }
+      if (DOWN){ siteIx = Math.min(Math.max(0,sites.length-1),siteIx+1); renderPanel(); e.preventDefault(); return; }
+      if (LEFT){ toggleMark(-1); e.preventDefault(); return; }
+      if (RIGHT){ toggleMark(1); e.preventDefault(); return; }
+      if (OK){ window.__haiSave(); e.preventDefault(); return; }
+      return;
+    }
+    // play / info：只读，← 或 OK 回左栏
+    if (LEFT || OK){ pane = 'nav'; setToast(''); e.preventDefault(); }
   });
 })();
 </script>

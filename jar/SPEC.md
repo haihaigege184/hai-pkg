@@ -305,28 +305,40 @@ pg.jar
 
 | 存储 | 内容 |
 |---|---|
-| SQLite `/data/user_de/0/com.hisen.android.tv/databases/tv` 表 `Config` | 列 `id/type/url/time/json`；**`type=0` + json 非空 + time 最新 = 激活**（实测 id=49）；`type=1` 是订阅行 |
-| SharedPreferences `com.hisen.android.tv_preferences.xml` | `config_0`、`config_1`… 存配置地址历史；`config_0` 当前地址 |
-| 冷启动 | 读 DB 激活行，**不发 HTTP**；只有「设置→配置」重选才真正拉 `/hai/jsm.json` |
+| SQLite `/data/user_de/0/com.hisen.android.tv/databases/tv` 表 `Config` | 列 `id/type/url/time/json`；激活行 = **原版 `AppDatabase.getConfig(type)`：`type=? ORDER BY time DESC LIMIT 1`**（不要求 json 非空）。`type` 语义：**0=点播 / 1=直播 / 2=壁纸**，订阅 urls 是展开成多条 `type=0` 行，**不是** type=1（旧记忆写错，已修正）。实测激活 id=49 |
+| SharedPreferences `com.hisen.android.tv_preferences.xml` | `config_0/config_1/config_2` **不是历史**，是 `Config.update()` 按 `"config_"+type` 写的当前 URL 指针；历史列表来自 Config 表 SQL。另有 `site_mode`（0 默认/1 显示分类/2 隐藏分类）、`config_cache` |
+| 表 `Site` | `CREATE TABLE Site(key TEXT NOT NULL, searchable INTEGER, changeable INTEGER, PRIMARY KEY(key))` — 站源勾选状态；`Site.save()` 事务写入，`Site.sync()` 只同步已启用的 |
+| 冷启动 | HomeActivity.onCreate → `ApiConfig.load()`（读 Config 表激活行）→ `loadConfig()`；**json 缓存非空时走「解析缓存」分支，不联网**。只有「设置→配置」重选才真正 HTTP 拉 jsm |
 
 ### 已落地的复刻（`android/assets/haiui/settings.html`）
 
-- 三块信息：当前激活配置（url/id/time/站点数/spider）、播放代理链路（端口/策略/缓冲段）、站源列表。
-- 站源列表字段 `key/name/type/api/ext/searchable/changeable/index`，来自 jar 本地
-  `/hai/site/list`（直接解析激活配置的 `sites` 数组，**不另造配置存储**）。
-- 遥控器 ↑↓（DOM 37/38/39/40 与 19/20/21/22 两套都认）+ OK(23/66/13) 启用停用，
-  状态存 localStorage `hai_site_off`；返回键回 `index.html`。
+- 左侧 **9 行设置导航**：`点播/直播/壁纸/播放/网盘及弹幕配置/数据/字幕/其他/关于`（真机坐标一致）；
+  ↑↓ 移动，OK / → 进入右栏，← / 返回键回左栏。
+- **焦点区状态机** `nav → hist / dlg / sites / play / info`：
+  - 点播行 → 配置历史（↑↓ 选，OK 把历史 URL 回填输入框并进对话框）
+  - 对话框 → 4 按钮 `取消 / 确定 / 扫码 / 历史`（←→ 选，OK 执行）+ 二维码占位
+  - 网盘及弹幕配置行 → 站源列表（↑↓ 选站源，←→ 切「可搜 / 可换」，OK 保存）
+  - 播放行 → 代理链路只读信息；其余行 → 只读镜像
+- 键码两套都认：WebView 送 DOM `37/38/39/40`，原生 `19/20/21/22`；OK `23/66/13`，返回 `4/27`。
+- 数据源全部走 jar 本地服务，零服务器依赖：`/hai/site/active`（激活 Config 行）、
+  `/hai/site/configs`（Config 表 `type=0` 按 time 倒序的历史）、`/hai/site/list`
+  （sites 数组 + 合并 `Site` 表偏好）、`/hai/site/prefs`（写回 `Site` 表）、`/hai/ping`。
+- **站源勾选写回 App 原生 `Site(key,searchable,changeable)` 表**，不是 WebView localStorage；
+  保存按请求计数，全部返回后才刷新，避免写一半重载。`HaiApiServer.dbPath()` 用
+  `Context.createDeviceProtectedStorageContext().getDatabasePath("tv")` 取真实路径，硬编码仅作回退。
 - 视觉：深色透明卡片、发光青/紫字、焦点霓虹描边 + 位移（海哥既定风格）。
 
-**复刻检查清单（剩余）**：① 配置地址切换/保存写入（当前只读镜像，避免与 App DB 抢锁）；
-② 站源勾选状态回写 App 原生存储（现在只存 WebView localStorage）；
-③ 订阅行 `type=1` 的展示与刷新；④ 原版页面每项背后的 smali 调用链（agent 深挖中）。
+**复刻检查清单（剩余）**：① 配置地址「确定」真正写库并触发 App 重载（需调原版
+`Config.update()` / `ApiConfig.load()`，jar 侧目前只读镜像，避免与 App 主线程抢锁）；
+② 扫码按钮接相机（WebView 无相机能力，需原生桥）；③ `site_mode` 三模式 UI 切换；
+④ 原版页面每项背后的 smali 调用链深挖；⑤ 带 `classes2.dex` 的 jar 真机部署与验证。
 
 ---
 
 ## 7. 待补 / 未确认
 
-- 设置站源页逐控件复刻规格（页面清单、配置历史弹窗、站源列表勾选存储）—— 逆向 agent 进行中。
+- ~~设置站源页逐控件复刻规格~~ → 已完成并落地（见 6.5 节）；剩余是「确定」写库、扫码、
+  `site_mode` 三模式的实操接线，见上方清单。
 - `go_proxy_video` 内部字符串被混淆/无明文路由常量（ELF AArch64、Go build info 不可见）；
   协议结论来自**真机抓包 + jar 侧 URL 构造**双向印证，不是从二进制反汇编得到。
 - `/yt/*`、`/av3am3u/*` 目前只占位返回 501，YouTube / 直播链路尚未复刻。
@@ -339,8 +351,9 @@ pg.jar
 
 | 项 | 结果 |
 |---|---|
-| Java 源码编译 | 5 个文件全部通过（JDK 17 + android.jar API34） |
-| d8 → classes2.dex | 成功，27,588 B |
-| 合并自检 | 原版 `classes.dex` sha256 `21076c730cbe7bae…` 前后完全一致；产物 4,621,956 B，md5 `2c534899bbc7764b8baaf14715c94544` |
+| Java 源码编译 | 5 个文件全部通过（固定项目 JDK 17 + android.jar API34） |
+| d8 → classes2.dex | 成功，31,844 B（含站源页接口、Site 表写回、dbPath 兜底） |
+| 合并自检 | 原版 `classes.dex` sha256 `21076c730cbe7bae…` 前后完全一致；产物 4,624,241 B，md5 `b7f3e99e7eba996d7d3c313222548437` |
+| settings.html | 内联 JS `node --check` 通过；本地引用 `style.css` 存在，缺失 0 |
 | 现网状态 | 未部署；`/root/hai/pg.jar` 仍是原版 `d8c3bd96…`，`core_ok=true`，`play_mode=legacy` |
 | 基线 | `v1.0-apkui-baseline`、`/root/oktv-pre-apkui-20261108.tar.gz` |
