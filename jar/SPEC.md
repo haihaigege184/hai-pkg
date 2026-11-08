@@ -284,6 +284,46 @@ pg.jar
 
 ---
 
+## 6.5 设置站源页复刻规格（真机观察 + 已确认数据结构）
+
+> 来源：2026-11-08 真机截图逐帧操作（`_work/absjsm_setting.png` / `absjsm_ok.png` /
+> `absjsm_input.png` / `absjsm_list*.png`）+ Config 表 / prefs 直接读取。
+> 深层 smali 调用链仍在逆向中，本节只写**已实证**的部分。
+
+### 页面结构与遥控操作（1920×1080）
+
+| 元素 | 位置 / 操作 | 行为 |
+|---|---|---|
+| 「点播」配置行 | y≈88，输入框 x≈800，右侧按钮 x≈1828 | 第一行；输入当前配置地址 |
+| 配置地址历史列表 | `input tap 1828 88` → **必须补 `keyevent 23`** | 弹出历史列表，↑↓ 选择；TV 上 `input tap` 只移焦点，不触发点击 |
+| 地址输入对话框 | `input tap 800 88` + `keyevent 23` | 输入框预填 `http://10.0.0.11:8099/hai/jsm.json`，「确定」按钮 x≈1151,y≈683 |
+| 重选触发 | 弹「确定」后 | 重新 HTTP 拉 jsm → 解析 → 落 Config 表 → 站点重建（11-08 已修爆栈） |
+
+**踩坑**：连按 7 次下键会越界退出弹窗；`input tap` 只移焦点，必须补 `keyevent 23`。
+
+### 数据存储（已实证）
+
+| 存储 | 内容 |
+|---|---|
+| SQLite `/data/user_de/0/com.hisen.android.tv/databases/tv` 表 `Config` | 列 `id/type/url/time/json`；**`type=0` + json 非空 + time 最新 = 激活**（实测 id=49）；`type=1` 是订阅行 |
+| SharedPreferences `com.hisen.android.tv_preferences.xml` | `config_0`、`config_1`… 存配置地址历史；`config_0` 当前地址 |
+| 冷启动 | 读 DB 激活行，**不发 HTTP**；只有「设置→配置」重选才真正拉 `/hai/jsm.json` |
+
+### 已落地的复刻（`android/assets/haiui/settings.html`）
+
+- 三块信息：当前激活配置（url/id/time/站点数/spider）、播放代理链路（端口/策略/缓冲段）、站源列表。
+- 站源列表字段 `key/name/type/api/ext/searchable/changeable/index`，来自 jar 本地
+  `/hai/site/list`（直接解析激活配置的 `sites` 数组，**不另造配置存储**）。
+- 遥控器 ↑↓（DOM 37/38/39/40 与 19/20/21/22 两套都认）+ OK(23/66/13) 启用停用，
+  状态存 localStorage `hai_site_off`；返回键回 `index.html`。
+- 视觉：深色透明卡片、发光青/紫字、焦点霓虹描边 + 位移（海哥既定风格）。
+
+**复刻检查清单（剩余）**：① 配置地址切换/保存写入（当前只读镜像，避免与 App DB 抢锁）；
+② 站源勾选状态回写 App 原生存储（现在只存 WebView localStorage）；
+③ 订阅行 `type=1` 的展示与刷新；④ 原版页面每项背后的 smali 调用链（agent 深挖中）。
+
+---
+
 ## 7. 待补 / 未确认
 
 - 设置站源页逐控件复刻规格（页面清单、配置历史弹窗、站源列表勾选存储）—— 逆向 agent 进行中。
