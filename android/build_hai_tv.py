@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 import re
 import shutil
@@ -29,6 +30,15 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SMALI_DIR = os.path.join(HERE, "smali")
+
+# 薄桥源：HaiBridge.java -> 预生成 smali（由 build_hai_bridge.py 产出，落盘在 SMALI_DIR 下）
+BRIDGE_SMI = os.path.join(SMALI_DIR, "com", "hisen", "hai", "HaiBridge.smali")
+# 反编译树里的 Application（注入钩子的目标）
+APP_SMI = os.path.join("smali", "com", "fongmi", "android", "tv", "App.smali")
+APP_HOOK = "    invoke-static {p0}, Lcom/hisen/hai/HaiBridge;->start(Landroid/content/Context;)V"
+
+# Go 媒体代理启动分支所在 smali（只禁这一个 case）
+GO_SMI = os.path.join("smali", "OoO0oOoO0O0O0O0O", "oOoOoOoOoOoOoO0o.smali")
 
 JDK = os.environ.get("JAVA_HOME", r"C:\Users\Administrator\.jingjing_tool\jdk")
 SDK_BT = r"C:\Users\Administrator\.jingjing_tool\sdk\build-tools\34.0.0"
@@ -240,6 +250,75 @@ def step_smali(dec: str):
     open(p, "w", encoding="utf-8").write(s)
 
 
+def step_bridge(dec: str):
+    """把预生成的 HaiBridge 薄桥 smali（含匿名内部类 $1）复制进 dec 树（进 APK 主 dex）。"""
+    print("[2.5/6] 放置 HaiBridge 薄桥")
+    src_dir = os.path.dirname(BRIDGE_SMI)
+    if not os.path.isdir(src_dir):
+        raise SystemExit("HaiBridge smali 目录不存在，先跑 build_hai_bridge.py")
+    dst_dir = os.path.join(dec, "smali", "com", "hisen", "hai")
+    os.makedirs(dst_dir, exist_ok=True)
+    n = 0
+    for f in sorted(os.listdir(src_dir)):
+        if f.endswith(".smali"):
+            shutil.copy2(os.path.join(src_dir, f), os.path.join(dst_dir, f))
+            n += 1
+    if n == 0:
+        raise SystemExit("HaiBridge smali 目录为空，先跑 build_hai_bridge.py")
+    print("       已放置 %d 个 com/hisen/hai/*.smali（含 HaiBridge$1）" % n)
+
+
+def step_inject_core(dec: str):
+    """在 App.onCreate 注入 HaiBridge.start 钩子（幂等）。"""
+    print("[2.6/6] 注入 App.onCreate -> HaiBridge.start")
+    p = os.path.join(dec, APP_SMI)
+    if not os.path.isfile(p):
+        raise SystemExit("找不到 " + p)
+    s = open(p, encoding="utf-8").read()
+    if APP_HOOK in s:
+        print("       hook 已存在，跳过")
+        return
+    anchor = "    invoke-super {p0}, Landroid/app/Application;->onCreate()V"
+    i = s.find(anchor)
+    if i < 0:
+        raise SystemExit("App.onCreate 里找不到 invoke-super")
+    at = i + len(anchor)
+    s = s[:at] + "\n\n" + APP_HOOK + s[at:]
+    # 方法括号配对自检
+    assert s.count(".method ") == s.count(".end method"), "App.smali 方法括号不配对"
+    open(p, "w", encoding="utf-8").write(s)
+    print("       已在 App.onCreate 注入 HaiBridge.start")
+
+
+def step_skip_go(dec: str):
+    """禁用本包（com.hisen.android.tv）自己的 Go 媒体代理启动。
+
+    原版 App 通过 oOoOoOoOoOoOoO0o.smali 的 pswitch_4(case 5) 启动 go_proxy_video（监听 10079）。
+    海哥影视改由 Java 代理监听 10090 接管 R 加速，本包不需要 Go。
+    只在 case 5 入口插一句 return-void，其它原生服务（9978 NanoHTTPD 等）完全不动。
+
+    关键：原版 OK影视(com.fongmi.android.tv) 仍走全局 REDIRECT 10078→10079(Go)，
+    本包走 uid-owner REDIRECT 10078→10090(Java)。两者端口不抢，双包共存。
+    """
+    print("[2.7/6] 禁用本包 Go 代理启动（pswitch_4 插 return-void）")
+    p = os.path.join(dec, GO_SMI)
+    if not os.path.isfile(p):
+        raise SystemExit("找不到 " + p)
+    s = open(p, encoding="utf-8").read()
+    if "hai-skip-go" in s:
+        print("       已禁用，跳过")
+        return
+    anchor = '    :pswitch_4\n    const-string v1, "go_proxy_video"'
+    if anchor not in s:
+        raise SystemExit("pswitch_4 锚点不匹配（可能 base.apk 版本对不上）")
+    s = s.replace(anchor,
+                  '    :pswitch_4\n    return-void  # hai-skip-go\n    const-string v1, "go_proxy_video"',
+                  1)
+    assert s.count(".method ") == s.count(".end method"), "Go smali 方法括号不配对"
+    open(p, "w", encoding="utf-8").write(s)
+    print("       已在 pswitch_4 插入 return-void（只禁本包 Go 启动）")
+
+
 def step_manifest(dec: str):
     print("[3/6] 改包名 / 应用名（共存）")
     p = os.path.join(dec, MANIFEST)
@@ -274,7 +353,6 @@ def step_manifest(dec: str):
     open(p, "w", encoding="utf-8").write(s)
     print("       applicationId ->", NEW_PKG, "；已注册 WebDetailActivity")
 
-    import glob
     for sp in glob.glob(os.path.join(dec, "res", "values*", "strings.xml")):
         t = open(sp, encoding="utf-8").read()
         o = t
@@ -299,7 +377,8 @@ def step_sign(raw: str, work: str):
     run([os.path.join(SDK_BT, "zipalign.exe"), "-p", "-f", "4", raw, aligned])
     run([os.path.join(SDK_BT, "apksigner.bat"), "sign",
          "--ks", KEYSTORE, "--ks-pass", "pass:" + KS_PASS,
-         "--key-pass", "pass:" + KS_PASS, "--out", signed, aligned])
+         "--key-pass", "pass:" + KS_PASS, "--ks-key-alias", KS_ALIAS,
+         "--out", signed, aligned])
     return signed
 
 
@@ -318,6 +397,9 @@ def main():
     if not a.skip_decode:
         step_decode(a.apk, dec)
     step_smali(dec)
+    step_bridge(dec)
+    step_inject_core(dec)
+    step_skip_go(dec)
     step_manifest(dec)
     raw = step_build(dec, a.work)
     signed = step_sign(raw, a.work)

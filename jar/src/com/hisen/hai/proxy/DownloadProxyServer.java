@@ -38,7 +38,7 @@ public final class DownloadProxyServer {
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final ExecutorService conns = Executors.newCachedThreadPool();
     private ServerSocket server;
-    private int port = ProxyConfig.PORT;
+    private int port = ProxyConfig.HAI_PORT;
 
     /** 外部 API 处理器（HaiApiServer），用接口解耦，避免编译期强依赖。 */
     public interface ApiHandler {
@@ -74,18 +74,18 @@ public final class DownloadProxyServer {
     public void setApiHandler(ApiHandler h) { this.api = h; }
 
     /**
-     * 启动服务。端口 10078 被原版 Go 服务占着时自动往后找，
-     * 并把 ProxyConfig.sBase 更新成实际地址（等价于原版 global_goproxy_base）。
+     * 启动服务。海哥影视 Java 代理固定监听 {@link ProxyConfig#HAI_PORT}(10090)，
+     * 配合设备上的 uid-owner REDIRECT（com.hisen.android.tv 的 10078→10090）接管
+     * 原版 R 加速流量；原版 OK影视 仍走全局 REDIRECT 10078→10079（Go），互不抢占。
+     * 绑定在 127.0.0.1，只接本机回环流量。
      */
     public synchronized int start() {
         if (running.get()) return port;
-        for (int p = ProxyConfig.PORT; p < ProxyConfig.PORT + 8; p++) {
-            try {
-                server = new ServerSocket(p, 64, InetAddress.getByName("127.0.0.1"));
-                port = p;
-                break;
-            } catch (IOException ignored) {}
-        }
+        int p = ProxyConfig.HAI_PORT;
+        try {
+            server = new ServerSocket(p, 64, InetAddress.getByName("127.0.0.1"));
+            port = p;
+        } catch (IOException ignored) {}
         if (server == null) return -1;
         running.set(true);
         ProxyConfig.sBase = "http://127.0.0.1:" + port;

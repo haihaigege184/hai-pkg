@@ -41,12 +41,13 @@ public final class HaiCore {
                 server.setApiHandler(new HaiApiServer(sApp));
                 int port = server.start();
                 if (port > 0) {
-                    // 原版 jar 内 R/a.d() 默认就是 127.0.0.1:10078；
-                    // 我们占住同一个端口，站源拼出来的 /p/ /cfgo/ URL 自然落到我们服务。
+                    // 海哥影视 Java 代理固定监听 10090；设备上给本包建一条
+                    // uid-owner REDIRECT 10078→10090，原版 R 加速流量自然落到我们服务，
+                    // 同时原版 OK影视 仍走全局 10078→10079（Go），双包共存。
                     ProxyConfig.sBase = "http://127.0.0.1:" + port;
                     Log.i(TAG, "started on " + port + " base=" + ProxyConfig.sBase);
                 } else {
-                    Log.w(TAG, "no free port in 10078..10085, proxy disabled");
+                    Log.w(TAG, "port " + ProxyConfig.HAI_PORT + " 被占用，代理未启动（保留原版 Go）");
                 }
                 sStarted = true;
             } catch (Throwable t) {

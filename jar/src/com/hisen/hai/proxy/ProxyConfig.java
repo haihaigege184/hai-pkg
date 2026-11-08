@@ -35,9 +35,18 @@ import java.util.Map;
  */
 public final class ProxyConfig {
 
-    /** jar 内 R/a.smali:53 写死的端口。端上可用 global_goproxy_base 覆盖。 */
+    /** jar 内 R/a.smali:53 写死的端口。端上原版 Go 代理监听 10079，
+     *  10078 由 iptables REDIRECT 转发过去（设备全局规则，原版 OK影视 也走这条）。 */
     public static final int PORT = 10078;
     public static final String DEFAULT_BASE = "http://127.0.0.1:" + PORT;
+
+    /**
+     * 海哥影视 Java 代理固定监听端口（2026-11-08 定案）。
+     * 用 10090 而非 10079：10079 是原版 Go 代理的端口，原版 OK影视 仍走
+     * 全局 REDIRECT 10078→10079；我们给海哥影视单独建一条
+     * 「uid-owner 匹配 com.hisen.android.tv → REDIRECT 10078→10090」的规则，
+     * 两条链路互不抢占，实现双包共存。 */
+    public static final int HAI_PORT = 10090;
 
     /** 原版实测 URL 段：/p/32/null/1048576/...
      *  32 = 缓冲段数（DEFAULT_BUFFER_SEGMENTS），1048576 = 每段 1MB。
