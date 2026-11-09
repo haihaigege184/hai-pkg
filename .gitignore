@@ -6,6 +6,8 @@ venv/
 data/
 logs/
 dist/
+# 从服务器同步下来的原版 jar 基线（生成物，换包后由 --sync-base 刷新）
+jar/base/
 *.log
 *.tmp
 .DS_Store

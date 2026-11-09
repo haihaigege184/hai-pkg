@@ -52,8 +52,16 @@ def d8_cmd(*args):
     """.bat 在 Windows 上必须经 cmd /c 才能由 subprocess 直接执行。"""
     return ["cmd", "/c", D8] + [str(a) for a in args]
 
-# 基线：优先本地解包出来的原版，其次镜像仓里的副本
+# 基线：优先「从服务器同步下来的当前包」，其次本地解包出来的原版。
+#
+# 2026-11-09 事故：本地 _work/src_pg/pg.jar 是**更早一版**原版
+# （classes.dex sha256 21076c73…），而服务器基线包 pg.20261020-1519.zip
+# 里是 9a6e9321…（dex 长度都不同：11449536 vs 11453228）。
+# 用旧 base 构建并 --deploy 会把服务器 spider 整体降级，表现为「站源和
+# 搜索全部无数据」。换包后必须跑一次 `--sync-base` 刷新本地基线。
+BASE_SYNC = os.path.join(HERE, "base", "pg.jar")
 BASE_CANDIDATES = [
+    BASE_SYNC,
     r"F:\ai\OK影视\_work\src_pg\pg.jar",
     os.path.join(ROOT, "baseline", "pg.jar"),
     r"F:\ai\OK影视\baseline_apk\pg.jar",
@@ -81,6 +89,46 @@ def _find_base():
         if os.path.isfile(p):
             return p
     raise RuntimeError("找不到原版 pg.jar 基线，检查 BASE_CANDIDATES")
+
+
+def sync_base():
+    """从服务器当前 /root/hai/pg.jar 同步出「纯原版基线」。
+
+    服务器上的 jar 可能已经被我们追加过 classes2.dex，所以这里要把它剔除，
+    只保留原版条目；classes.dex 逐字节不动。换 PG 更新包后跑一次即可，
+    之后默认构建会优先使用这份 base，不会再拿旧版本去覆盖服务器。
+    """
+    print("[sync-base] 从服务器拉取当前 pg.jar ...")
+    py = sys.executable
+    sftpx = os.path.join(os.path.dirname(ROOT), "oktv-hub", "deploy", "sftpx.py")
+    if not os.path.isfile(sftpx):
+        raise RuntimeError("deploy 脚本不存在: " + sftpx)
+    env = dict(os.environ)
+    env["MSYS_NO_PATHCONV"] = "1"
+    os.makedirs(BUILD, exist_ok=True)
+    tmp = os.path.join(BUILD, "server_pg.jar")
+    subprocess.run([py, sftpx, "get", SERVER_JAR, tmp], check=True, env=env)
+
+    zin = zipfile.ZipFile(tmp)
+    if "classes.dex" not in zin.namelist():
+        raise RuntimeError("服务器 pg.jar 里没有 classes.dex")
+    os.makedirs(os.path.dirname(BASE_SYNC), exist_ok=True)
+    dropped = []
+    with zipfile.ZipFile(BASE_SYNC, "w") as zout:
+        for it in zin.infolist():
+            if it.filename.startswith("classes") and it.filename != "classes.dex":
+                dropped.append(it.filename)
+                continue
+            zi = zipfile.ZipInfo(it.filename, date_time=it.date_time)
+            zi.compress_type = it.compress_type
+            zi.external_attr = it.external_attr
+            zout.writestr(zi, zin.read(it.filename))
+    dex_sha = hashlib.sha256(zin.read("classes.dex")).hexdigest()[:16]
+    zin.close()
+    print("  丢弃已有附加 dex:", dropped or "无")
+    print("  classes.dex sha256 =", dex_sha, "...（将逐字节照搬）")
+    print("  base =", BASE_SYNC, os.path.getsize(BASE_SYNC), "bytes")
+    return BASE_SYNC
 
 
 def _java_sources():
@@ -195,8 +243,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--deploy", action="store_true", help="构建后上传到 /root/hai")
     ap.add_argument("--base", default=None, help="指定原版 pg.jar 基线")
+    ap.add_argument("--sync-base", action="store_true",
+                    help="换 PG 更新包后必跑：从服务器当前 pg.jar 同步纯原版基线")
     args = ap.parse_args()
-    base = args.base or _find_base()
+    base = args.base or (sync_base() if args.sync_base else _find_base())
     print("基线 jar:", base)
     dex = compile_sources()
     out_jar = os.path.join(OUT, "pg.jar")
