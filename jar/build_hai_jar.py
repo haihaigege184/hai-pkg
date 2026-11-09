@@ -236,7 +236,20 @@ def deploy(out_jar):
     subprocess.run([py, sftpx, "put", out_jar, SERVER_JAR], check=True, env=env)
     subprocess.run([py, sftpx, "put", out_jar + ".md5", SERVER_JAR + ".md5"],
                    check=True, env=env)
+
+    # 把 classes2.dex 固化成服务器侧的「增强层」，并让 baseline manifest
+    # 与线上落盘 jar 自洽。之后 /live 每次换 PG 包，pkgupdate.apply() 会
+    # 自动把这个 dex 重挂回新包 —— 全程零人工、零 py。
+    sync = ("python3 -c \"import sys,json; "
+            "sys.path.insert(0,'/opt/oktv-hub'); "
+            "from core import extinject; "
+            "print(json.dumps(extinject.ensure_live(),ensure_ascii=False))\"")
+    r = subprocess.run([py, sshx, sync], check=True, env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       text=True, errors="replace")
+    print("[deploy] 增强层同步:", (r.stdout or "").strip()[-600:])
     print("  已上传。需重启 App 才会重新加载 jar；旧 jar 在服务器 tar 基线里。")
+    print("  以后 /live 换 PG 包会自动重挂 classes2.dex，不需要再跑任何脚本。")
 
 
 def main():

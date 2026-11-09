@@ -5,6 +5,7 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 
+import com.hisen.hai.HaiBoot;
 import com.hisen.hai.proxy.DownloadProxyServer;
 import com.hisen.hai.proxy.ProxyConfig;
 
@@ -64,8 +65,11 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
         try {
             // ---- 本地配置类 API：直接读 App 自己的 Config 表，不联网 ----
             if ("/hai/ping".equals(path)) {
+                // 墙页每次加载都会打 ping：顺手再踢一次 PG 服务保活，
+                // 覆盖「App 进程没重建」或首轮反射太早的时序情况（幂等）。
+                try { HaiBoot.kick(); } catch (Throwable ignored) {}
                 return json("{\"ok\":true,\"core\":\"jar\",\"offline\":true,\"proxy\":"
-                        + DownloadProxyServer.get().port() + "}");
+                        + DownloadProxyServer.get().port() + ",\"pg\":" + HaiBoot.status() + "}");
             }
             if ("/hai/poster/cfg".equals(path)) return json(cfgJson());
             if ("/hai/site/list".equals(path)) return json(siteListJson());

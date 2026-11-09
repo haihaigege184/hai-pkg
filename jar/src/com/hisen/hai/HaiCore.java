@@ -50,6 +50,14 @@ public final class HaiCore {
                 ProxyConfig.sBase = "http://127.0.0.1:" + port;
                 Log.i(TAG, "started on " + port + " base=" + ProxyConfig.sBase);
                 sStarted = true;
+                // 2026-11-09：PG 的 9978/10079 原本只在 HomeActivity.onCreate 里拉起，
+                // 而改造版开机直接落墙页 ⇒ 服务不在线 ⇒ 站源与聚合搜索全空。
+                // 在这里反射提前拉起（幂等、后台线程、全程吞异常）。
+                // 换 PG 包不会失效：本类由 core/extinject.py 自动重挂进 classes2.dex，
+                // 反射目标类在 APK dex 里，/live 换包不动 APK。
+                try {
+                    HaiBoot.startAsync(sApp);
+                } catch (Throwable ignored) {}
             } catch (Throwable t) {
                 try { Log.w(TAG, "start failed: " + t); } catch (Throwable ignored) {}
                 // 反射调用方（HaiBridge）会捕获 InvocationTargetException 并轮询重试，
