@@ -30,6 +30,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SMALI_DIR = os.path.join(HERE, "smali")
+# 2026-11-09：APK 内置 UI 资产（wall.html 等）。step_assets 复制进 dec/assets/。
+ASSETS_SRC = os.path.join(HERE, "assets")
+WALL_ASSET = os.path.join(ASSETS_SRC, "haiui", "wall.html")
 
 # 薄桥源：HaiBridge.java -> 预生成 smali（由 build_hai_bridge.py 产出，落盘在 SMALI_DIR 下）
 BRIDGE_SMI = os.path.join(SMALI_DIR, "com", "hisen", "hai", "HaiBridge.smali")
@@ -189,6 +192,11 @@ VIDEO_HOOK = ".method public final OoOoO0oOoO0O0OoO()V"
 
 def run(cmd, **kw):
     print("  $", " ".join(str(c) for c in cmd[:6]), "…" if len(cmd) > 6 else "")
+    # 2026-11-09：apktool/zipalign 在本机会输出 GBK 中文（资源名、警告），
+    # text=True 默认 UTF-8 解码会让 _readerthread 抛 UnicodeDecodeError，
+    # 脚本误判为「构建失败」。显式容错解码，绝不因日志编码中断构建。
+    kw.setdefault("encoding", "utf-8")
+    kw.setdefault("errors", "replace")
     r = subprocess.run(cmd, capture_output=True, text=True, **kw)
     if r.returncode != 0:
         sys.stderr.write((r.stdout or "")[-3000:] + "\n" + (r.stderr or "")[-3000:] + "\n")
@@ -213,11 +221,16 @@ def step_smali(dec: str):
     dst = os.path.join(dec, ACT_DIR)
     os.makedirs(dst, exist_ok=True)
     for fn in ("WebDetailActivity.smali", "WebDetailActivity$1.smali",
+               "WebDetailActivity$2.smali",  # 2026-11-09 墙页服务未就绪时的 reload Runnable
                "SearchActivity.smali", "HaiAutoPlay.smali",
                "HaiHomeActivity.smali"):
         src = os.path.join(SMALI_DIR, fn)
-        if os.path.exists(src):
-            shutil.copy2(src, os.path.join(dst, fn))
+        # 2026-11-08 事故根因：这里原来是 `if os.path.exists` 静默跳过，
+        # 结果 HaiHomeActivity.smali 缺失仍被 step_manifest 注册成 LAUNCHER，
+        # 启动即 ClassNotFoundException。缺文件必须硬失败。
+        if not os.path.isfile(src):
+            raise SystemExit("缺少 overlay smali: %s（禁止静默跳过）" % src)
+        shutil.copy2(src, os.path.join(dst, fn))
 
     p = os.path.join(dec, VIDEO_ACT)
     s = open(p, encoding="utf-8").read()
@@ -290,33 +303,59 @@ def step_inject_core(dec: str):
     print("       已在 App.onCreate 注入 HaiBridge.start")
 
 
-def step_skip_go(dec: str):
-    """禁用本包（com.hisen.android.tv）自己的 Go 媒体代理启动。
+def step_restore_go(dec: str):
+    """【2026-11-09 恢复原版链路】撤销阶段3 的「禁用本包 Go 代理启动」。
 
-    原版 App 通过 oOoOoOoOoOoOoO0o.smali 的 pswitch_4(case 5) 启动 go_proxy_video（监听 10079）。
-    海哥影视改由 Java 代理监听 10090 接管 R 加速，本包不需要 Go。
-    只在 case 5 入口插一句 return-void，其它原生服务（9978 NanoHTTPD 等）完全不动。
+    阶段3 为了让 Java 代理(10090)接管 R 加速，在 pswitch_4(case 5) 插了
+    return-void 禁本包 go_proxy_video 启动，又用 uid-owner REDIRECT 把本包
+    10078 流量全抢到 10090。但 Java 代理只实现了 /ping /p/ /cfgo/ /hai/*，
+    接不住原版 Go 的完整取流协议 ⇒ 其他站源播放全挂。
 
-    关键：原版 OK影视(com.fongmi.android.tv) 仍走全局 REDIRECT 10078→10079(Go)，
-    本包走 uid-owner REDIRECT 10078→10090(Java)。两者端口不抢，双包共存。
+    海哥 11-09 要求「恢复 pg 其他站源功能正常」+「播放链路用 PG 原版内核」：
+      · 设备侧已删 uid-owner 规则，本包回归全局 10078→10079(Go) 原生链路；
+      · 这里把 smali 里的 return-void 也撤掉，本包与原版一样正常起 Go。
+      · Java 代理保留，但只服务「APK 内置电视墙 UI」这一条同源链路，
+        不再碰播放取流 —— 两条链路彻底解耦。
     """
-    print("[2.7/6] 禁用本包 Go 代理启动（pswitch_4 插 return-void）")
+    print("[2.7/6] 恢复本包原版 Go 代理启动（撤销 hai-skip-go）")
     p = os.path.join(dec, GO_SMI)
     if not os.path.isfile(p):
         raise SystemExit("找不到 " + p)
     s = open(p, encoding="utf-8").read()
-    if "hai-skip-go" in s:
-        print("       已禁用，跳过")
-        return
-    anchor = '    :pswitch_4\n    const-string v1, "go_proxy_video"'
-    if anchor not in s:
-        raise SystemExit("pswitch_4 锚点不匹配（可能 base.apk 版本对不上）")
-    s = s.replace(anchor,
-                  '    :pswitch_4\n    return-void  # hai-skip-go\n    const-string v1, "go_proxy_video"',
-                  1)
+    needle = "    return-void  # hai-skip-go\n"
+    if needle in s:
+        s = s.replace(needle, "", 1)
+        open(p, "w", encoding="utf-8").write(s)
+        print("       已移除 return-void，Go 启动分支恢复")
+    else:
+        print("       无 hai-skip-go 标记，本就是原版（无需处理）")
+    assert "hai-skip-go" not in s, "Go smali 里仍有禁用标记"
     assert s.count(".method ") == s.count(".end method"), "Go smali 方法括号不配对"
-    open(p, "w", encoding="utf-8").write(s)
-    print("       已在 pswitch_4 插入 return-void（只禁本包 Go 启动）")
+
+
+def step_assets(dec: str):
+    """把 android/assets/haiui/ 复制进 dec/assets/haiui/。
+
+    2026-11-09：电视墙 UI 收进 APK。jar 从 ctx.getAssets() 读 wall.html，
+    经同源 HTTP(10090) 返回给 WebView，因此 assets 必须在 APK 里。
+    """
+    print("[2.8/6] 放置 APK 内置 UI 资产 (assets/haiui/)")
+    if not os.path.isfile(WALL_ASSET):
+        raise SystemExit("缺少内置墙页 %s，先跑 android/tools/make_wall_asset.py" % WALL_ASSET)
+    dst = os.path.join(dec, "assets", "haiui")
+    os.makedirs(dst, exist_ok=True)
+    n = 0
+    for root, _dirs, files in os.walk(os.path.join(ASSETS_SRC, "haiui")):
+        rel = os.path.relpath(root, os.path.join(ASSETS_SRC, "haiui"))
+        target = dst if rel == "." else os.path.join(dst, rel)
+        os.makedirs(target, exist_ok=True)
+        for f in files:
+            shutil.copy2(os.path.join(root, f), os.path.join(target, f))
+            n += 1
+    if not os.path.isfile(os.path.join(dst, "wall.html")):
+        raise SystemExit("wall.html 未复制成功")
+    print("       已放置 %d 个资产文件（含 wall.html %d 字节）"
+          % (n, os.path.getsize(os.path.join(dst, "wall.html"))))
 
 
 def step_manifest(dec: str):
@@ -399,7 +438,8 @@ def main():
     step_smali(dec)
     step_bridge(dec)
     step_inject_core(dec)
-    step_skip_go(dec)
+    step_restore_go(dec)
+    step_assets(dec)
     step_manifest(dec)
     raw = step_build(dec, a.work)
     signed = step_sign(raw, a.work)

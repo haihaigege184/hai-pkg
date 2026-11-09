@@ -40,19 +40,21 @@ public final class HaiCore {
                 DownloadProxyServer server = DownloadProxyServer.get();
                 server.setApiHandler(new HaiApiServer(sApp));
                 int port = server.start();
-                if (port > 0) {
-                    // 海哥影视 Java 代理固定监听 10090；设备上给本包建一条
-                    // uid-owner REDIRECT 10078→10090，原版 R 加速流量自然落到我们服务，
-                    // 同时原版 OK影视 仍走全局 10078→10079（Go），双包共存。
-                    ProxyConfig.sBase = "http://127.0.0.1:" + port;
-                    Log.i(TAG, "started on " + port + " base=" + ProxyConfig.sBase);
-                } else {
-                    Log.w(TAG, "port " + ProxyConfig.HAI_PORT + " 被占用，代理未启动（保留原版 Go）");
+                if (port <= 0) {
+                    // 2026-11-09：不能在这里静默吞掉并把 sStarted 置 true，
+                    // 否则 APK 侧墙页服务永远起不来且 WebView 已加载失败 → 黑屏。
+                    // 抛出去让 HaiBridge 的反射调用失败，从而进入 2s 轮询重试。
+                    throw new IllegalStateException("bind 10090 failed after retry");
                 }
+                // Java 代理只服务 APK 内置电视墙 UI 的同源链路；播放取流走 PG 原版 Go。
+                ProxyConfig.sBase = "http://127.0.0.1:" + port;
+                Log.i(TAG, "started on " + port + " base=" + ProxyConfig.sBase);
                 sStarted = true;
             } catch (Throwable t) {
-                // 静默降级：绝不影响原版启动
                 try { Log.w(TAG, "start failed: " + t); } catch (Throwable ignored) {}
+                // 反射调用方（HaiBridge）会捕获 InvocationTargetException 并轮询重试，
+                // 异常不会冒泡到 App.onCreate，原版观影不受影响。
+                throw new RuntimeException(t);
             }
         }
     }

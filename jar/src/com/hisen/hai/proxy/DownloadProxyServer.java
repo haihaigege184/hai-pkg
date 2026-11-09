@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.LinkedHashMap;
@@ -74,19 +75,27 @@ public final class DownloadProxyServer {
     public void setApiHandler(ApiHandler h) { this.api = h; }
 
     /**
-     * 启动服务。海哥影视 Java 代理固定监听 {@link ProxyConfig#HAI_PORT}(10090)，
-     * 配合设备上的 uid-owner REDIRECT（com.hisen.android.tv 的 10078→10090）接管
-     * 原版 R 加速流量；原版 OK影视 仍走全局 REDIRECT 10078→10079（Go），互不抢占。
-     * 绑定在 127.0.0.1，只接本机回环流量。
+     * 启动服务。2026-11-09 架构定案：Java 代理<b>只</b>服务「APK 内置电视墙 UI」
+     * 这条同源链路（127.0.0.1:10090），播放取流仍走 PG 原版 Go（10078→10079）。
+     * 设备上的 uid-owner REDIRECT 已删除，两条链路彻底解耦。
      */
     public synchronized int start() {
         if (running.get()) return port;
         int p = ProxyConfig.HAI_PORT;
-        try {
-            server = new ServerSocket(p, 64, InetAddress.getByName("127.0.0.1"));
-            port = p;
-        } catch (IOException ignored) {}
+        // 冷启动偶发：上一进程被 force-stop 后 10090 仍处 TIME_WAIT，单次 bind 失败
+        // 会让 WebView 加载不到墙页 → 永久黑屏。显式 SO_REUSEADDR + 8 次 × 250ms 重试。
+        for (int i = 0; i < 8 && server == null; i++) {
+            try {
+                ServerSocket s = new ServerSocket();
+                s.setReuseAddress(true);
+                s.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), p), 64);
+                server = s;
+            } catch (Throwable t) {
+                try { Thread.sleep(250L); } catch (InterruptedException ignored) {}
+            }
+        }
         if (server == null) return -1;
+        port = p;
         running.set(true);
         ProxyConfig.sBase = "http://127.0.0.1:" + port;
         Thread t = new Thread(new Runnable() {
@@ -149,6 +158,24 @@ public final class DownloadProxyServer {
             int q = target.indexOf('?');
             String path = q >= 0 ? target.substring(0, q) : target;
             String query = q >= 0 ? target.substring(q + 1) : "";
+
+            // 反代需要 method 与 POST body。ISO-8859-1 逐字节可逆，
+            // 二进制 body 也不会被改坏（HaiApiServer.relay 用同编码还原）。
+            headers.put("__method", method);
+            String cl = headers.get("content-length");
+            int len = parseInt(cl, 0);
+            if (len > 0 && len <= 4 * 1024 * 1024 && !"GET".equals(method) && !"HEAD".equals(method)) {
+                byte[] body = new byte[len];
+                int off = 0;
+                while (off < len) {
+                    int n = in.read(body, off, len - off);
+                    if (n < 0) break;
+                    off += n;
+                }
+                if (off > 0) {
+                    headers.put("__body", new String(body, 0, off, "ISO-8859-1"));
+                }
+            }
 
             if ("/ping".equals(path)) {
                 writeSimple(out, 200, "text/plain", "OK", method);
@@ -349,10 +376,14 @@ public final class DownloadProxyServer {
     private static String reason(int c) {
         if (c == 200) return "OK";
         if (c == 206) return "Partial Content";
+        if (c == 301) return "Moved Permanently";
+        if (c == 302) return "Found";
+        if (c == 304) return "Not Modified";
         if (c == 400) return "Bad Request";
         if (c == 404) return "Not Found";
         if (c == 500) return "Internal Server Error";
         if (c == 501) return "Not Implemented";
+        if (c == 502) return "Bad Gateway";
         return "OK";
     }
 }

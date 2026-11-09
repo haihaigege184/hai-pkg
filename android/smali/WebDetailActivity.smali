@@ -234,7 +234,10 @@
 
     invoke-direct {v1}, Ljava/lang/StringBuilder;-><init>()V
 
-    const-string v2, "http://10.0.0.11:8099/hai/poster/d/"
+    # 2026-11-09：电视墙 UI 收进 APK。改指向 jar 本地服务（同源 10090），
+    # 服务器地址只留在 jar 里（可热更新）。空 id 时 jar 返回 assets 内置墙页，
+    # 有 id 时 jar 反代服务器详情 HTML；页面内 /hai/* 相对路径天然同源。
+    const-string v2, "http://127.0.0.1:10090/hai/poster/d/"
 
     invoke-virtual {v1, v2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
 

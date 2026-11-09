@@ -76,15 +76,148 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
             if ("/hai/site/prefs".equals(path)) {
                 return json(setSitePref(query));
             }
-            if (path.startsWith("/hai/dbimg/")) {
-                return image(path.substring("/hai/dbimg/".length()));
+
+            // ---- 电视墙首屏：空 id 时 WebDetailActivity 拼出的路径 ----
+            // WebView 以 http://127.0.0.1:10090/hai/poster/d/ 加载，路径里没有 vid。
+            // 这里直接返回 APK assets 里固化的整页墙（离线可见、UI 归 APK 所有）。
+            // 带 vid 的请求（/hai/poster/d/<vid>）落到下面的反代，取服务器详情 HTML。
+            if ("/hai/poster/d/".equals(path) || "/hai/poster/d".equals(path)) {
+                return wallPage(headers);
             }
-            return new DownloadProxyServer.Response(404, "application/json; charset=utf-8",
-                    "{\"ok\":false,\"msg\":\"unknown " + escape(path) + "\"}");
+
+            // ---- 同源反代 ----
+            // 页面里所有 /hai/* 相对路径都落在 127.0.0.1:10090 同源：
+            //   /hai/poster/?t=...&pg=2  整页 HTML（翻页/切类目，wall.js 用 DOMParser 取 #wallbox）
+            //   /hai/poster/eps|play|cast|warm|progress   JSON/文本
+            //   /hai/lib/haiplay.js                       站源脚本
+            //   /hai/dbimg/view/photo/...                 豆瓣图（服务器带 Referer 轮试 4 域名）
+            // 服务器只提供数据/渲染产物，APK 里零硬编码地址；后续逐个接口本地实现
+            // 即可渐进裁撤服务器，UI 不用重打包。
+            return relay(path, query, headers);
         } catch (Throwable t) {
             return new DownloadProxyServer.Response(500, "application/json; charset=utf-8",
                     "{\"ok\":false,\"msg\":\"" + escape(String.valueOf(t)) + "\"}");
         }
+    }
+
+    /** 从 APK assets 读内置墙页。缺失时降级反代服务器首页，保证首屏不黑。 */
+    private DownloadProxyServer.Response wallPage(Map<String, String> headers) {
+        java.io.InputStream in = null;
+        try {
+            in = ctx.getAssets().open(ProxyConfig.WALL_ASSET);
+            byte[] b = readAll(in);
+            DownloadProxyServer.Response r = new DownloadProxyServer.Response(
+                    200, "text/html; charset=utf-8", b);
+            r.extra.put("Cache-Control", "no-cache");
+            return r;
+        } catch (Throwable ignored) {
+            return relay("/hai/poster/", "", headers);
+        } finally {
+            if (in != null) try { in.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /**
+     * 同源反代到站源/配置中枢。method 与 POST body 由 DownloadProxyServer.serve()
+     * 以 __method / __body（ISO-8859-1 逐字节可逆）塞进 headers，避免改接口签名。
+     */
+    private DownloadProxyServer.Response relay(String path, String query,
+                                               Map<String, String> headers) {
+        HttpURLConnection c = null;
+        try {
+            String url = ProxyConfig.UPSTREAM + path
+                    + (query == null || query.length() == 0 ? "" : "?" + query);
+            String method = headers.get("__method");
+            if (method == null || method.length() == 0) method = "GET";
+            byte[] reqBody = null;
+            String enc = headers.get("__body");
+            if (enc != null) reqBody = enc.getBytes("ISO-8859-1");
+
+            c = (HttpURLConnection) new URL(url).openConnection();
+            c.setInstanceFollowRedirects(false);   // 302 交给 WebView 自己跳（同源）
+            c.setRequestMethod(method);
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(25000);
+            copyReq(headers, c, "referer", "cookie", "user-agent", "range",
+                    "accept", "content-type", "accept-language", "x-requested-with");
+            c.setRequestProperty("Accept-Encoding", "identity");  // 不解压，直接透传
+            if (reqBody != null && reqBody.length > 0) {
+                c.setDoOutput(true);
+                c.setFixedLengthStreamingMode(reqBody.length);
+                java.io.OutputStream os = c.getOutputStream();
+                os.write(reqBody);
+                os.close();
+            }
+
+            int code = c.getResponseCode();
+            String ct = c.getContentType();
+            if (ct == null || ct.length() == 0) ct = guessCt(path);
+            java.io.InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            byte[] out = in == null ? new byte[0] : readAll(in);
+
+            // 服务器页面偶发带绝对自身地址；改成根相对路径，保持同源
+            if (ct.startsWith("text/html") && out.length > 0) {
+                String s = new String(out, "UTF-8");
+                String up = ProxyConfig.UPSTREAM;
+                if (s.indexOf(up) >= 0) {
+                    s = s.replace(up, "");
+                    out = s.getBytes("UTF-8");
+                }
+            }
+
+            DownloadProxyServer.Response r = new DownloadProxyServer.Response(code, ct, out);
+            String loc = c.getHeaderField("Location");
+            if (loc != null) {
+                if (loc.startsWith(ProxyConfig.UPSTREAM)) {
+                    loc = loc.substring(ProxyConfig.UPSTREAM.length());
+                }
+                if (!loc.startsWith("/")) loc = "/" + loc;
+                r.extra.put("Location", loc);        // /hai/poster/src 切源的 302
+            }
+            putResp(r, c, "Cache-Control", "ETag", "Set-Cookie", "Content-Disposition");
+            return r;
+        } catch (Throwable t) {
+            return new DownloadProxyServer.Response(502, "text/plain; charset=utf-8",
+                    "relay failed: " + t);
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    private static void copyReq(Map<String, String> h, HttpURLConnection c, String... keys) {
+        for (String k : keys) {
+            String v = h.get(k);
+            if (v != null && v.length() > 0) c.setRequestProperty(k, v);
+        }
+    }
+
+    private static void putResp(DownloadProxyServer.Response r, HttpURLConnection c,
+                                String... keys) {
+        for (String k : keys) {
+            String v = c.getHeaderField(k);
+            if (v != null && v.length() > 0) r.extra.put(k, v);
+        }
+    }
+
+    private static byte[] readAll(java.io.InputStream in) throws java.io.IOException {
+        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) >= 0) bos.write(buf, 0, n);
+        return bos.toByteArray();
+    }
+
+    private static String guessCt(String path) {
+        String p = path.toLowerCase();
+        if (p.endsWith(".js")) return "application/javascript; charset=utf-8";
+        if (p.endsWith(".css")) return "text/css; charset=utf-8";
+        if (p.endsWith(".html") || p.endsWith(".htm")) return "text/html; charset=utf-8";
+        if (p.endsWith(".json")) return "application/json; charset=utf-8";
+        if (p.endsWith(".jpg") || p.endsWith(".jpeg")) return "image/jpeg";
+        if (p.endsWith(".png")) return "image/png";
+        if (p.endsWith(".webp")) return "image/webp";
+        if (p.endsWith(".gif")) return "image/gif";
+        return "text/html; charset=utf-8";   // 服务器海报墙路由多不带后缀
     }
 
     private static DownloadProxyServer.Response json(String s) {

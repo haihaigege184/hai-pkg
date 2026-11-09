@@ -48,6 +48,19 @@ public final class ProxyConfig {
      * 两条链路互不抢占，实现双包共存。 */
     public static final int HAI_PORT = 10090;
 
+    /**
+     * 站源/配置中枢（服务器）。2026-11-09 定案：播放链路完全回归 PG 原版 Go，
+     * Java 代理只负责「APK 内置电视墙 UI」这一条同源链路：
+     *   APK assets 提供墙页 HTML（本地、离线可见）→ 页面内 /hai/* 相对路径
+     *   全部落到 127.0.0.1:10090 同源 → 本 jar 反代到下面的 UPSTREAM。
+     * 这样服务器地址只存在于 jar（可热更新），APK 里零硬编码；
+     * 后续把各接口逐步本地实现即可渐进裁撤服务器，UI 不用重打包。
+     */
+    public static volatile String UPSTREAM = "http://10.0.0.11:8099";
+
+    /** APK assets 里内置电视墙页路径（build_hai_tv.py 的 step_assets 复制进去）。 */
+    public static final String WALL_ASSET = "haiui/wall.html";
+
     /** 原版实测 URL 段：/p/32/null/1048576/...
      *  32 = 缓冲段数（DEFAULT_BUFFER_SEGMENTS），1048576 = 每段 1MB。
      *  注意：历史记忆里写的「32 线程 × 1MB 分块」是当时的推测，已被逆向证据推翻。 */
