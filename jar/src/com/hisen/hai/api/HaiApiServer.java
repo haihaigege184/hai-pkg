@@ -4,7 +4,6 @@ package com.hisen.hai.api;
 import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
-import android.text.TextUtils;
 
 import com.hisen.hai.proxy.DownloadProxyServer;
 import com.hisen.hai.proxy.ProxyConfig;
@@ -13,8 +12,6 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -55,148 +52,197 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
         return DB_PATH;
     }
 
+    /**
+     * 纯本地离线路由（2026-11-09 定案：服务器退出运行时链路）。
+     *
+     * <p>海报墙 / 详情页 / CSS / JS / 图片全部来自 APK assets/haiui/ 的离线快照，
+     * 运行时对 10.0.0.11 零请求。服务器只保留 jsm.json 下发与快照更新包。
+     * 播放入口统一 haiplay://search?q=片名 → PG 原版站源 + Go 取流，本服务不碰播放。
+     */
     public DownloadProxyServer.Response handle(String path, String query,
                                                Map<String, String> headers) {
         try {
+            // ---- 本地配置类 API：直接读 App 自己的 Config 表，不联网 ----
             if ("/hai/ping".equals(path)) {
-                return json("{\"ok\":true,\"core\":\"jar\",\"proxy\":" + DownloadProxyServer.get().port() + "}");
+                return json("{\"ok\":true,\"core\":\"jar\",\"offline\":true,\"proxy\":"
+                        + DownloadProxyServer.get().port() + "}");
             }
-            if ("/hai/poster/cfg".equals(path)) {
-                return json(cfgJson());
-            }
-            if ("/hai/site/list".equals(path)) {
-                return json(siteListJson());
-            }
-            if ("/hai/site/active".equals(path)) {
-                return json(activeConfigJson());
-            }
-            if ("/hai/site/configs".equals(path)) {
-                return json(configsJson());
-            }
-            if ("/hai/site/prefs".equals(path)) {
-                return json(setSitePref(query));
-            }
+            if ("/hai/poster/cfg".equals(path)) return json(cfgJson());
+            if ("/hai/site/list".equals(path)) return json(siteListJson());
+            if ("/hai/site/active".equals(path)) return json(activeConfigJson());
+            if ("/hai/site/configs".equals(path)) return json(configsJson());
+            if ("/hai/site/prefs".equals(path)) return json(setSitePref(query));
 
-            // ---- 电视墙首屏：空 id 时 WebDetailActivity 拼出的路径 ----
-            // WebView 以 http://127.0.0.1:10090/hai/poster/d/ 加载，路径里没有 vid。
-            // 这里直接返回 APK assets 里固化的整页墙（离线可见、UI 归 APK 所有）。
-            // 带 vid 的请求（/hai/poster/d/<vid>）落到下面的反代，取服务器详情 HTML。
+            // ---- 详情页 legacy 脚本的统一落点：本地空对象，不再请求服务端取链 ----
+            if ("/hai/offline/empty.json".equals(path)) return json("{}");
+
+            // ---- 海海哥哥.海报墙站源本体：本地 stub（2026-11-09 定案） ----
+            // 站源只是首页入口占位：VideoActivity 按 key 分流到 WebDetailActivity，
+            // 海报墙 / 详情页数据 100% 来自 APK assets 离线快照，spider 永不被调用。
+            // 这里仍给一个合法的空 spider，保证设置页或聚合搜索万一加载它时，
+            // 只走 127.0.0.1:10090，绝不外连服务器，也不会因 404 触发配置解析异常。
+            if ("/hai/lib/tmdb.js".equals(path)) return plainJs(LOCAL_SITE_JS);
+            if ("/hai/lib/tmdb.json".equals(path)) return json(LOCAL_SITE_EXT);
+            if (path.startsWith("/hai/tmdb/")) return json("{}");
+
+            // ---- 墙页首屏（WebView 加载 /hai/poster/d/ 空 id） ----
             if ("/hai/poster/d/".equals(path) || "/hai/poster/d".equals(path)) {
-                return wallPage(headers);
+                DownloadProxyServer.Response r =
+                        asset(ProxyConfig.WALL_ASSET, "text/html; charset=utf-8");
+                return r != null ? r : plain(404, "wall.html missing");
             }
 
-            // ---- 同源反代 ----
-            // 页面里所有 /hai/* 相对路径都落在 127.0.0.1:10090 同源：
-            //   /hai/poster/?t=...&pg=2  整页 HTML（翻页/切类目，wall.js 用 DOMParser 取 #wallbox）
-            //   /hai/poster/eps|play|cast|warm|progress   JSON/文本
-            //   /hai/lib/haiplay.js                       站源脚本
-            //   /hai/dbimg/view/photo/...                 豆瓣图（服务器带 Referer 轮试 4 域名）
-            // 服务器只提供数据/渲染产物，APK 里零硬编码地址；后续逐个接口本地实现
-            // 即可渐进裁撤服务器，UI 不用重打包。
-            return relay(path, query, headers);
+            // ---- 墙页分类 / 翻页：md5(归一化 query) → assets/haiui/pages/*.html ----
+            if ("/hai/poster".equals(path) || "/hai/poster/".equals(path)) {
+                DownloadProxyServer.Response r = asset(
+                        "haiui/pages/" + md5Hex(normKey(query)) + ".html",
+                        "text/html; charset=utf-8");
+                if (r != null) return r;
+                DownloadProxyServer.Response home =
+                        asset(ProxyConfig.WALL_ASSET, "text/html; charset=utf-8");
+                return home != null ? home : plain(404, "no offline wall page");
+            }
+
+            // ---- 详情页：按 vid 取静态快照，未收录则给 PG 搜索兜底页 ----
+            if (path.startsWith("/hai/poster/d/")) {
+                String vid = path.substring("/hai/poster/d/".length());
+                int slash = vid.indexOf('/');
+                if (slash >= 0) vid = vid.substring(0, slash);
+                DownloadProxyServer.Response r = asset(
+                        "haiui/detail/" + safeSeg(vid) + ".html", "text/html; charset=utf-8");
+                return r != null ? r : fallbackDetail(vid);
+            }
+
+            // ---- 其它 /hai/poster/* 动态接口：全部本地兜底，绝不外连 ----
+            if (path.startsWith("/hai/poster/")) {
+                String leaf = path.substring("/hai/poster/".length());
+                if (leaf.startsWith("eps") || leaf.startsWith("play")
+                        || leaf.startsWith("progress") || leaf.startsWith("warm")
+                        || leaf.startsWith("cast") || leaf.startsWith("src")) {
+                    return json("{}");
+                }
+                // 演员页 / 站内搜索 / 一键追剧等没有离线快照 → 回墙页
+                return redirect("/hai/poster/d/");
+            }
+
+            // ---- 静态资源：/hai/<rel> → assets/haiui/<rel> ----
+            if (path.startsWith("/hai/")) {
+                String rel = path.substring("/hai/".length());
+                if (rel.indexOf("..") >= 0) return plain(400, "bad path");
+                // 快照图片统一压成 JPEG（文件名可能仍是 .png/.webp），按内容给 MIME
+                String ct = rel.startsWith("dbimg/") ? "image/jpeg" : guessCt(rel);
+                DownloadProxyServer.Response r = asset("haiui/" + rel, ct);
+                if (r != null) return r;
+                if (rel.startsWith("dbimg/")) {
+                    DownloadProxyServer.Response ph =
+                            asset("haiui/dbimg/_placeholder.jpg", "image/jpeg");
+                    if (ph != null) return ph;
+                }
+                return plain(404, "offline asset missing: " + rel);
+            }
+            return plain(404, "not found");
         } catch (Throwable t) {
             return new DownloadProxyServer.Response(500, "application/json; charset=utf-8",
                     "{\"ok\":false,\"msg\":\"" + escape(String.valueOf(t)) + "\"}");
         }
     }
 
-    /** 从 APK assets 读内置墙页。缺失时降级反代服务器首页，保证首屏不黑。 */
-    private DownloadProxyServer.Response wallPage(Map<String, String> headers) {
+    /** 读 APK assets；不存在返回 null 交给调用方降级。 */
+    private DownloadProxyServer.Response asset(String rel, String ct) {
         java.io.InputStream in = null;
         try {
-            in = ctx.getAssets().open(ProxyConfig.WALL_ASSET);
+            in = ctx.getAssets().open(rel);
             byte[] b = readAll(in);
-            DownloadProxyServer.Response r = new DownloadProxyServer.Response(
-                    200, "text/html; charset=utf-8", b);
-            r.extra.put("Cache-Control", "no-cache");
+            DownloadProxyServer.Response r =
+                    new DownloadProxyServer.Response(200, ct, b);
+            if (rel.endsWith(".html")) r.extra.put("Cache-Control", "no-cache");
+            else r.extra.put("Cache-Control", "public, max-age=86400");
             return r;
         } catch (Throwable ignored) {
-            return relay("/hai/poster/", "", headers);
+            return null;
         } finally {
             if (in != null) try { in.close(); } catch (Throwable ignored) {}
         }
     }
 
-    /**
-     * 同源反代到站源/配置中枢。method 与 POST body 由 DownloadProxyServer.serve()
-     * 以 __method / __body（ISO-8859-1 逐字节可逆）塞进 headers，避免改接口签名。
-     */
-    private DownloadProxyServer.Response relay(String path, String query,
-                                               Map<String, String> headers) {
-        HttpURLConnection c = null;
+    /** 归一化 query，与 make_offline_snapshot.py 的 norm_key() 逐字一致。 */
+    private static String normKey(String query) {
+        java.util.TreeMap<String, String> m = new java.util.TreeMap<String, String>();
+        if (query != null) {
+            for (String pair : query.split("&")) {
+                if (pair.length() == 0) continue;
+                int i = pair.indexOf('=');
+                if (i < 0) m.put(pair, "");
+                else m.put(pair.substring(0, i), pair.substring(i + 1));
+            }
+        }
+        if (!m.containsKey("pg")) m.put("pg", "1");
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> e : m.entrySet()) {
+            if (sb.length() > 0) sb.append('&');
+            sb.append(e.getKey()).append('=').append(e.getValue());
+        }
+        return sb.toString();
+    }
+
+    private static String md5Hex(String s) {
         try {
-            String url = ProxyConfig.UPSTREAM + path
-                    + (query == null || query.length() == 0 ? "" : "?" + query);
-            String method = headers.get("__method");
-            if (method == null || method.length() == 0) method = "GET";
-            byte[] reqBody = null;
-            String enc = headers.get("__body");
-            if (enc != null) reqBody = enc.getBytes("ISO-8859-1");
-
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setInstanceFollowRedirects(false);   // 302 交给 WebView 自己跳（同源）
-            c.setRequestMethod(method);
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(25000);
-            copyReq(headers, c, "referer", "cookie", "user-agent", "range",
-                    "accept", "content-type", "accept-language", "x-requested-with");
-            c.setRequestProperty("Accept-Encoding", "identity");  // 不解压，直接透传
-            if (reqBody != null && reqBody.length > 0) {
-                c.setDoOutput(true);
-                c.setFixedLengthStreamingMode(reqBody.length);
-                java.io.OutputStream os = c.getOutputStream();
-                os.write(reqBody);
-                os.close();
-            }
-
-            int code = c.getResponseCode();
-            String ct = c.getContentType();
-            if (ct == null || ct.length() == 0) ct = guessCt(path);
-            java.io.InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
-            byte[] out = in == null ? new byte[0] : readAll(in);
-
-            // 服务器页面偶发带绝对自身地址；改成根相对路径，保持同源
-            if (ct.startsWith("text/html") && out.length > 0) {
-                String s = new String(out, "UTF-8");
-                String up = ProxyConfig.UPSTREAM;
-                if (s.indexOf(up) >= 0) {
-                    s = s.replace(up, "");
-                    out = s.getBytes("UTF-8");
-                }
-            }
-
-            DownloadProxyServer.Response r = new DownloadProxyServer.Response(code, ct, out);
-            String loc = c.getHeaderField("Location");
-            if (loc != null) {
-                if (loc.startsWith(ProxyConfig.UPSTREAM)) {
-                    loc = loc.substring(ProxyConfig.UPSTREAM.length());
-                }
-                if (!loc.startsWith("/")) loc = "/" + loc;
-                r.extra.put("Location", loc);        // /hai/poster/src 切源的 302
-            }
-            putResp(r, c, "Cache-Control", "ETag", "Set-Cookie", "Content-Disposition");
-            return r;
+            byte[] d = java.security.MessageDigest.getInstance("MD5")
+                    .digest(s.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (byte b : d) sb.append(String.format("%02x", b & 0xff));
+            return sb.toString();
         } catch (Throwable t) {
-            return new DownloadProxyServer.Response(502, "text/plain; charset=utf-8",
-                    "relay failed: " + t);
-        } finally {
-            if (c != null) c.disconnect();
+            return "";
         }
     }
 
-    private static void copyReq(Map<String, String> h, HttpURLConnection c, String... keys) {
-        for (String k : keys) {
-            String v = h.get(k);
-            if (v != null && v.length() > 0) c.setRequestProperty(k, v);
-        }
+    private static String safeSeg(String s) {
+        return s == null ? "" : s.replaceAll("[^A-Za-z0-9_\\-]", "");
     }
 
-    private static void putResp(DownloadProxyServer.Response r, HttpURLConnection c,
-                                String... keys) {
-        for (String k : keys) {
-            String v = c.getHeaderField(k);
-            if (v != null && v.length() > 0) r.extra.put(k, v);
-        }
+    private static DownloadProxyServer.Response redirect(String loc) {
+        DownloadProxyServer.Response r =
+                new DownloadProxyServer.Response(302, "text/plain; charset=utf-8", "");
+        r.extra.put("Location", loc);
+        return r;
+    }
+
+    private static DownloadProxyServer.Response plain(int code, String msg) {
+        return new DownloadProxyServer.Response(code, "text/plain; charset=utf-8", msg);
+    }
+
+    /** 静态快照未收录的 vid：给一个只走 PG 搜索深链的兜底详情页。 */
+    private volatile JSONObject sCards;
+    private DownloadProxyServer.Response fallbackDetail(String vid) {
+        String name = "";
+        try {
+            if (sCards == null) {
+                java.io.InputStream in = ctx.getAssets().open("haiui/cards.json");
+                sCards = new JSONObject(new String(readAll(in), "UTF-8"));
+                in.close();
+            }
+            name = sCards.optString(vid, "");
+        } catch (Throwable ignored) {}
+        if (name.length() == 0) name = vid;
+        String q;
+        try { q = java.net.URLEncoder.encode(name, "UTF-8"); }
+        catch (Throwable t) { q = name; }
+        String t = htmlEsc(name);
+        String page = "<!DOCTYPE html><html lang='zh-CN'><head><meta charset='utf-8'>"
+                + "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                + "<link rel='stylesheet' href='/hai/ui/detail.css'><title>" + t + "</title>"
+                + "</head><body><div class='wrap' style='padding:56px'>"
+                + "<h1>" + t + "</h1><p>本地离线快照未收录该条目详情。</p>"
+                + "<p><a class='btn' href='haiplay://search?q=" + q + "'>▶ 播放（PG 站源）</a> "
+                + "<a class='btn ghost' href='/hai/poster/d/'>← 返回海报墙</a></p>"
+                + "</div></body></html>";
+        return new DownloadProxyServer.Response(200, "text/html; charset=utf-8", page);
+    }
+
+    private static String htmlEsc(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;");
     }
 
     private static byte[] readAll(java.io.InputStream in) throws java.io.IOException {
@@ -222,6 +268,32 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
 
     private static DownloadProxyServer.Response json(String s) {
         return new DownloadProxyServer.Response(200, "application/json; charset=utf-8", s);
+    }
+
+    /**
+     * 本地站源 stub：标准 js spider 接口（与服务端 tmdb.js 一致，非 drpy 的 var rule）。
+     * 每个方法都返回合法 JSON 字符串，零网络请求；保证 PG 的 JS 引擎加载后
+     * 不会因缺方法或解析失败报错。真实数据由 WebView 读 APK assets 离线快照。
+     */
+    private static final String LOCAL_SITE_JS =
+            "/* TMDBWall offline stub - all wall data lives in APK assets */\n"
+            + "function init(ext){return '';}\n"
+            + "function home(filter){return JSON.stringify({class:[],filters:{},list:[]});}\n"
+            + "function homeVod(){return JSON.stringify({list:[]});}\n"
+            + "function category(tid,pg,filter,extend){"
+            + "return JSON.stringify({list:[],page:1,pagecount:1,limit:20,total:0});}\n"
+            + "function detail(id){return JSON.stringify({list:[]});}\n"
+            + "function play(flag,id,flags){return JSON.stringify({});}\n"
+            + "function search(wd,quick){return JSON.stringify({list:[]});}\n";
+
+    /** 站源 ext 也指向本地，不持有任何服务器地址。 */
+    private static final String LOCAL_SITE_EXT =
+            "{\"name\":\"HaiWall(offline)\","
+            + "\"api\":\"http://127.0.0.1:10090/hai/offline/empty.json\"}";
+
+    private static DownloadProxyServer.Response plainJs(String s) {
+        return new DownloadProxyServer.Response(200,
+                "application/javascript; charset=utf-8", s);
     }
 
     private static String cfgJson() {
@@ -422,43 +494,6 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
                     ProxyConfig.urlDecode(pair.substring(i + 1)));
         }
         return out;
-    }
-
-    /** 豆瓣图直连必 418，必须带 Referer —— 服务端 /hai/dbimg/ 的同形替代。 */
-    private DownloadProxyServer.Response image(String enc) {
-        HttpURLConnection c = null;
-        try {
-            String url = java.net.URLDecoder.decode(enc, "UTF-8");
-            if (TextUtils.isEmpty(url)) {
-                return new DownloadProxyServer.Response(400, "text/plain", "empty url");
-            }
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setRequestProperty("Referer", "https://movie.douban.com/");
-            c.setRequestProperty("User-Agent",
-                    "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/84 Mobile Safari/537.36");
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(12000);
-            int code = c.getResponseCode();
-            if (code >= 400) {
-                c.disconnect();
-                return new DownloadProxyServer.Response(code, "text/plain", "upstream " + code);
-            }
-            InputStream in = c.getInputStream();
-            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = in.read(buf)) >= 0) bos.write(buf, 0, n);
-            in.close();
-            String ct = c.getContentType();
-            DownloadProxyServer.Response r = new DownloadProxyServer.Response(
-                    200, ct == null ? "image/jpeg" : ct, bos.toByteArray());
-            r.extra.put("Cache-Control", "public, max-age=86400");
-            return r;
-        } catch (Throwable t) {
-            return new DownloadProxyServer.Response(502, "text/plain", String.valueOf(t));
-        } finally {
-            if (c != null) c.disconnect();
-        }
     }
 
     private static String escape(String s) {

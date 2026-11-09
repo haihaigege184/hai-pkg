@@ -49,14 +49,13 @@ public final class ProxyConfig {
     public static final int HAI_PORT = 10090;
 
     /**
-     * 站源/配置中枢（服务器）。2026-11-09 定案：播放链路完全回归 PG 原版 Go，
-     * Java 代理只负责「APK 内置电视墙 UI」这一条同源链路：
-     *   APK assets 提供墙页 HTML（本地、离线可见）→ 页面内 /hai/* 相对路径
-     *   全部落到 127.0.0.1:10090 同源 → 本 jar 反代到下面的 UPSTREAM。
-     * 这样服务器地址只存在于 jar（可热更新），APK 里零硬编码；
-     * 后续把各接口逐步本地实现即可渐进裁撤服务器，UI 不用重打包。
+     * 2026-11-09 定案（离线版）：服务器退出运行时链路。
+     * 海报墙 / 详情页 / CSS / JS / 图片全部固化在 APK assets/haiui/，
+     * Java 代理 10090 只是把这些本地资源以同源 HTTP 喂给 WebView，
+     * 不做任何反代、不持有任何服务器地址。服务器只负责下发 jsm.json
+     * 与离线快照更新包；播放链路完全回归 PG 原版 Go（10078→10079）。
      */
-    public static volatile String UPSTREAM = "http://10.0.0.11:8099";
+    public static final String OFFLINE_ROOT = "haiui/";
 
     /** APK assets 里内置电视墙页路径（build_hai_tv.py 的 step_assets 复制进去）。 */
     public static final String WALL_ASSET = "haiui/wall.html";
