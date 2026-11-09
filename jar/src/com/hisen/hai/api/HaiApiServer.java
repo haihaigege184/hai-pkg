@@ -7,6 +7,7 @@ import android.database.sqlite.SQLiteDatabase;
 
 import com.hisen.hai.HaiBoot;
 import com.hisen.hai.proxy.DownloadProxyServer;
+import com.hisen.hai.proxy.PortRelay;
 import com.hisen.hai.proxy.ProxyConfig;
 
 import org.json.JSONArray;
@@ -69,7 +70,8 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
                 // 覆盖「App 进程没重建」或首轮反射太早的时序情况（幂等）。
                 try { HaiBoot.kick(); } catch (Throwable ignored) {}
                 return json("{\"ok\":true,\"core\":\"jar\",\"offline\":true,\"proxy\":"
-                        + DownloadProxyServer.get().port() + ",\"pg\":" + HaiBoot.status() + "}");
+                        + DownloadProxyServer.get().port() + ",\"pg\":" + HaiBoot.status()
+                        + ",\"relay\":" + PortRelay.status() + "}");
             }
             if ("/hai/poster/cfg".equals(path)) return json(cfgJson());
             if ("/hai/site/list".equals(path)) return json(siteListJson());

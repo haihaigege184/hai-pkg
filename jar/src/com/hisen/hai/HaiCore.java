@@ -6,6 +6,7 @@ import android.util.Log;
 
 import com.hisen.hai.api.HaiApiServer;
 import com.hisen.hai.proxy.DownloadProxyServer;
+import com.hisen.hai.proxy.PortRelay;
 import com.hisen.hai.proxy.ProxyConfig;
 
 /**
@@ -50,6 +51,12 @@ public final class HaiCore {
                 ProxyConfig.sBase = "http://127.0.0.1:" + port;
                 Log.i(TAG, "started on " + port + " base=" + ProxyConfig.sBase);
                 sStarted = true;
+                // 2026-11-10：iptables 10078→10079 规则设备重启必丢 ⇒ 原画全挂（错误码 2001）。
+                // 用 classes2.dex 里的纯 TCP 透明转发占住 10078 兜底：规则在时走内核
+                // REDIRECT，规则丢时由转发接管；取流仍 100% 由原版 Go(10079) 处理。
+                try {
+                    PortRelay.start();
+                } catch (Throwable ignored) {}
                 // 2026-11-09：PG 的 9978/10079 原本只在 HomeActivity.onCreate 里拉起，
                 // 而改造版开机直接落墙页 ⇒ 服务不在线 ⇒ 站源与聚合搜索全空。
                 // 在这里反射提前拉起（幂等、后台线程、全程吞异常）。
