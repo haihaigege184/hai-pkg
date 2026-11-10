@@ -140,7 +140,7 @@ a:focus,.sel{outline:none!important;border-color:#00e08a!important;color:#eafff5
   <div class="tabs" id="tabs"></div>
   <div class="headline"><b id="curName">热门电影</b>
     <span id="curFilter">全部 · 热门</span>
-    <span class="hint">← → 翻页　↑×3 切数据源　MENU 筛选　OK 详情</span></div>
+    <span class="hint">← → ↓ 到边界自动翻页　类目停留即切　↑×3 切数据源　MENU 筛选　OK 详情</span></div>
   <div class="wall" id="grid"></div>
   <div class="pager" id="pager"></div>
 </div>
@@ -188,6 +188,8 @@ var OTHER='HK|TW|FR|DE|TH|IN|ES|IT|CA|AU|RU';
 
 var S={src:'douban',tab:2,pg:1,sort:'',genre:'',country:'',view:'wall',vid:'',
        pagecount:1,items:[],offline:false,loading:false};
+/* 聚焦即切类目时置真：本轮绘制不把焦点抢回第一张卡片，让用户能继续扫类目 */
+var paintKeepFocus=false;
 /* 2026-11-10 预加载：PCACHE 是 WebView 内存里的「已解析页」，命中即零等待翻页；
    持久层在 jar 的 Upstream（按 yyyyMMdd 分片的磁盘缓存，当天有效）。
    App 跨天不重启时 DAY 会变，清内存并重新触发当日预热。 */
@@ -230,6 +232,7 @@ function status(txt,off){
    否则首屏永远停在「预载中…」，用户看不出已经提前备好了。 */
 function refreshStatus(){
   if(S.view!=='wall'||S.loading)return;
+  if(S.tab===1){status('我的追剧 · 本地收藏 '+S.items.length+' 部',false);return;}
   var nx=!!PCACHE[pkey(cfg({pg:S.pg+1}))];
   status((S.offline?'离线兜底 · 数据来自内置快照':
     (S.src==='tmdb'?'TMDB':'豆瓣')+' · 实时 · 第 '+S.pg+' 页')+
@@ -351,6 +354,9 @@ function watchList(c,cb){
 }
 /* ---------- 离线兜底 ---------- */
 function offlineList(c,cb){
+  /* 我的追剧是本地列表，空了就明确提示，别拿离线快照去凑数
+     （不然看起来就是一堆灰卡死数据）。 */
+  if(c.tab===1){cb([],1);return;}
   up('/hai/offline/cards',function(d){
     var a=d&&d.list;
     if(!a||!a.length){cb([],1);return;}
@@ -503,6 +509,11 @@ function paintTabs(){
   h+='<a href="javascript:void(0)" data-nav="filter">☰ 筛选</a>';
   h+='<a href="haiplay://native" data-nav="home">⌂ 主页</a>';
   $('tabs').innerHTML=h;
+  /* 聚焦切类目时标签会被重建，焦点要落回当前类目，用户才能继续左右扫 */
+  if(paintKeepFocus){
+    var t=document.querySelector('[data-nav="tab"][data-id="'+S.tab+'"]');
+    if(t)focusEl(t);
+  }
 }
 function cardHtml(it,i){
   /* 文字占位常驻，图片绝对定位盖在上面：图裂时 onerror 隐藏自己，
@@ -513,7 +524,7 @@ function cardHtml(it,i){
   var badge=it.rate&&parseFloat(it.rate)>0?'<span class="badge">'+esc(it.rate)+'</span>':'';
   /* 带上当前页码：详情页是独立文档，播放返回时要能回到原来那一页。 */
   return '<a class="card" href="/hai/poster/d/'+esc(it.id)+'?pg='+S.pg+'" data-nav="card" '+
-    'data-title="'+esc(it.name)+'" style="animation-delay:'+(i%12*24)+'ms">'+
+    'data-i="'+i+'" data-title="'+esc(it.name)+'" style="animation-delay:'+(i%12*24)+'ms">'+
     '<div class="pic">'+ph+img+badge+'</div><h3>'+esc(it.name)+'</h3>'+
     '<div class="sub">'+esc(it.sub||'')+'</div></a>';
 }
@@ -522,8 +533,11 @@ function paintGrid(){
   $('curFilter').innerHTML=esc(filterName());
   $('subtitle').innerHTML=esc((S.src==='tmdb'?'TMDB · 深色影院':'豆瓣 · 国产剧更新更快'));
   if(!S.items.length){
-    $('grid').innerHTML='<div class="empty" style="grid-column:1/-1"><b>这一页暂时没有数据</b>'+
-      '按 ← 返回上一页，或 ↑×3 切换数据源<br>播放链路不受影响，仍走 PG 原版站源</div>';
+    $('grid').innerHTML='<div class="empty" style="grid-column:1/-1">'+
+      (S.tab===1
+        ? '<b>还没有追剧记录</b>在详情页点「☆ 收藏」后，这里会显示你追的剧<br>↑ 回到类目栏，换个类目继续逛'
+        : '<b>这一页暂时没有数据</b>按 ← 返回上一页，或 ↑×3 切换数据源<br>播放链路不受影响，仍走 PG 原版站源')+
+      '</div>';
   }else{
     var h='';for(var i=0;i<S.items.length;i++)h+=cardHtml(S.items[i],i);
     $('grid').innerHTML=h;
@@ -536,13 +550,22 @@ function paintGrid(){
 }
 function paint(dir){
   paintTabs();
-  if(!dir){paintGrid();focusFirst();return;}
+  if(!dir){
+    paintGrid();
+    if(!paintKeepFocus)focusFirst();
+    paintKeepFocus=false;
+    return;
+  }
   var g=$('grid');
   g.className='wall out-'+dir;
   setTimeout(function(){
     paintGrid();
     g.className='wall in-'+dir;
-    setTimeout(function(){g.className='wall';focusFirst();},30);
+    setTimeout(function(){
+      g.className='wall';
+      if(!paintKeepFocus)focusFirst();
+      paintKeepFocus=false;
+    },30);
   },220);
 }
 /* ---------- 焦点导航（几何最近邻，TV 上最稳） ---------- */
@@ -563,7 +586,26 @@ function focusEl(el){
   try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(e2){}}
   el.className=(el.className||'')+' sel';
   try{el.scrollIntoView({block:'nearest'});}catch(e){}
+  tabHover(el);
   return true;
+}
+/* 类目聚焦即切换：焦点落上就切并立即加载，不用再按 OK。
+   220ms 轻防抖只是让「扫过一排类目」时只加载最后停下的那个，
+   停留感即切；详情页视图没有类目，不参与。 */
+var tabTimer=null;
+function tabHover(el){
+  if(tabTimer){clearTimeout(tabTimer);tabTimer=null;}
+  if(S.view!=='wall')return;
+  var id=parseInt(el.getAttribute&&el.getAttribute('data-id'),10);
+  if(el.getAttribute&&el.getAttribute('data-nav')==='tab'&&id&&!isNaN(id)&&id!==S.tab){
+    var my=el;
+    tabTimer=setTimeout(function(){
+      tabTimer=null;
+      /* 焦点可能已被后续移动带走，只有还停在类目上才切换 */
+      var cur=curEl();
+      if(cur===my)setTab(id,true);
+    },220);
+  }
 }
 function focusFirst(){
   var p=document.querySelector('[data-nav="dplay"]');
@@ -574,10 +616,27 @@ function focusFirst(){
 }
 function move(dx,dy){
   var c=curEl();if(!c){focusFirst();return;}
+  var pc=S.pagecount||S.pg;
+  /* 真边界优先：最后一张再按右、第一张再按左，直接翻页，
+     不靠几何寻焦（底行卡片不足时向右会误跳上一行）。 */
+  if(c.getAttribute('data-nav')==='card'){
+    var ci=parseInt(c.getAttribute('data-i'),10);
+    if(dx>0&&ci===S.items.length-1&&S.pg<pc){goPage(1);return;}
+    if(dx<0&&ci===0&&S.pg>1){goPage(-1);return;}
+  }
+  /* 从网格按上：先回到「当前选中」的类目，避免一到类目栏就误切到最左边那个。
+     落上后左右移动才会触发切换。 */
+  if(dy<0&&c.getAttribute('data-nav')==='card'){
+    var ct=document.querySelector('[data-nav="tab"][data-id="'+S.tab+'"]');
+    if(ct&&ct.offsetParent!==null){focusEl(ct);return;}
+  }
   var r=c.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
   var a=navs(),best=null,bs=1e9;
   for(var i=0;i<a.length;i++){
     var e=a[i];if(e===c)continue;
+    /* pager 不进寻焦：网格边界直接自动翻页，永远不需要「点击下一页」 */
+    var nv=e.getAttribute('data-nav');
+    if(nv==='pgprev'||nv==='pgnext')continue;
     var b=e.getBoundingClientRect(),ex=b.left+b.width/2,ey=b.top+b.height/2;
     var ddx=ex-cx,ddy=ey-cy;
     if(dx>0&&ddx<12)continue;
@@ -589,9 +648,13 @@ function move(dx,dy){
     var sc=main+side*2.4;
     if(sc<bs){bs=sc;best=e;}
   }
-  if(best)focusEl(best);
-  else if(dx>0&&S.pg<(S.pagecount||S.pg))goPage(1);
-  else if(dx<0&&S.pg>1)goPage(-1);
+  if(best){focusEl(best);return;}
+  /* 边界自动续页：右/左到网格边 → 翻下/上一页；下到最后一行 → 翻下一页。
+     setTab 落焦回首卡，翻页后 focusFirst 也落回首卡，连续浏览不断手。 */
+  if(dx>0&&S.pg<pc){goPage(1);return;}
+  if(dx<0&&S.pg>1){goPage(-1);return;}
+  if(dy>0&&c.getAttribute('data-nav')==='card'&&S.pg<pc){goPage(1);return;}
+  if(dy<0&&c.getAttribute('data-nav')==='card'&&S.pg>1){goPage(-1);return;}
 }
 function goPage(d){
   /* 本轮还在拉数据时直接吞掉翻页，否则 S.pg 先跳、数据没跟上，
@@ -607,9 +670,10 @@ function setSrc(s){
   try{localStorage.setItem('hai_src',s);}catch(e){}
   loadPage('next');
 }
-function setTab(id){
+function setTab(id,keepFocus){
   if(S.tab===id)return;
   S.tab=id;S.pg=1;S.pagecount=1;
+  if(keepFocus)paintKeepFocus=true;
   try{localStorage.setItem('hai_tab',String(id));}catch(e){}
   loadPage('next');
 }
