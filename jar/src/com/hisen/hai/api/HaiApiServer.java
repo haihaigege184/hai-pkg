@@ -80,6 +80,8 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
                         + DownloadProxyServer.get().port() + ",\"pg\":" + HaiBoot.status()
                         + ",\"relay\":" + PortRelay.status()
                         + ",\"up\":" + Upstream.status()
+                        + ",\"warm\":" + WallWarm.status()
+                        + ",\"back\":" + com.hisen.hai.WallBack.status()
                         + ",\"proc\":\"" + HaiCore.proc() + "\"}");
             }
 
@@ -87,6 +89,12 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
             if ("/hai/up".equals(path)) return upstream(query, false);
             if ("/hai/img".equals(path)) return upstream(query, true);
             if ("/hai/offline/cards".equals(path)) return offlineCards();
+
+            // ---- 每日首启全类目预热 / 手动翻页插队（2026-11-10） ----
+            // 只接收 URL 列表，立刻入队返回；真正取数由 jar 内 daemon 线程跑，
+            // WebView 被回收也不中断，结果落 Upstream 的「当天」磁盘缓存。
+            if ("/hai/warm/status".equals(path)) return noStore(WallWarm.status());
+            if ("/hai/warm".equals(path)) return warm(query);
 
             if ("/hai/poster/cfg".equals(path)) return json(cfgJson());
             if ("/hai/site/list".equals(path)) return json(siteListJson());
@@ -188,9 +196,42 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
         DownloadProxyServer.Response out =
                 new DownloadProxyServer.Response(r.code, ct, r.body);
         out.extra.put("Cache-Control", r.ok()
-                ? (image ? "public, max-age=86400" : "public, max-age=120")
+                ? (image ? "public, max-age=86400" : "public, max-age=600")
                 : "no-store");
         return out;
+    }
+
+    /**
+     * 预热入队：{@code /hai/warm?u=<url>&u=<url>...&prio=1}。
+     *
+     * <p>URL 由 SPA 按类目/页码生成（页面不接触密钥之外的东西），这里逐条
+     * 走 {@link Upstream#sanitize} 白名单；{@code prio=1} 是手动翻页的类目，
+     * 会插到高优先队首。重复 u= 参数必须逐个收集，不能用 Map 覆盖。
+     */
+    private DownloadProxyServer.Response warm(String query) {
+        java.util.List<String> urls = new java.util.ArrayList<String>();
+        boolean prio = false;
+        if (query != null) {
+            for (String pair : query.split("&")) {
+                int i = pair.indexOf('=');
+                if (i <= 0) continue;
+                String k = ProxyConfig.urlDecode(pair.substring(0, i));
+                String v = ProxyConfig.urlDecode(pair.substring(i + 1));
+                if ("prio".equals(k)) prio = "1".equals(v);
+                else if ("u".equals(k) && v.length() > 0) urls.add(v);
+            }
+        }
+        int n = WallWarm.enqueue(urls, prio);
+        return noStore("{\"ok\":true,\"queued\":" + n + ",\"prio\":" + prio
+                + ",\"status\":" + WallWarm.status() + "}");
+    }
+
+    /** 状态/写操作接口禁止浏览器缓存，否则跨天后不会重新打到 jar 预热队列。 */
+    private static DownloadProxyServer.Response noStore(String s) {
+        DownloadProxyServer.Response r =
+                new DownloadProxyServer.Response(200, "application/json; charset=utf-8", s);
+        r.extra.put("Cache-Control", "no-store");
+        return r;
     }
 
     /**

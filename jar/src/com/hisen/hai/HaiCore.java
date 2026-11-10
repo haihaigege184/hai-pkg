@@ -109,6 +109,15 @@ public final class HaiCore {
                 try {
                     HaiBoot.startAsync(sApp);
                 } catch (Throwable ignored) {}
+                // 2026-11-10：①每日首启后台预热全类目 3 页（手动翻页插队优先），
+                // ②播放返回跳过原生搜索页直接回墙页。两者都是 App 进程内的
+                // 守护逻辑，WebView 被回收也不会中断，/live 换包随 dex 自动重挂。
+                try {
+                    com.hisen.hai.api.WallWarm.start(sApp);
+                } catch (Throwable ignored) {}
+                try {
+                    WallBack.install(sApp);
+                } catch (Throwable ignored) {}
             } catch (Throwable t) {
                 try { Log.w(TAG, "start failed: " + t); } catch (Throwable ignored) {}
                 // 反射调用方（HaiBridge）会捕获 InvocationTargetException 并轮询重试，

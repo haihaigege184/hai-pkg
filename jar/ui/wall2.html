@@ -188,6 +188,21 @@ var OTHER='HK|TW|FR|DE|TH|IN|ES|IT|CA|AU|RU';
 
 var S={src:'douban',tab:2,pg:1,sort:'',genre:'',country:'',view:'wall',vid:'',
        pagecount:1,items:[],offline:false,loading:false};
+/* 2026-11-10 预加载：PCACHE 是 WebView 内存里的「已解析页」，命中即零等待翻页；
+   持久层在 jar 的 Upstream（按 yyyyMMdd 分片的磁盘缓存，当天有效）。
+   App 跨天不重启时 DAY 会变，清内存并重新触发当日预热。 */
+function today(){var d=new Date();
+  return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);}
+var DAY=today();
+var PCACHE={};
+function cfg(o){
+  o=o||{};
+  return {src:o.src||S.src,tab:o.tab||S.tab,pg:o.pg||S.pg,
+    sort:o.sort===undefined?S.sort:o.sort,
+    genre:o.genre===undefined?S.genre:o.genre,
+    country:o.country===undefined?S.country:o.country};
+}
+function pkey(c){return [c.src,c.tab,c.pg,c.sort,c.genre,c.country].join('|');}
 var $=function(id){return document.getElementById(id);};
 var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
   .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');};
@@ -211,95 +226,109 @@ function status(txt,off){
   var e=$('stat'); if(!e)return;
   e.innerHTML=esc(txt); e.className=off?'st off':'st';
 }
+/* 预加载是后台完成的，状态栏要在下一页进 PCACHE 后自己刷新成「下页已就绪」，
+   否则首屏永远停在「预载中…」，用户看不出已经提前备好了。 */
+function refreshStatus(){
+  if(S.view!=='wall'||S.loading)return;
+  var nx=!!PCACHE[pkey(cfg({pg:S.pg+1}))];
+  status((S.offline?'离线兜底 · 数据来自内置快照':
+    (S.src==='tmdb'?'TMDB':'豆瓣')+' · 实时 · 第 '+S.pg+' 页')+
+    (S.offline?'':(nx?' · 下页已就绪':' · 预载中…')),S.offline);
+}
 function nowYear(){return (new Date()).getFullYear();}
 
-/* ---------- 豆瓣 ---------- */
-function dbExplore(cb){
-  var c=DBC[S.tab]||DBC[2], tags=c.tags||'', genres=c.genres||'',
-      countries=c.countries||'', srt=c.sort||'T', yr=c.yr||'';
-  if(S.country&&DBCTRY[S.country])countries=DBCTRY[S.country];
-  if(S.genre)genres=S.genre;
-  if(S.sort&&DBSORT[S.sort])srt=DBSORT[S.sort];
+/* ---------- 豆瓣 ----------
+   2026-11-10：全部参数化成 (cfg, cb)。预加载要能拉「任意类目任意页」，
+   不能像旧版那样直接读全局 S，否则后台预取会把当前页状态冲掉。 */
+function dbUrl(c){
+  var d=DBC[c.tab]||DBC[2], tags=d.tags||'', genres=d.genres||'',
+      countries=d.countries||'', srt=d.sort||'T', yr=d.yr||'';
+  if(c.country&&DBCTRY[c.country])countries=DBCTRY[c.country];
+  if(c.genre)genres=c.genre;
+  if(c.sort&&DBSORT[c.sort])srt=DBSORT[c.sort];
   if(yr==='now')yr=nowYear()+','+nowYear();
   else if(yr==='next')yr=nowYear()+','+(nowYear()+1);
-  var q='sort='+srt+'&range=0,10&tags='+enc(tags)+'&start='+((S.pg-1)*20)+
-        '&genres='+enc(genres)+'&countries='+enc(countries)+'&year_range='+enc(yr);
-  up('https://movie.douban.com/j/new_search_subjects?'+q,function(d){
+  return 'https://movie.douban.com/j/new_search_subjects?sort='+srt+
+    '&range=0,10&tags='+enc(tags)+'&start='+((c.pg-1)*20)+
+    '&genres='+enc(genres)+'&countries='+enc(countries)+'&year_range='+enc(yr);
+}
+function dbExplore(c,cb){
+  up(dbUrl(c),function(d){
     var a=d&&d.data;
     if(!a||!a.length){cb(null);return;}
     cb(a.map(function(it){
       return {id:'db'+it.id,name:it.title||'',pic:imgProxy(it.cover||''),
         rate:it.rate||'',sub:[].concat(it.directors||[]).slice(0,2).join(' / '),
         desc:'',raw:it.cover||''};
-    }));
+    }),0);
   });
 }
-function dbRex(i,cb){
-  var cands=DBREX[S.tab]||['movie_showing'];
+function dbRex(c,i,cb){
+  var cands=DBREX[c.tab]||['movie_showing'];
   if(i>=cands.length){cb(null);return;}
   var u='https://m.douban.com/rexxar/api/v2/subject_collection/'+cands[i]+
-        '/items?start='+((S.pg-1)*20)+'&count=20';
+        '/items?start='+((c.pg-1)*20)+'&count=20';
   up(u,function(d){
     var a=d&&d.subject_collection_items;
-    if(!a||!a.length){dbRex(i+1,cb);return;}
+    if(!a||!a.length){dbRex(c,i+1,cb);return;}
     cb(a.filter(function(it){return it.id;}).map(function(it){
       var cv=(it.cover||{}).url||'';
       return {id:'db'+it.id,name:it.title||'',pic:imgProxy(cv),
         rate:String(((it.rating||{}).value)||''),sub:'',desc:'',raw:cv};
-    }));
+    }),0);
   });
 }
-function dbFallback(cb){
-  var f=DBFB[S.tab]||DBFB[2], kind=f[0],tag=f[1],srt=f[2];
-  if(S.sort==='score')srt='rank';
-  else if(S.sort==='new')srt='time';
-  else if(S.sort==='hot')srt='recommend';
+function dbFallback(c,cb){
+  var f=DBFB[c.tab]||DBFB[2], kind=f[0],tag=f[1],srt=f[2];
+  if(c.sort==='score')srt='rank';
+  else if(c.sort==='new')srt='time';
+  else if(c.sort==='hot')srt='recommend';
   var extra={'CN':kind==='tv'?'国产剧':'华语','US':kind==='tv'?'美剧':'欧美',
     'GB':'英剧','JP':kind==='tv'?'日剧':'日本','KR':kind==='tv'?'韩剧':'韩国'};
-  if(S.country&&extra[S.country])tag=extra[S.country];
+  if(c.country&&extra[c.country])tag=extra[c.country];
   up('https://movie.douban.com/j/search_subjects?type='+kind+'&tag='+enc(tag)+
-     '&sort='+srt+'&page_limit=20&page_start='+((S.pg-1)*20),function(d){
+     '&sort='+srt+'&page_limit=20&page_start='+((c.pg-1)*20),function(d){
     var a=d&&d.subjects;
     cb(a&&a.length?a.filter(function(it){return it.id;}).map(function(it){
       return {id:'db'+it.id,name:it.title||'',pic:imgProxy(it.cover||''),
         rate:it.rate||'',sub:'',desc:'',raw:it.cover||''};
-    }):null);
+    }):null,0);
   });
 }
 /* ---------- TMDB ---------- */
-function tmdbUrl(){
-  var p=TPATH[S.tab]||'/movie/popular',ex=TEXTRA[S.tab]||{},
-      filtered=!!(S.country||S.sort||S.genre),q={};
-  var isMovie=[2,10,11].indexOf(S.tab)>=0;
+function tmdbUrl(c){
+  var p=TPATH[c.tab]||'/movie/popular',ex=TEXTRA[c.tab]||{},
+      filtered=!!(c.country||c.sort||c.genre),q={};
+  var isMovie=[2,10,11].indexOf(c.tab)>=0;
   if(filtered){
     p=isMovie?'/discover/movie':'/discover/tv';
-    q.sort_by=S.sort==='score'?'vote_average.desc':
-              (S.sort==='new'?(isMovie?'release_date.desc':'first_air_date.desc'):'popularity.desc');
-    if(S.sort==='score')q['vote_count.gte']='200';
-    if(S.country==='OTHER')q.with_origin_country=OTHER;
-    else if(S.country)q.with_origin_country=S.country;
-    if(S.genre&&TGENRE[S.genre]){
-      var g=TGENRE[S.genre][isMovie?0:1];
+    q.sort_by=c.sort==='score'?'vote_average.desc':
+              (c.sort==='new'?(isMovie?'release_date.desc':'first_air_date.desc'):'popularity.desc');
+    if(c.sort==='score')q['vote_count.gte']='200';
+    if(c.country==='OTHER')q.with_origin_country=OTHER;
+    else if(c.country)q.with_origin_country=c.country;
+    if(c.genre&&TGENRE[c.genre]){
+      var g=TGENRE[c.genre][isMovie?0:1];
       if(g)q.with_genres=g;
     }
-    if(!isMovie&&S.tab===3)q.without_genres='16';
-    if(!isMovie&&(S.tab===4||S.tab===5)){
+    if(!isMovie&&c.tab===3)q.without_genres='16';
+    if(!isMovie&&(c.tab===4||c.tab===5)){
       q.with_genres='16';
-      q.with_original_language=S.tab===4?'zh':'ja';
+      q.with_original_language=c.tab===4?'zh':'ja';
     }
   }else{
     for(var k in ex){if(ex.hasOwnProperty(k))q[k]=ex[k];}
   }
-  q.api_key=KEY;q.language='zh-CN';q.page=S.pg;
+  q.api_key=KEY;q.language='zh-CN';q.page=c.pg;
   var parts=[];
   for(var k2 in q){if(q.hasOwnProperty(k2))parts.push(enc(k2)+'='+enc(q[k2]));}
   return TMDB+p+'?'+parts.join('&');
 }
-function tmdbList(cb){
-  up(tmdbUrl(),function(d){
+function tmdbList(c,cb){
+  up(tmdbUrl(c),function(d){
     var a=d&&d.results;
     if(!a){cb(null);return;}
-    if(d.total_pages)S.pagecount=Math.min(500,Math.max(1,d.total_pages));
+    var pc=d.total_pages?Math.min(500,Math.max(1,d.total_pages)):c.pg;
     cb(a.filter(function(it){return it.id;}).map(function(it){
       var tv=!!(it.first_air_date||it.name&&!it.title);
       var nm=it.title||it.name||'';
@@ -308,65 +337,150 @@ function tmdbList(cb){
         rate:it.vote_average?String(Math.round(it.vote_average*10)/10):'',
         sub:(it.release_date||it.first_air_date||'').slice(0,4),
         desc:it.overview||'',raw:pp,tv:tv};
-    }));
+    }),pc);
   });
 }
 /* ---------- 我的追剧（本地） ---------- */
-function watchList(cb){
+function watchList(c,cb){
   var a=[],s='';
   try{s=localStorage.getItem('hai_watch')||'[]';a=JSON.parse(s);}catch(e){a=[];}
-  var start=(S.pg-1)*20,part=a.slice(start,start+20);
-  S.pagecount=Math.max(1,Math.ceil(a.length/20));
+  var start=(c.pg-1)*20,part=a.slice(start,start+20);
   cb(part.map(function(x){return {id:x.id,name:x.name,pic:x.pic||'',
-    rate:x.rate||'',sub:x.sub||'',desc:'',raw:x.raw||''};}));
+    rate:x.rate||'',sub:x.sub||'',desc:'',raw:x.raw||''};}),
+    Math.max(1,Math.ceil(a.length/20)));
 }
 /* ---------- 离线兜底 ---------- */
-function offlineList(cb){
+function offlineList(c,cb){
   up('/hai/offline/cards',function(d){
     var a=d&&d.list;
-    if(!a||!a.length){cb([]);return;}
-    var key=S.tab+'_'+S.sort+'_'+S.genre+'_'+S.country;
+    if(!a||!a.length){cb([],1);return;}
+    var key=c.tab+'_'+c.sort+'_'+c.genre+'_'+c.country;
     var h=0;for(var i=0;i<key.length;i++)h=(h*31+key.charCodeAt(i))|0;
-    var off=((S.pg-1)*20+Math.abs(h))%a.length;
+    var off=((c.pg-1)*20+Math.abs(h))%a.length;
     var out=[];
     for(var j=0;j<20&&j<a.length;j++){
       var it=a[(off+j)%a.length];
       out.push({id:it.id,name:it.name,pic:'',rate:'',sub:'离线快照',desc:'',raw:''});
     }
-    S.pagecount=Math.max(1,Math.ceil(a.length/20));
-    S.offline=true;
-    cb(out);
+    cb(out,Math.max(1,Math.ceil(a.length/20)));
   });
 }
-/* ---------- 拉一页（串行兜底，任何一环成功即止） ---------- */
+/* ---------- 拉一页（串行兜底，任何一环成功即止；结果进 PCACHE） ---------- */
+function fetchPage(c,cb){
+  var k=pkey(c);
+  if(PCACHE[k]&&PCACHE[k].day===DAY){cb(PCACHE[k]);return;}
+  var steps;
+  if(c.tab===1)steps=[watchList];
+  else if(c.src==='tmdb')steps=[tmdbList];
+  else steps=[dbExplore,function(cc,fn){dbRex(cc,0,fn);},dbFallback];
+  var i=0;
+  function next(){
+    if(i>=steps.length){
+      offlineList(c,function(items,pc){done(items,pc,true);});
+      return;
+    }
+    var f=steps[i++];
+    try{f(c,function(items,pc){if(items&&items.length)done(items,pc,false);else next();});}
+    catch(e){next();}
+  }
+  function done(items,pc,off){
+    var o={items:items||[],pc:pc||0,offline:off,day:DAY};
+    /* 离线兜底页不进缓存，联网恢复后能立刻重新拉真实数据。 */
+    if(!off&&o.items.length)PCACHE[k]=o;
+    cb(o);
+  }
+  next();
+}
+/* ---------- 每日首启全类目预热 / 手动翻页插队 ---------- */
+function primaryUrl(c){
+  if(c.tab===1)return '';                       // 我的追剧是本地数据
+  return c.src==='tmdb'?tmdbUrl(c):dbUrl(c);
+}
+function warmSubmit(urls,prio,onOk){
+  if(!urls||!urls.length){if(onOk)try{onOk();}catch(e){}return;}
+  /* 分批下发，单条请求行别太长；jar 端收到即入队，不等响应也不阻塞 UI。
+     加 &_=日期 戳避免 WebView 把第二天的同 URL 请求直接吃缓存。
+     只有「全部批次」都回来才回调，任何一批失败都不算完成，下次重试。 */
+  var CH=6,total=Math.ceil(urls.length/CH),okCount=0,done=false;
+  for(var s=0;s<urls.length;s+=CH){
+    var part=urls.slice(s,s+CH),a=[];
+    for(var i=0;i<part.length;i++)a.push('u='+enc(part[i]));
+    var q='/hai/warm?'+(prio?'prio=1&':'')+a.join('&')+'&_='+DAY+'_'+s;
+    try{
+      var x=new XMLHttpRequest();
+      x.open('GET',q,true);x.timeout=8000;
+      if(onOk)x.onload=function(){
+        okCount++;
+        if(!done&&okCount>=total){done=true;try{onOk();}catch(e){}}
+      };
+      x.send();
+    }catch(e){}
+  }
+}
+/* 每个 WebView 会话提交一次全类目 3 页（6 类目 × 3 = 18 个 URL）。
+   不用 localStorage 当天标记：万一首次打开时断网、或系统清了 cache，
+   重开 App 还能自动补预热。jar 侧当天 sDone + 磁盘缓存双重去重，
+   重复提交只是廉价本地读，不会打公网；跨天分片自动失效会真正重拉。 */
+var warmSent=false;
+function dailyWarm(){
+  if(warmSent)return;
+  var urls=[];
+  for(var t=0;t<TABS.length;t++){
+    var id=TABS[t].id;
+    if(id===1)continue;
+    for(var p=1;p<=3;p++){
+      var u=primaryUrl({src:S.src,tab:id,pg:p,sort:'',genre:'',country:''});
+      if(u)urls.push(u);
+    }
+  }
+  warmSubmit(urls,false,function(){warmSent=true;});
+}
+function prefetchAround(){
+  /* 手动翻页 / 切类目：当前类目前 3 页插到 jar 高优先队首，
+     比每日全类目预热先跑；同时把相邻两页拉进 WebView 内存，
+     下次翻页直接 paint，零网络等待。 */
+  var urls=[];
+  for(var p=1;p<=3;p++){
+    var cc=cfg({pg:p});
+    if(!PCACHE[pkey(cc)]){
+      var u=primaryUrl(cc);
+      if(u)urls.push(u);
+    }
+  }
+  warmSubmit(urls,true);
+  var ahead=[S.pg+1,S.pg+2];
+  for(var j=0;j<ahead.length;j++){
+    (function(pg,delay){
+      setTimeout(function(){
+        var cc=cfg({pg:pg});
+        if(PCACHE[pkey(cc)])return;
+        fetchPage(cc,function(){refreshStatus();});
+      },delay);
+    })(ahead[j],260+j*420);
+  }
+}
+/* ---------- 当前页渲染 ---------- */
 var pending=false;
 function loadPage(dir){
   /* 连续快速翻页 / 切源时不能丢请求：记一个待刷新，本轮完成后按最新状态重拉。 */
   if(S.loading){pending=true;return;}
-  S.loading=true;S.offline=false;
+  var c=cfg(),hit=PCACHE[pkey(c)];
+  S.loading=true;
+  if(hit&&hit.day===DAY){done(hit);return;}   // 命中预加载：零网络
   status('正在拉取实时数据…');
-  var steps;
-  if(S.tab===1)steps=[watchList];
-  else if(S.src==='tmdb')steps=[tmdbList];
-  else steps=[dbExplore,function(cb){dbRex(0,cb);},dbFallback];
-  var i=0;
-  function next(){
-    if(i>=steps.length){offlineList(done);return;}
-    var f=steps[i++];
-    try{f(function(items){if(items&&items.length)done(items);else next();});}
-    catch(e){next();}
-  }
-  function done(items){
+  fetchPage(c,done);
+  function done(o){
     S.loading=false;
-    S.items=items||[];
-    if(!S.offline&&S.src==='douban'&&S.tab!==1)
+    S.offline=!!o.offline;S.items=o.items||[];
+    if(o.pc)S.pagecount=o.pc;
+    else if(!S.offline&&S.src==='douban'&&S.tab!==1)
       S.pagecount=S.items.length>=20?Math.max(S.pg+1,20):S.pg;
-    status(S.offline?'离线兜底 · 数据来自内置快照':
-      (S.src==='tmdb'?'TMDB':'豆瓣')+' · 实时 · 第 '+S.pg+' 页',S.offline);
+    else S.pagecount=Math.max(S.pagecount||1,S.pg);
+    refreshStatus();
     paint(dir);
-    if(pending){pending=false;setTimeout(function(){loadPage('next');},80);}
+    if(S.view==='wall'){dailyWarm();prefetchAround();}
+    if(pending){pending=false;setTimeout(function(){loadPage('next');},60);}
   }
-  next();
 }
 /* ---------- 渲染 ---------- */
 function tabName(){for(var i=0;i<TABS.length;i++)if(TABS[i].id===S.tab)return TABS[i].n;return '';}
@@ -397,7 +511,8 @@ function cardHtml(it,i){
   var img=it.pic?'<img src="'+esc(it.pic)+'" loading="lazy" '+
     'onerror="this.style.display=\'none\'" alt="">':'';
   var badge=it.rate&&parseFloat(it.rate)>0?'<span class="badge">'+esc(it.rate)+'</span>':'';
-  return '<a class="card" href="/hai/poster/d/'+esc(it.id)+'" data-nav="card" '+
+  /* 带上当前页码：详情页是独立文档，播放返回时要能回到原来那一页。 */
+  return '<a class="card" href="/hai/poster/d/'+esc(it.id)+'?pg='+S.pg+'" data-nav="card" '+
     'data-title="'+esc(it.name)+'" style="animation-delay:'+(i%12*24)+'ms">'+
     '<div class="pic">'+ph+img+badge+'</div><h3>'+esc(it.name)+'</h3>'+
     '<div class="sub">'+esc(it.sub||'')+'</div></a>';
@@ -548,6 +663,9 @@ function ovApply(){
 /* ---------- 详情页 ---------- */
 function parseRoute(){
   var p=location.pathname||'/';
+  /* 卡片链接带 pg：详情页重建墙页时回到原来的页码，不弹回第 1 页。 */
+  var g=(location.search||'').match(/[?&]pg=(\d+)/);
+  if(g){var n=parseInt(g[1],10);if(n>0&&n<500)S.pg=n;}
   var m=p.match(/\/hai\/poster\/d\/([^\/]+)/);
   if(m&&m[1]){S.view='detail';S.vid=decodeURIComponent(m[1]);}
   else S.view='wall';
@@ -624,6 +742,23 @@ function renderDetail(o){
   $('wall').style.display='none';
   focusFirst();
 }
+/* ---------- 播放前把 SPA 复位到墙页 ---------- */
+/* 播放深链由 APK 的 WebDetailActivity 拦到原生搜索/播放页，jar 的 WallBack
+   会在播放页出现时 finish 掉搜索页，返回栈只剩本 Activity。但 WebView 里
+   还停在 SPA 详情页视图 ⇒ 必须先把 DOM 切回海报墙，播放后返回才真正
+   落在墙页，而不是详情页（11-10 真机实测：只做 Activity 层会停在详情）。 */
+function backToWall(){
+  if(S.view==='wall')return;
+  S.view='wall';
+  $('detail').style.display='none';
+  $('wall').style.display='';
+  try{history.replaceState(null,'','/hai/poster/d/');}catch(e){}
+  /* 详情页是独立文档（点卡片是真实导航），它从没加载过墙页数据，
+     只切 DOM 会得到空墙页。必须重新初始化类目栏并拉一次当前页，
+     命中 jar 的当天磁盘缓存，秒回且内容与播放前一致。 */
+  paintTabs();
+  loadPage(null);
+}
 /* ---------- 事件 ---------- */
 function onClick(e){
   var a=e.target;
@@ -635,6 +770,10 @@ function onClick(e){
     ovApply();e.preventDefault();return;
   }
   var k=a.getAttribute('data-nav');
+  /* 播放前复位墙页视图；这里刻意不 preventDefault，让 haiplay:// 继续
+     走 APK 的 shouldOverrideUrlLoading → 原生搜索/播放链路。 */
+  if(k==='dplay'){backToWall();return;}
+  if(k==='dback'){e.preventDefault();backToWall();return;}
   if(k==='tab'){e.preventDefault();setTab(parseInt(a.getAttribute('data-id'),10));return;}
   if(k==='src'){e.preventDefault();openOv('src');return;}
   if(k==='filter'){e.preventDefault();openOv('flt');return;}
@@ -682,6 +821,17 @@ try{
 }catch(e){}
 document.addEventListener('click',onClick,false);
 document.addEventListener('keydown',onKey,false);
+/* 每天第一次打开立刻把全类目 3 页丢进 jar 后台队列，不等首屏渲染完。
+   jar 侧 daemon 串行取数并按当天分片落盘，WebView 被回收也不中断。 */
+dailyWarm();
+/* App 跨天不重启时，页面里的 DAY 也要跟着翻：清内存页缓存 + 重新预热。 */
+setInterval(function(){
+  var d=today();
+  if(d!==DAY){
+    DAY=d;PCACHE={};warmSent=false;
+    dailyWarm();if(S.view==='wall')prefetchAround();
+  }
+},60000);
 if(S.view==='detail'){
   status('正在拉取详情…');
   var vid=S.vid;

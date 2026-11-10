@@ -12,7 +12,10 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.security.MessageDigest;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 import java.util.zip.GZIPInputStream;
@@ -36,6 +39,11 @@ import java.util.zip.GZIPInputStream;
  * 任意 URL 的开放代理。已实测（2026-11-10，湖北移动 10.0.0.x 出口）：
  * {@code m.douban.com / movie.douban.com / imgN.doubanio.com / api.tmdb.org /
  * images.tmdb.org} 全部直连可达；{@code api.themoviedb.org} 被 DNS 污染，不用。
+ *
+ * <p><b>2026-11-10 新增「缓存当天有效」</b>：JSON 与图片统一进按天分片的磁盘缓存
+ * {@code cache/hai_up/<yyyyMMdd>/<md5(url)>}，跨天自动换目录并清理旧分片；
+ * 内存 LRU 也统一在当天 23:59:59 过期。这样 WallWarm 的后台预热结果当天
+ * 一直复用，第二天首启自然重新拉真实数据。
  */
 public final class Upstream {
 
@@ -65,11 +73,9 @@ public final class Upstream {
     private static final int READ_MS = 14000;
     private static final int MAX_BYTES = 6 * 1024 * 1024;
 
-    /** 内存缓存：JSON 5 分钟，图片 6 小时。LRU + 总量上限，电视内存小不能放开。 */
-    private static final long TTL_JSON = 5 * 60 * 1000L;
-    private static final long TTL_IMG = 6 * 60 * 60 * 1000L;
-    private static final long MEM_CAP = 10 * 1024 * 1024L;
-    private static final int MEM_MAX_ENTRIES = 240;
+    /** 内存 LRU 上限（电视内存小，不能放开）；有效期一律「当天结束」。 */
+    private static final long MEM_CAP = 12 * 1024 * 1024L;
+    private static final int MEM_MAX_ENTRIES = 320;
 
     private static final class Ent {
         long exp;
@@ -86,7 +92,10 @@ public final class Upstream {
     private static final Map<String, Long> sCool = new LinkedHashMap<String, Long>();
 
     private static File sCacheDir;
+    private static String sCacheDay = "";
     private static String sBid;
+    private static volatile int sDiskHit;
+    private static volatile int sDiskPut;
 
     private Upstream() {}
 
@@ -100,6 +109,22 @@ public final class Upstream {
             sBid = b.toString();
         }
         return sBid;
+    }
+
+    /** 本地日期分片键（WallWarm 也用它判断跨天）。 */
+    public static String dayKey() {
+        return new SimpleDateFormat("yyyyMMdd", Locale.US)
+                .format(new Date(System.currentTimeMillis()));
+    }
+
+    /** 当天 23:59:59.999，内存缓存统一过期点。 */
+    private static long dayEnd() {
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.set(java.util.Calendar.HOUR_OF_DAY, 23);
+        c.set(java.util.Calendar.MINUTE, 59);
+        c.set(java.util.Calendar.SECOND, 59);
+        c.set(java.util.Calendar.MILLISECOND, 999);
+        return c.getTimeInMillis();
     }
 
     /** 只放行白名单 HTTPS 域名；返回规范化的 URL，非法返回 null。 */
@@ -132,11 +157,30 @@ public final class Upstream {
                 || (ct != null && ct.startsWith("image/"));
     }
 
-    private static File cacheDir(Context ctx) {
-        if (sCacheDir == null) {
+    /**
+     * 当天分片目录 {@code cache/hai_up/<yyyyMMdd>/}。跨天换目录的同时清掉
+     * 旧分片（只认 8 位数字目录名，绝不误删 App 的其它缓存）。
+     */
+    private static synchronized File cacheDir(Context ctx) {
+        String day = dayKey();
+        if (sCacheDir == null || !day.equals(sCacheDay)) {
             try {
-                sCacheDir = new File(ctx.getCacheDir(), "hai_up");
-                if (!sCacheDir.exists()) sCacheDir.mkdirs();
+                File root = new File(ctx.getCacheDir(), "hai_up");
+                File d = new File(root, day);
+                if (!d.exists()) d.mkdirs();
+                sCacheDir = d;
+                sCacheDay = day;
+                File[] olds = root.listFiles();
+                if (olds != null) {
+                    for (File f : olds) {
+                        if (f.isDirectory() && f.getName().matches("[0-9]{8}")
+                                && !f.getName().equals(day)) {
+                            File[] inner = f.listFiles();
+                            if (inner != null) for (File g : inner) g.delete();
+                            f.delete();
+                        }
+                    }
+                }
             } catch (Throwable ignored) {}
         }
         return sCacheDir;
@@ -198,8 +242,8 @@ public final class Upstream {
     }
 
     /**
-     * 取上游资源。{@code image=true} 时额外落磁盘缓存并延长 TTL。
-     * 失败返回 {@code ok()==false} 的 Result，调用方负责降级，不抛异常。
+     * 取上游资源。命中当天内存/磁盘缓存直接返回；失败返回
+     * {@code ok()==false} 的 Result，调用方负责降级，不抛异常。
      */
     public static Result fetch(Context ctx, String rawUrl, boolean imageHint) {
         Result out = new Result();
@@ -226,14 +270,16 @@ public final class Upstream {
             out.body = ("{\"ok\":false,\"msg\":\"" + out.msg + "\"}").getBytes();
             return out;
         }
-        if (imageHint) {
-            byte[] disk = diskGet(ctx, key);
-            if (disk != null) {
-                out.code = 200; out.ct = "image/jpeg"; out.body = disk;
-                memPut(key, new Ent(System.currentTimeMillis() + TTL_IMG,
-                        "image/jpeg", disk));
-                return out;
-            }
+        // JSON 与图片统一查当天磁盘缓存：WallWarm 后台预热写进来的条目，
+        // 手动翻页时走这里秒回，不再等公网。
+        byte[] disk = diskGet(ctx, key);
+        if (disk != null) {
+            out.code = 200;
+            out.ct = imageHint ? "image/jpeg" : "application/json; charset=utf-8";
+            out.body = disk;
+            memPut(key, new Ent(dayEnd(), out.ct, disk));
+            sDiskHit++;
+            return out;
         }
 
         HttpURLConnection conn = null;
@@ -292,9 +338,8 @@ public final class Upstream {
                 out.msg = code >= 200 && code < 300 ? "" : ("HTTP " + code);
                 if (out.ok()) {
                     noteOk(host);
-                    long ttl = img ? TTL_IMG : TTL_JSON;
-                    memPut(key, new Ent(System.currentTimeMillis() + ttl, ct, body));
-                    if (img) diskPut(ctx, key, body);
+                    memPut(key, new Ent(dayEnd(), ct, body));
+                    diskPut(ctx, key, body);   // JSON 也落盘 ⇒ 当天有效
                 } else {
                     noteFail(host);
                 }
@@ -314,16 +359,12 @@ public final class Upstream {
         }
     }
 
-    private static byte[] diskGet(Context ctx, String key) {
+    private static synchronized byte[] diskGet(Context ctx, String key) {
         try {
             File d = cacheDir(ctx);
             if (d == null) return null;
             File f = new File(d, md5(key));
-            if (!f.exists()) return null;
-            if (System.currentTimeMillis() - f.lastModified() > 7L * 86400 * 1000) {
-                f.delete();
-                return null;
-            }
+            if (!f.exists() || f.length() == 0) return null;
             FileInputStream fi = new FileInputStream(f);
             byte[] b = readAll(fi, MAX_BYTES);
             fi.close();
@@ -333,14 +374,18 @@ public final class Upstream {
         }
     }
 
-    private static void diskPut(Context ctx, String key, byte[] body) {
+    /** 临时文件 + rename 原子落盘，避免预热线程与 UI 线程互相读到半截。 */
+    private static synchronized void diskPut(Context ctx, String key, byte[] body) {
         try {
             File d = cacheDir(ctx);
             if (d == null || body.length == 0 || body.length > MAX_BYTES) return;
-            File f = new File(d, md5(key));
-            FileOutputStream fo = new FileOutputStream(f);
+            String n = md5(key);
+            File tmp = new File(d, n + ".tmp");
+            FileOutputStream fo = new FileOutputStream(tmp);
             fo.write(body);
             fo.close();
+            tmp.renameTo(new File(d, n));
+            sDiskPut++;
         } catch (Throwable ignored) {}
     }
 
@@ -374,7 +419,8 @@ public final class Upstream {
 
     /** 给 /hai/ping 用的可观测状态。 */
     public static synchronized String status() {
-        return "{\"cache\":" + sMem.size() + ",\"bytes\":" + sMemBytes
-                + ",\"cooling\":" + sCool.size() + "}";
+        return "{\"day\":\"" + dayKey() + "\",\"cache\":" + sMem.size()
+                + ",\"bytes\":" + sMemBytes + ",\"diskHit\":" + sDiskHit
+                + ",\"diskPut\":" + sDiskPut + ",\"cooling\":" + sCool.size() + "}";
     }
 }
