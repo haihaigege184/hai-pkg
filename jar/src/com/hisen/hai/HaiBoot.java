@@ -214,6 +214,25 @@ public final class HaiBoot {
                     try { Log.w(TAG, "init list field " + name + ": " + t); } catch (Throwable ignored) {}
                 }
             }
+            // 2026-11-10 第四条入口：HomeActivity 不跑时 ApiConfig 里还有若干数组字段
+            // 是 null。9978 的 /proxy 取链处理器访问它就抛
+            // "Attempt to read from null array" → 500 → 原画 3003（预览不走这条链）。
+            // 阶段6 误判第三个 parse 的 InvocationTargetException「非致命」，其实
+            // 搜索能好只是因为 sites 已由前两个 parse 填好，取链仍必挂。
+            // 统一把 null 数组补成空数组；HomeActivity 可见后原版完整加载会覆盖。
+            for (Field f : apiCls.getDeclaredFields()) {
+                try {
+                    if (Modifier.isStatic(f.getModifiers())) continue;
+                    if (!f.getType().isArray()) continue;
+                    f.setAccessible(true);
+                    if (f.get(api) != null) continue;
+                    f.set(api, java.lang.reflect.Array.newInstance(
+                            f.getType().getComponentType(), 0));
+                    try { Log.i(TAG, "init null array field: " + f.getName()
+                            + " " + f.getType().getComponentType().getName() + "[]"); }
+                    catch (Throwable ignored) {}
+                } catch (Throwable ignored) {}
+            }
             try {
                 Field f = apiCls.getField(CFG_FIELD);
                 f.setAccessible(true);
@@ -244,7 +263,8 @@ public final class HaiBoot {
                     mm.setAccessible(true);
                     mm.invoke(api, jo);
                 } catch (Throwable t) {
-                    try { Log.w(TAG, "parse " + m + ": " + t); } catch (Throwable ignored) {}
+                    Throwable cause = t.getCause() == null ? t : t.getCause();
+                    try { Log.w(TAG, "parse " + m + ": " + cause); } catch (Throwable ignored) {}
                 }
             }
             Object after = apiCls.getMethod(GET_SITES).invoke(api);

@@ -6,6 +6,7 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 
 import com.hisen.hai.HaiBoot;
+import com.hisen.hai.HaiCore;
 import com.hisen.hai.proxy.DownloadProxyServer;
 import com.hisen.hai.proxy.PortRelay;
 import com.hisen.hai.proxy.ProxyConfig;
@@ -71,7 +72,8 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
                 try { HaiBoot.kick(); } catch (Throwable ignored) {}
                 return json("{\"ok\":true,\"core\":\"jar\",\"offline\":true,\"proxy\":"
                         + DownloadProxyServer.get().port() + ",\"pg\":" + HaiBoot.status()
-                        + ",\"relay\":" + PortRelay.status() + "}");
+                        + ",\"relay\":" + PortRelay.status()
+                        + ",\"proc\":\"" + HaiCore.proc() + "\"}");
             }
             if ("/hai/poster/cfg".equals(path)) return json(cfgJson());
             if ("/hai/site/list".equals(path)) return json(siteListJson());

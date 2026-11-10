@@ -29,13 +29,57 @@ public final class HaiCore {
     private static final String TAG = "HaiCore";
     private static volatile boolean sStarted;
     private static volatile Context sApp;
+    private static volatile String sProc = "?";
 
     private HaiCore() {}
+
+    /**
+     * /proc/self/cmdline 第一段。主进程严格为包名；崩溃兜底进程形如
+     * {@code com.hisen.android.tv:error_activity}。读不到时返回 "?" 并按主进程处理，
+     * 避免误伤导致墙页服务整体不启动。
+     */
+    public static String procName() {
+        java.io.BufferedReader r = null;
+        try {
+            r = new java.io.BufferedReader(new java.io.FileReader("/proc/self/cmdline"), 128);
+            String raw = r.readLine();
+            if (raw == null) return "?";
+            String name = raw.split("\0")[0].trim();
+            return name.isEmpty() ? "?" : name;
+        } catch (Throwable ignored) {
+            return "?";
+        } finally {
+            if (r != null) try { r.close(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /** 只拦明确带 ":" 的子进程，其余一律保守视为主进程。 */
+    private static boolean isMainProcess(Context ctx, String proc) {
+        if ("?".equals(proc) || proc == null) return true;
+        String pkg = ctx == null ? null : ctx.getPackageName();
+        if (pkg == null || pkg.isEmpty()) return true;
+        return !proc.startsWith(pkg + ":");
+    }
+
+    /** 供 /hai/ping 回显，便于一眼判断端口是否被非主进程抢跑。 */
+    public static String proc() { return sProc; }
 
     public static void start(Context ctx) {
         if (sStarted) return;
         synchronized (HaiCore.class) {
             if (sStarted) return;
+            // 2026-11-10 实踩：PG 带 :error_activity 崩溃兜底进程，Application.onCreate
+            // 每个进程都会跑。崩溃一次后该子进程先抢到 10090/9978/10078，主进程的
+            // HaiCore 就一直 "bind 10090 failed"，取链服务留在没有完整 spider 初始化
+            // 的进程里 ⇒ 9978/proxy 500 ⇒ 原画全挂（错误码 3003），而预览画质不走
+            // 这条链所以照常能播。这里只让主进程持有全部本地端口。
+            String proc = procName();
+            sProc = proc;
+            if (!isMainProcess(ctx, proc)) {
+                try { Log.i(TAG, "skip non-main process: " + proc
+                        + " (all local ports stay in main process)"); } catch (Throwable ignored) {}
+                return;
+            }
             try {
                 sApp = ctx == null ? null : ctx.getApplicationContext();
                 DownloadProxyServer server = DownloadProxyServer.get();
