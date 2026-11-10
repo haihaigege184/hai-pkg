@@ -56,11 +56,16 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
     }
 
     /**
-     * 纯本地离线路由（2026-11-09 定案：服务器退出运行时链路）。
+     * 墙页数据路由（2026-11-10 定案：彻底脱离自家服务器）。
      *
-     * <p>海报墙 / 详情页 / CSS / JS / 图片全部来自 APK assets/haiui/ 的离线快照，
-     * 运行时对 10.0.0.11 零请求。服务器只保留 jsm.json 下发与快照更新包。
-     * 播放入口统一 haiplay://search?q=片名 → PG 原版站源 + Go 取流，本服务不碰播放。
+     * <p>海哥明确否决「反代 10.0.0.11 的墙页」，也否决了「纯离线死快照」。
+     * 现在的链路是：APK 内置 WebView → 本 jar 的 10090 同源接口 →
+     * <b>设备直连公网上游</b>（豆瓣 / TMDB 公开 API 与图片 CDN）。
+     * 服务器 10.0.0.11 只在 /live 换 PG 包时参与更新，运行时零依赖。
+     *
+     * <p>页面本体由 {@link HaiWallAssets} 内联在 classes2.dex 里，因此换 jar
+     * 即可热更新 UI，/live 换 PG 包时增强层重挂也不会把页面弄丢。
+     * 播放入口统一 haiplay://search?q=片名 → PG 原版站源 + Go 取流，不碰取流。
      */
     public DownloadProxyServer.Response handle(String path, String query,
                                                Map<String, String> headers) {
@@ -70,11 +75,19 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
                 // 墙页每次加载都会打 ping：顺手再踢一次 PG 服务保活，
                 // 覆盖「App 进程没重建」或首轮反射太早的时序情况（幂等）。
                 try { HaiBoot.kick(); } catch (Throwable ignored) {}
-                return json("{\"ok\":true,\"core\":\"jar\",\"offline\":true,\"proxy\":"
+                return json("{\"ok\":true,\"core\":\"jar\",\"wall\":\"upstream\","
+                        + "\"offline\":false,\"proxy\":"
                         + DownloadProxyServer.get().port() + ",\"pg\":" + HaiBoot.status()
                         + ",\"relay\":" + PortRelay.status()
+                        + ",\"up\":" + Upstream.status()
                         + ",\"proc\":\"" + HaiCore.proc() + "\"}");
             }
+
+            // ---- 端上直连公网上游（白名单 + Header 伪装 + 缓存 + 冷却） ----
+            if ("/hai/up".equals(path)) return upstream(query, false);
+            if ("/hai/img".equals(path)) return upstream(query, true);
+            if ("/hai/offline/cards".equals(path)) return offlineCards();
+
             if ("/hai/poster/cfg".equals(path)) return json(cfgJson());
             if ("/hai/site/list".equals(path)) return json(siteListJson());
             if ("/hai/site/active".equals(path)) return json(activeConfigJson());
@@ -93,26 +106,19 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
             if ("/hai/lib/tmdb.json".equals(path)) return json(LOCAL_SITE_EXT);
             if (path.startsWith("/hai/tmdb/")) return json("{}");
 
-            // ---- 墙页首屏（WebView 加载 /hai/poster/d/ 空 id） ----
-            if ("/hai/poster/d/".equals(path) || "/hai/poster/d".equals(path)) {
+            // ---- 墙页 / 详情页：jar 内联 SPA 优先，APK 离线快照兜底 ----
+            // SPA 自己按 location.pathname 决定渲染墙页还是详情，所以 /d/ 与
+            // /d/<vid> 返回同一份页面；数据一律由 /hai/up 端上直连上游拉取。
+            String spa = spaHtml();
+            if ("/hai/poster/d/".equals(path) || "/hai/poster/d".equals(path)
+                    || "/hai/poster".equals(path) || "/hai/poster/".equals(path)) {
+                if (spa != null) return html(spa);
                 DownloadProxyServer.Response r =
                         asset(ProxyConfig.WALL_ASSET, "text/html; charset=utf-8");
                 return r != null ? r : plain(404, "wall.html missing");
             }
-
-            // ---- 墙页分类 / 翻页：md5(归一化 query) → assets/haiui/pages/*.html ----
-            if ("/hai/poster".equals(path) || "/hai/poster/".equals(path)) {
-                DownloadProxyServer.Response r = asset(
-                        "haiui/pages/" + md5Hex(normKey(query)) + ".html",
-                        "text/html; charset=utf-8");
-                if (r != null) return r;
-                DownloadProxyServer.Response home =
-                        asset(ProxyConfig.WALL_ASSET, "text/html; charset=utf-8");
-                return home != null ? home : plain(404, "no offline wall page");
-            }
-
-            // ---- 详情页：按 vid 取静态快照，未收录则给 PG 搜索兜底页 ----
             if (path.startsWith("/hai/poster/d/")) {
+                if (spa != null) return html(spa);
                 String vid = path.substring("/hai/poster/d/".length());
                 int slash = vid.indexOf('/');
                 if (slash >= 0) vid = vid.substring(0, slash);
@@ -121,16 +127,12 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
                 return r != null ? r : fallbackDetail(vid);
             }
 
-            // ---- 其它 /hai/poster/* 动态接口：全部本地兜底，绝不外连 ----
+            // ---- 旧快照页面残留的切源 / 动态接口：一律回到 SPA，绝不返回空对象 ----
+            // 11-09 离线版这里对 "src" 返回 {}，TMDB 切换直接黑屏；现在前端
+            // 直接在页内切 state，旧链接也只做重定向，不会再出现白页。
             if (path.startsWith("/hai/poster/")) {
-                String leaf = path.substring("/hai/poster/".length());
-                if (leaf.startsWith("eps") || leaf.startsWith("play")
-                        || leaf.startsWith("progress") || leaf.startsWith("warm")
-                        || leaf.startsWith("cast") || leaf.startsWith("src")) {
-                    return json("{}");
-                }
-                // 演员页 / 站内搜索 / 一键追剧等没有离线快照 → 回墙页
-                return redirect("/hai/poster/d/");
+                return spa != null ? redirect("/hai/poster/d/")
+                        : (json("{}"));
             }
 
             // ---- 静态资源：/hai/<rel> → assets/haiui/<rel> ----
@@ -152,6 +154,68 @@ public final class HaiApiServer implements DownloadProxyServer.ApiHandler {
         } catch (Throwable t) {
             return new DownloadProxyServer.Response(500, "application/json; charset=utf-8",
                     "{\"ok\":false,\"msg\":\"" + escape(String.valueOf(t)) + "\"}");
+        }
+    }
+
+    /** jar 内联 SPA 页面（随 classes2.dex 热更新）；取不到时由 APK 离线快照兜底。 */
+    private volatile String sSpa;
+    private volatile boolean sSpaTried;
+    private String spaHtml() {
+        if (!sSpaTried) {
+            synchronized (this) {
+                if (!sSpaTried) {
+                    try { sSpa = HaiWallAssets.html(); }
+                    catch (Throwable t) { sSpa = ""; }
+                    sSpaTried = true;
+                }
+            }
+        }
+        return sSpa != null && sSpa.length() > 200 ? sSpa : null;
+    }
+
+    private static DownloadProxyServer.Response html(String s) {
+        DownloadProxyServer.Response r =
+                new DownloadProxyServer.Response(200, "text/html; charset=utf-8", s);
+        r.extra.put("Cache-Control", "no-cache");
+        return r;
+    }
+
+    /** 端上直连公网上游：/hai/up?u=&lt;url&gt; 取 JSON，/hai/img?u=&lt;url&gt; 取图。 */
+    private DownloadProxyServer.Response upstream(String query, boolean image) {
+        String u = parseQuery(query).get("u");
+        Upstream.Result r = Upstream.fetch(ctx, u, image);
+        String ct = r.ok() ? r.ct : "application/json; charset=utf-8";
+        DownloadProxyServer.Response out =
+                new DownloadProxyServer.Response(r.code, ct, r.body);
+        out.extra.put("Cache-Control", r.ok()
+                ? (image ? "public, max-age=86400" : "public, max-age=120")
+                : "no-store");
+        return out;
+    }
+
+    /**
+     * 完全断网时的兜底数据：把 APK 内置 cards.json（1225 条真实条目）摊平成数组。
+     * 前端按类目 + 页码做环形切片，保证每页内容不同，不再出现「翻到后面都一样」。
+     */
+    private DownloadProxyServer.Response offlineCards() {
+        try {
+            if (sCards == null) {
+                java.io.InputStream in = ctx.getAssets().open("haiui/cards.json");
+                sCards = new JSONObject(new String(readAll(in), "UTF-8"));
+                in.close();
+            }
+            JSONArray arr = new JSONArray();
+            java.util.Iterator<String> it = sCards.keys();
+            while (it.hasNext()) {
+                String k = it.next();
+                JSONObject o = new JSONObject();
+                o.put("id", k);
+                o.put("name", sCards.optString(k, k));
+                arr.put(o);
+            }
+            return json("{\"ok\":true,\"list\":" + arr.toString() + "}");
+        } catch (Throwable t) {
+            return json("{\"ok\":false,\"list\":[]}");
         }
     }
 

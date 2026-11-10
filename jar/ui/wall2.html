@@ -1,0 +1,695 @@
+<!DOCTYPE html><html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>海海哥哥 · 海报墙</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html{background:#070a10}
+body{background:#070a10;color:#e8edf6;min-height:100vh;
+ font-family:-apple-system,"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+ background-image:radial-gradient(1200px 620px at 10% -10%,rgba(0,224,138,.16),transparent 62%),
+   radial-gradient(920px 520px at 92% 2%,rgba(168,85,247,.18),transparent 60%),
+   radial-gradient(760px 420px at 50% 112%,rgba(0,224,138,.09),transparent 66%);
+ background-attachment:fixed;overflow-x:hidden}
+a{color:inherit;text-decoration:none;outline:none}
+.wrap{max-width:1600px;margin:0 auto;padding:26px 34px 70px}
+.brand{display:flex;align-items:baseline;gap:16px;margin-bottom:18px;flex-wrap:wrap}
+.brand b{font-size:34px;letter-spacing:3px;color:#00e08a;
+ text-shadow:0 0 12px rgba(0,224,138,.75),0 0 34px rgba(0,224,138,.35)}
+.brand span{font-size:16px;color:#7d8aa3;letter-spacing:1px}
+.brand .st{margin-left:auto;font-size:14px;color:#8ea3bd;letter-spacing:.5px;
+ border:1px solid rgba(0,224,138,.32);background:rgba(0,224,138,.08);
+ padding:5px 14px;border-radius:999px}
+.brand .st.off{color:#ffcf8a;border-color:rgba(255,190,90,.4);background:rgba(255,190,90,.09)}
+
+.tabs{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.tabs a{display:inline-block;padding:9px 18px;font-size:17px;letter-spacing:1px;
+ color:#a9b8ce;border:1px solid rgba(140,165,200,.24);border-radius:999px;
+ background:rgba(14,20,32,.66);transition:all .18s ease}
+.tabs a.on{color:#06120c;background:#00e08a;border-color:#00e08a;font-weight:700;
+ box-shadow:0 0 18px rgba(0,224,138,.55)}
+.tabs a.srcbtn{color:#dcc4ff;border-color:rgba(168,85,247,.5);
+ background:rgba(168,85,247,.13)}
+.tabs i.tsep{width:1px;height:22px;background:rgba(140,165,200,.25);margin:0 8px}
+a:focus,.sel{outline:none!important;border-color:#00e08a!important;color:#eafff5!important;
+ box-shadow:0 0 0 3px rgba(0,224,138,.35),0 0 24px rgba(0,224,138,.5)!important;
+ transform:scale(1.035)}
+
+.headline{display:flex;align-items:baseline;gap:14px;margin:2px 0 16px;
+ color:#8ea3bd;font-size:15px;letter-spacing:.5px}
+.headline b{color:#cfe0f5;font-size:19px;font-weight:600}
+.headline .hint{margin-left:auto;color:#5f7190;font-size:14px}
+
+.wall{display:grid;grid-template-columns:repeat(6,1fr);gap:22px 20px;
+ transition:transform .22s cubic-bezier(.2,.7,.2,1),opacity .22s ease}
+.wall.out-next{transform:translateX(-64px);opacity:0}
+.wall.out-prev{transform:translateX(64px);opacity:0}
+.wall.in-next{transform:translateX(64px);opacity:0}
+.wall.in-prev{transform:translateX(-64px);opacity:0}
+.card{display:block;position:relative;min-width:0;border-radius:12px;
+ transition:transform .18s ease,box-shadow .18s ease;
+ animation:cardIn .36s ease backwards}
+@keyframes cardIn{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+/* 电视 WebView 是 Chrome 84，不支持 aspect-ratio；用 padding-top 撑 2:3，
+   否则 .pic 高度塌成 0，整墙海报全空白（11-10 实测踩坑）。 */
+.card .pic{position:relative;width:100%;height:0;padding-top:150%;border-radius:10px;overflow:hidden;
+ background:linear-gradient(150deg,#14202c 0%,#20303f 48%,#101a26 100%);
+ border:1px solid rgba(120,150,190,.18);box-shadow:0 8px 26px rgba(0,0,0,.42)}
+.card .pic img{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;display:block}
+.card .pic .ph{position:absolute;left:0;top:0;width:100%;height:100%;
+ display:flex;align-items:center;justify-content:center;text-align:center;
+ padding:14px;font-size:17px;color:#9ff5cd;line-height:1.5;
+ text-shadow:0 0 12px rgba(0,224,138,.55)}
+.card .pic .badge{position:absolute;right:8px;top:8px;padding:3px 9px;border-radius:8px;
+ font-size:14px;font-weight:700;color:#05130c;background:#00e08a;
+ box-shadow:0 0 14px rgba(0,224,138,.65)}
+.card h3{margin-top:9px;font-size:16px;font-weight:600;line-height:1.35;
+ white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#e6eef9}
+.card .sub{margin-top:3px;font-size:13px;color:#8296b1;
+ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card:focus,.card.sel{transform:scale(1.055)!important}
+.card:focus .pic,.card.sel .pic{border-color:#00e08a;
+ box-shadow:0 0 0 3px rgba(0,224,138,.4),0 0 28px rgba(0,224,138,.55)}
+.card:focus h3,.card.sel h3{color:#00e08a;text-shadow:0 0 10px rgba(0,224,138,.6)}
+
+.pager{display:flex;align-items:center;justify-content:center;gap:26px;margin-top:30px}
+.pager a{padding:9px 24px;border-radius:999px;font-size:16px;
+ border:1px solid rgba(0,224,138,.42);background:rgba(0,224,138,.1);color:#9ff5cd}
+.pager a.dis{opacity:.32;border-color:rgba(140,165,200,.24);background:rgba(20,28,42,.6);color:#7d8aa3}
+.pager span{font-size:17px;color:#b9c9dd;letter-spacing:1px;min-width:130px;text-align:center}
+
+.empty{padding:80px 20px;text-align:center;color:#8ea3bd;font-size:18px;line-height:2}
+.empty b{display:block;color:#00e08a;font-size:22px;margin-bottom:10px;
+ text-shadow:0 0 16px rgba(0,224,138,.5)}
+
+/* 数据源 / 筛选浮层 */
+.overlay{position:fixed;left:0;top:0;width:100%;height:100%;z-index:60;
+ display:none;align-items:center;justify-content:center;
+ background:rgba(4,7,12,.84)}
+.overlay.on{display:flex}
+.box{min-width:520px;max-width:86vw;padding:30px 36px;border-radius:18px;
+ border:1px solid rgba(0,224,138,.4);background:rgba(12,19,29,.97);
+ box-shadow:0 0 60px rgba(0,224,138,.22)}
+.box h2{font-size:24px;color:#00e08a;margin-bottom:18px;letter-spacing:2px;
+ text-shadow:0 0 14px rgba(0,224,138,.55)}
+.opts{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.opts a{padding:10px 22px;border-radius:10px;font-size:17px;
+ border:1px solid rgba(140,165,200,.28);background:rgba(22,30,44,.9);color:#b9c8dc}
+.opts a.cur{color:#06120c;background:#00e08a;border-color:#00e08a;font-weight:700}
+.opts a.sel{box-shadow:0 0 0 3px rgba(0,224,138,.4),0 0 22px rgba(0,224,138,.5)}
+.box .tip{margin-top:14px;font-size:14px;color:#6f829e;line-height:1.8}
+.frow{display:flex;align-items:center;gap:14px;margin:12px 0}
+.frow .fl{width:76px;color:#8ea3bd;font-size:16px}
+.frow .opts{margin:0;flex:1}
+
+/* 详情页 */
+.dwrap{max-width:1500px;margin:0 auto;padding:26px 34px 70px}
+.dhero{position:relative;border-radius:18px;overflow:hidden;min-height:440px;
+ border:1px solid rgba(120,150,190,.2);box-shadow:0 18px 60px rgba(0,0,0,.55)}
+.dhero .bg{position:absolute;left:0;top:0;width:100%;height:100%;object-fit:cover;
+ filter:brightness(.42) saturate(1.15)}
+.dhero .shade{position:absolute;left:0;top:0;width:100%;height:100%;
+ background:linear-gradient(90deg,rgba(6,10,16,.96) 0%,rgba(6,10,16,.78) 46%,rgba(6,10,16,.2) 100%)}
+.dhero .info{position:relative;padding:42px 46px;max-width:66%}
+.dhero h1{font-size:40px;line-height:1.25;margin-bottom:14px;
+ text-shadow:0 2px 20px rgba(0,0,0,.9)}
+.dhero .desc{margin-top:16px;font-size:16px;line-height:1.85;color:#c2cede;
+ max-height:7.6em;overflow:hidden}
+.chips{margin-bottom:10px}
+.chip{display:inline-block;margin:0 8px 8px 0;padding:4px 13px;border-radius:999px;
+ font-size:15px;color:#9ff5cd;border:1px solid rgba(0,224,138,.45);
+ background:rgba(0,224,138,.1)}
+.chip.p{color:#dcc4ff;border-color:rgba(168,85,247,.5);background:rgba(168,85,247,.12)}
+.chip.score{color:#0a0d14;background:#00e08a;border-color:#00e08a;font-weight:700;
+ box-shadow:0 0 16px rgba(0,224,138,.6)}
+.dbtn{display:inline-block;margin-top:22px;padding:13px 34px;border-radius:999px;
+ font-size:19px;font-weight:700;color:#06120c;background:#00e08a;
+ box-shadow:0 0 24px rgba(0,224,138,.6);text-shadow:none}
+.dbtn.ghost{color:#c9d8ec;background:rgba(20,30,44,.8);
+ border:1px solid rgba(140,165,200,.4);box-shadow:none;margin-left:12px}
+.sect{margin-top:30px}
+.sect h2{font-size:21px;color:#00e08a;margin-bottom:14px;letter-spacing:1px;
+ text-shadow:0 0 12px rgba(0,224,138,.45)}
+.cast{display:flex;gap:14px;flex-wrap:wrap}
+.cast span,.cast a{padding:8px 18px;border-radius:999px;font-size:15px;color:#c9d8ec;
+ border:1px solid rgba(140,165,200,.28);background:rgba(18,26,40,.8)}
+</style></head><body>
+<div class="dwrap" id="detail" style="display:none"></div>
+<div class="wrap" id="wall">
+  <div class="brand"><b>海报墙</b><span id="subtitle">豆瓣 · 实时数据</span>
+    <span class="st" id="stat">初始化…</span></div>
+  <div class="tabs" id="tabs"></div>
+  <div class="headline"><b id="curName">热门电影</b>
+    <span id="curFilter">全部 · 热门</span>
+    <span class="hint">← → 翻页　↑×3 切数据源　MENU 筛选　OK 详情</span></div>
+  <div class="wall" id="grid"></div>
+  <div class="pager" id="pager"></div>
+</div>
+<div class="overlay" id="srcOv"><div class="box"><h2>切换数据源</h2>
+  <div class="opts" id="srcOpts"></div>
+  <div class="tip">豆瓣：国产剧更新更快 · TMDB：国际榜单、剧照更丰富<br>切换后原地重新拉取，不会跳页、不会黑屏</div>
+</div></div>
+<div class="overlay" id="fltOv"><div class="box"><h2>类目筛选</h2>
+  <div id="fltRows"></div>
+  <div class="tip">方向键选择 → OK 应用 · 返回键关闭</div>
+</div></div>
+<script>
+(function(){
+'use strict';
+var KEY='2894d9a1baf7812b451de03c801b0281';
+/* w342 足够 6 列 200px 海报，比 w500 体积减半；TV 上首屏不再等 5 秒才亮图。 */
+var TMDB='https://api.tmdb.org/3', TIMG='https://images.tmdb.org/t/p/w342';
+var TABS=[{id:1,n:'我的追剧'},{id:2,n:'热门电影'},{id:3,n:'热门剧集'},
+          {id:4,n:'热门国漫'},{id:5,n:'热门日漫'},{id:10,n:'正在上映'},{id:11,n:'即将上映'}];
+var DBC={2:{tags:'电影',sort:'T'},3:{tags:'电视剧',sort:'T'},
+  4:{genres:'动画',countries:'中国大陆',sort:'T'},5:{genres:'动画',countries:'日本',sort:'T'},
+  10:{tags:'电影',sort:'U',yr:'now'},11:{tags:'电影',sort:'R',yr:'next'}};
+var DBREX={2:['movie_real_time_hotest','movie_showing'],3:['tv_real_time_hotest','tv_hot'],
+  4:['tv_chinese_animation','tv_animation'],5:['tv_japanese_animation','tv_animation'],
+  10:['movie_showing','movie_real_time_hotest'],11:['movie_coming_soon','movie_showing']};
+var DBFB={2:['movie','热门','recommend'],3:['tv','热门','recommend'],
+  4:['tv','日本动画','recommend'],5:['tv','日本动画','recommend'],
+  10:['movie','最新','time'],11:['movie','最新','time']};
+var DBSORT={hot:'T',score:'S',new:'U'};
+var DBCTRY={'CN':'中国大陆','US':'美国','GB':'英国','JP':'日本','KR':'韩国','OTHER':'欧美'};
+var TPATH={2:'/movie/popular',3:'/discover/tv',4:'/discover/tv',5:'/discover/tv',
+  10:'/movie/now_playing',11:'/movie/upcoming'};
+var TEXTRA={3:{sort_by:'popularity.desc',without_genres:'16','vote_count.gte':'50'},
+  4:{with_genres:'16',with_original_language:'zh',sort_by:'popularity.desc'},
+  5:{with_genres:'16',with_original_language:'ja',sort_by:'popularity.desc'}};
+var TGENRE={drama:['18','18'],comedy:['35','35'],romance:['10749',''],
+  action:['28','10759'],scifi:['878','10765'],animation:['16','16'],
+  mystery:['9648','9648'],horror:['27',''],crime:['80','80']};
+var COUNTRIES=[['','全部'],['CN','国产'],['US','美国'],['GB','英国'],['JP','日本'],['KR','韩国'],['OTHER','其他']];
+var SORTS=[['','热门'],['score','高分'],['new','最新']];
+var GENRES=[['','全部'],['drama','剧情'],['comedy','喜剧'],['romance','爱情'],
+  ['action','动作'],['scifi','科幻'],['animation','动画'],['mystery','悬疑'],
+  ['horror','恐怖'],['crime','犯罪']];
+var OTHER='HK|TW|FR|DE|TH|IN|ES|IT|CA|AU|RU';
+
+var S={src:'douban',tab:2,pg:1,sort:'',genre:'',country:'',view:'wall',vid:'',
+       pagecount:1,items:[],offline:false,loading:false};
+var $=function(id){return document.getElementById(id);};
+var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');};
+var enc=encodeURIComponent;
+function imgProxy(u){return u?'/hai/img?u='+enc(u):'';}
+function up(url,cb){
+  var full=(url.indexOf('/hai/')===0)?url:('/hai/up?u='+enc(url));
+  var x=new XMLHttpRequest();
+  x.open('GET',full,true);
+  x.timeout=16000;
+  x.onload=function(){
+    var d=null;
+    try{d=JSON.parse(x.responseText);}catch(e){}
+    cb(x.status===200&&d?d:null);
+  };
+  x.onerror=function(){cb(null);};
+  x.ontimeout=function(){cb(null);};
+  x.send();
+}
+function status(txt,off){
+  var e=$('stat'); if(!e)return;
+  e.innerHTML=esc(txt); e.className=off?'st off':'st';
+}
+function nowYear(){return (new Date()).getFullYear();}
+
+/* ---------- 豆瓣 ---------- */
+function dbExplore(cb){
+  var c=DBC[S.tab]||DBC[2], tags=c.tags||'', genres=c.genres||'',
+      countries=c.countries||'', srt=c.sort||'T', yr=c.yr||'';
+  if(S.country&&DBCTRY[S.country])countries=DBCTRY[S.country];
+  if(S.genre)genres=S.genre;
+  if(S.sort&&DBSORT[S.sort])srt=DBSORT[S.sort];
+  if(yr==='now')yr=nowYear()+','+nowYear();
+  else if(yr==='next')yr=nowYear()+','+(nowYear()+1);
+  var q='sort='+srt+'&range=0,10&tags='+enc(tags)+'&start='+((S.pg-1)*20)+
+        '&genres='+enc(genres)+'&countries='+enc(countries)+'&year_range='+enc(yr);
+  up('https://movie.douban.com/j/new_search_subjects?'+q,function(d){
+    var a=d&&d.data;
+    if(!a||!a.length){cb(null);return;}
+    cb(a.map(function(it){
+      return {id:'db'+it.id,name:it.title||'',pic:imgProxy(it.cover||''),
+        rate:it.rate||'',sub:[].concat(it.directors||[]).slice(0,2).join(' / '),
+        desc:'',raw:it.cover||''};
+    }));
+  });
+}
+function dbRex(i,cb){
+  var cands=DBREX[S.tab]||['movie_showing'];
+  if(i>=cands.length){cb(null);return;}
+  var u='https://m.douban.com/rexxar/api/v2/subject_collection/'+cands[i]+
+        '/items?start='+((S.pg-1)*20)+'&count=20';
+  up(u,function(d){
+    var a=d&&d.subject_collection_items;
+    if(!a||!a.length){dbRex(i+1,cb);return;}
+    cb(a.filter(function(it){return it.id;}).map(function(it){
+      var cv=(it.cover||{}).url||'';
+      return {id:'db'+it.id,name:it.title||'',pic:imgProxy(cv),
+        rate:String(((it.rating||{}).value)||''),sub:'',desc:'',raw:cv};
+    }));
+  });
+}
+function dbFallback(cb){
+  var f=DBFB[S.tab]||DBFB[2], kind=f[0],tag=f[1],srt=f[2];
+  if(S.sort==='score')srt='rank';
+  else if(S.sort==='new')srt='time';
+  else if(S.sort==='hot')srt='recommend';
+  var extra={'CN':kind==='tv'?'国产剧':'华语','US':kind==='tv'?'美剧':'欧美',
+    'GB':'英剧','JP':kind==='tv'?'日剧':'日本','KR':kind==='tv'?'韩剧':'韩国'};
+  if(S.country&&extra[S.country])tag=extra[S.country];
+  up('https://movie.douban.com/j/search_subjects?type='+kind+'&tag='+enc(tag)+
+     '&sort='+srt+'&page_limit=20&page_start='+((S.pg-1)*20),function(d){
+    var a=d&&d.subjects;
+    cb(a&&a.length?a.filter(function(it){return it.id;}).map(function(it){
+      return {id:'db'+it.id,name:it.title||'',pic:imgProxy(it.cover||''),
+        rate:it.rate||'',sub:'',desc:'',raw:it.cover||''};
+    }):null);
+  });
+}
+/* ---------- TMDB ---------- */
+function tmdbUrl(){
+  var p=TPATH[S.tab]||'/movie/popular',ex=TEXTRA[S.tab]||{},
+      filtered=!!(S.country||S.sort||S.genre),q={};
+  var isMovie=[2,10,11].indexOf(S.tab)>=0;
+  if(filtered){
+    p=isMovie?'/discover/movie':'/discover/tv';
+    q.sort_by=S.sort==='score'?'vote_average.desc':
+              (S.sort==='new'?(isMovie?'release_date.desc':'first_air_date.desc'):'popularity.desc');
+    if(S.sort==='score')q['vote_count.gte']='200';
+    if(S.country==='OTHER')q.with_origin_country=OTHER;
+    else if(S.country)q.with_origin_country=S.country;
+    if(S.genre&&TGENRE[S.genre]){
+      var g=TGENRE[S.genre][isMovie?0:1];
+      if(g)q.with_genres=g;
+    }
+    if(!isMovie&&S.tab===3)q.without_genres='16';
+    if(!isMovie&&(S.tab===4||S.tab===5)){
+      q.with_genres='16';
+      q.with_original_language=S.tab===4?'zh':'ja';
+    }
+  }else{
+    for(var k in ex){if(ex.hasOwnProperty(k))q[k]=ex[k];}
+  }
+  q.api_key=KEY;q.language='zh-CN';q.page=S.pg;
+  var parts=[];
+  for(var k2 in q){if(q.hasOwnProperty(k2))parts.push(enc(k2)+'='+enc(q[k2]));}
+  return TMDB+p+'?'+parts.join('&');
+}
+function tmdbList(cb){
+  up(tmdbUrl(),function(d){
+    var a=d&&d.results;
+    if(!a){cb(null);return;}
+    if(d.total_pages)S.pagecount=Math.min(500,Math.max(1,d.total_pages));
+    cb(a.filter(function(it){return it.id;}).map(function(it){
+      var tv=!!(it.first_air_date||it.name&&!it.title);
+      var nm=it.title||it.name||'';
+      var pp=it.poster_path?TIMG+it.poster_path:'';
+      return {id:(tv?'t':'m')+it.id,name:nm,pic:imgProxy(pp),
+        rate:it.vote_average?String(Math.round(it.vote_average*10)/10):'',
+        sub:(it.release_date||it.first_air_date||'').slice(0,4),
+        desc:it.overview||'',raw:pp,tv:tv};
+    }));
+  });
+}
+/* ---------- 我的追剧（本地） ---------- */
+function watchList(cb){
+  var a=[],s='';
+  try{s=localStorage.getItem('hai_watch')||'[]';a=JSON.parse(s);}catch(e){a=[];}
+  var start=(S.pg-1)*20,part=a.slice(start,start+20);
+  S.pagecount=Math.max(1,Math.ceil(a.length/20));
+  cb(part.map(function(x){return {id:x.id,name:x.name,pic:x.pic||'',
+    rate:x.rate||'',sub:x.sub||'',desc:'',raw:x.raw||''};}));
+}
+/* ---------- 离线兜底 ---------- */
+function offlineList(cb){
+  up('/hai/offline/cards',function(d){
+    var a=d&&d.list;
+    if(!a||!a.length){cb([]);return;}
+    var key=S.tab+'_'+S.sort+'_'+S.genre+'_'+S.country;
+    var h=0;for(var i=0;i<key.length;i++)h=(h*31+key.charCodeAt(i))|0;
+    var off=((S.pg-1)*20+Math.abs(h))%a.length;
+    var out=[];
+    for(var j=0;j<20&&j<a.length;j++){
+      var it=a[(off+j)%a.length];
+      out.push({id:it.id,name:it.name,pic:'',rate:'',sub:'离线快照',desc:'',raw:''});
+    }
+    S.pagecount=Math.max(1,Math.ceil(a.length/20));
+    S.offline=true;
+    cb(out);
+  });
+}
+/* ---------- 拉一页（串行兜底，任何一环成功即止） ---------- */
+var pending=false;
+function loadPage(dir){
+  /* 连续快速翻页 / 切源时不能丢请求：记一个待刷新，本轮完成后按最新状态重拉。 */
+  if(S.loading){pending=true;return;}
+  S.loading=true;S.offline=false;
+  status('正在拉取实时数据…');
+  var steps;
+  if(S.tab===1)steps=[watchList];
+  else if(S.src==='tmdb')steps=[tmdbList];
+  else steps=[dbExplore,function(cb){dbRex(0,cb);},dbFallback];
+  var i=0;
+  function next(){
+    if(i>=steps.length){offlineList(done);return;}
+    var f=steps[i++];
+    try{f(function(items){if(items&&items.length)done(items);else next();});}
+    catch(e){next();}
+  }
+  function done(items){
+    S.loading=false;
+    S.items=items||[];
+    if(!S.offline&&S.src==='douban'&&S.tab!==1)
+      S.pagecount=S.items.length>=20?Math.max(S.pg+1,20):S.pg;
+    status(S.offline?'离线兜底 · 数据来自内置快照':
+      (S.src==='tmdb'?'TMDB':'豆瓣')+' · 实时 · 第 '+S.pg+' 页',S.offline);
+    paint(dir);
+    if(pending){pending=false;setTimeout(function(){loadPage('next');},80);}
+  }
+  next();
+}
+/* ---------- 渲染 ---------- */
+function tabName(){for(var i=0;i<TABS.length;i++)if(TABS[i].id===S.tab)return TABS[i].n;return '';}
+function filterName(){
+  var a=[];
+  for(var i=0;i<COUNTRIES.length;i++)if(COUNTRIES[i][0]===S.country)a.push(COUNTRIES[i][1]);
+  for(var j=0;j<SORTS.length;j++)if(SORTS[j][0]===S.sort)a.push(SORTS[j][1]);
+  for(var k=0;k<GENRES.length;k++)if(GENRES[k][0]===S.genre)a.push(GENRES[k][1]);
+  return a.join(' · ')||'全部 · 热门';
+}
+function paintTabs(){
+  var h='';
+  for(var i=0;i<TABS.length;i++){
+    h+='<a href="javascript:void(0)" data-nav="tab" data-id="'+TABS[i].id+'"'+
+       (TABS[i].id===S.tab?' class="on"':'')+'>'+esc(TABS[i].n)+'</a>';
+  }
+  h+='<i class="tsep"></i>';
+  h+='<a href="javascript:void(0)" data-nav="src" class="srcbtn">⚙ 数据源 · '+
+     (S.src==='tmdb'?'TMDB':'豆瓣')+'</a>';
+  h+='<a href="javascript:void(0)" data-nav="filter">☰ 筛选</a>';
+  h+='<a href="haiplay://native" data-nav="home">⌂ 主页</a>';
+  $('tabs').innerHTML=h;
+}
+function cardHtml(it,i){
+  /* 文字占位常驻，图片绝对定位盖在上面：图裂时 onerror 隐藏自己，
+     自动露出片名，不会出现一排灰块。 */
+  var ph='<div class="ph">'+esc(it.name)+'</div>';
+  var img=it.pic?'<img src="'+esc(it.pic)+'" loading="lazy" '+
+    'onerror="this.style.display=\'none\'" alt="">':'';
+  var badge=it.rate&&parseFloat(it.rate)>0?'<span class="badge">'+esc(it.rate)+'</span>':'';
+  return '<a class="card" href="/hai/poster/d/'+esc(it.id)+'" data-nav="card" '+
+    'data-title="'+esc(it.name)+'" style="animation-delay:'+(i%12*24)+'ms">'+
+    '<div class="pic">'+ph+img+badge+'</div><h3>'+esc(it.name)+'</h3>'+
+    '<div class="sub">'+esc(it.sub||'')+'</div></a>';
+}
+function paintGrid(){
+  $('curName').innerHTML=esc(tabName());
+  $('curFilter').innerHTML=esc(filterName());
+  $('subtitle').innerHTML=esc((S.src==='tmdb'?'TMDB · 深色影院':'豆瓣 · 国产剧更新更快'));
+  if(!S.items.length){
+    $('grid').innerHTML='<div class="empty" style="grid-column:1/-1"><b>这一页暂时没有数据</b>'+
+      '按 ← 返回上一页，或 ↑×3 切换数据源<br>播放链路不受影响，仍走 PG 原版站源</div>';
+  }else{
+    var h='';for(var i=0;i<S.items.length;i++)h+=cardHtml(S.items[i],i);
+    $('grid').innerHTML=h;
+  }
+  var pc=S.pagecount||S.pg;
+  $('pager').innerHTML=
+    '<a href="javascript:void(0)" data-nav="pgprev"'+(S.pg<=1?' class="dis"':'')+'>← 上一页</a>'+
+    '<span>第 '+S.pg+' / '+pc+' 页</span>'+
+    '<a href="javascript:void(0)" data-nav="pgnext"'+(S.pg>=pc?' class="dis"':'')+'>下一页 →</a>';
+}
+function paint(dir){
+  paintTabs();
+  if(!dir){paintGrid();focusFirst();return;}
+  var g=$('grid');
+  g.className='wall out-'+dir;
+  setTimeout(function(){
+    paintGrid();
+    g.className='wall in-'+dir;
+    setTimeout(function(){g.className='wall';focusFirst();},30);
+  },220);
+}
+/* ---------- 焦点导航（几何最近邻，TV 上最稳） ---------- */
+function navs(){
+  return [].slice.call(document.querySelectorAll('[data-nav]'))
+    .filter(function(e){return e.offsetParent!==null;});
+}
+function curEl(){
+  var a=document.activeElement;
+  if(a&&a.getAttribute&&a.getAttribute('data-nav'))return a;
+  var s=document.querySelector('.sel[data-nav]');
+  return s||null;
+}
+function focusEl(el){
+  if(!el)return false;
+  var old=document.querySelector('.sel[data-nav]');
+  if(old)old.className=old.className.replace(/(^|\s)sel(\s|$)/g,' ').replace(/\s+/g,' ');
+  try{el.focus({preventScroll:true});}catch(e){try{el.focus();}catch(e2){}}
+  el.className=(el.className||'')+' sel';
+  try{el.scrollIntoView({block:'nearest'});}catch(e){}
+  return true;
+}
+function focusFirst(){
+  var p=document.querySelector('[data-nav="dplay"]');
+  if(p&&p.offsetParent!==null)return focusEl(p);
+  var a=navs();
+  for(var i=0;i<a.length;i++)if(a[i].getAttribute('data-nav')==='card')return focusEl(a[i]);
+  return a.length?focusEl(a[0]):false;
+}
+function move(dx,dy){
+  var c=curEl();if(!c){focusFirst();return;}
+  var r=c.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
+  var a=navs(),best=null,bs=1e9;
+  for(var i=0;i<a.length;i++){
+    var e=a[i];if(e===c)continue;
+    var b=e.getBoundingClientRect(),ex=b.left+b.width/2,ey=b.top+b.height/2;
+    var ddx=ex-cx,ddy=ey-cy;
+    if(dx>0&&ddx<12)continue;
+    if(dx<0&&ddx>-12)continue;
+    if(dy>0&&ddy<12)continue;
+    if(dy<0&&ddy>-12)continue;
+    var main=dx?Math.abs(ddx):Math.abs(ddy);
+    var side=dx?Math.abs(ddy):Math.abs(ddx);
+    var sc=main+side*2.4;
+    if(sc<bs){bs=sc;best=e;}
+  }
+  if(best)focusEl(best);
+  else if(dx>0&&S.pg<(S.pagecount||S.pg))goPage(1);
+  else if(dx<0&&S.pg>1)goPage(-1);
+}
+function goPage(d){
+  /* 本轮还在拉数据时直接吞掉翻页，否则 S.pg 先跳、数据没跟上，
+     会出现「标着第 3 页却显示第 2 页内容」的错位（11-10 真机实测）。 */
+  if(S.loading)return;
+  var pc=S.pagecount||S.pg,np=S.pg+d;
+  if(np<1||np>pc)return;
+  S.pg=np;loadPage(d>0?'next':'prev');
+}
+function setSrc(s){
+  if(S.src===s)return;
+  S.src=s;S.pg=1;S.pagecount=1;
+  try{localStorage.setItem('hai_src',s);}catch(e){}
+  loadPage('next');
+}
+function setTab(id){
+  if(S.tab===id)return;
+  S.tab=id;S.pg=1;S.pagecount=1;
+  try{localStorage.setItem('hai_tab',String(id));}catch(e){}
+  loadPage('next');
+}
+/* ---------- 浮层 ---------- */
+var ovSel=0,ovKind='';
+function openOv(kind){
+  ovKind=kind;ovSel=0;
+  var box=kind==='src'?$('srcOpts'):null;
+  if(kind==='src'){
+    box.innerHTML='<a href="javascript:void(0)" data-ov="0"'+
+      (S.src==='douban'?' class="cur"':'')+'>豆瓣 · 国产剧更新更快</a>'+
+      '<a href="javascript:void(0)" data-ov="1"'+
+      (S.src==='tmdb'?' class="cur"':'')+'>TMDB · 国际榜单</a>';
+  }else{
+    var rows=[['地区',COUNTRIES,'country'],['排序',SORTS,'sort'],['类型',GENRES,'genre']];
+    var h='';
+    for(var r=0;r<rows.length;r++){
+      h+='<div class="frow"><div class="fl">'+rows[r][0]+'</div><div class="opts">';
+      for(var i=0;i<rows[r][1].length;i++){
+        var v=rows[r][1][i][0];
+        h+='<a href="javascript:void(0)" data-ov="'+r+'" data-val="'+esc(v)+'"'+
+           (S[rows[r][2]]===v?' class="cur"':'')+'>'+esc(rows[r][1][i][1])+'</a>';
+      }
+      h+='</div></div>';
+    }
+    $('fltRows').innerHTML=h;
+  }
+  $(kind==='src'?'srcOv':'fltOv').className='overlay on';
+  paintOv();
+}
+function closeOv(){
+  $('srcOv').className='overlay';$('fltOv').className='overlay';ovKind='';
+}
+function ovItems(){
+  var box=ovKind==='src'?$('srcOpts'):$('fltRows');
+  return [].slice.call(box.querySelectorAll('[data-ov]'));
+}
+function paintOv(){
+  var a=ovItems();if(!a.length)return;
+  for(var i=0;i<a.length;i++)a[i].className=a[i].className
+    .replace(/(^|\s)sel(\s|$)/g,' ').replace(/\s+/g,' ');
+  if(ovSel<0)ovSel=0;if(ovSel>=a.length)ovSel=a.length-1;
+  a[ovSel].className=(a[ovSel].className||'')+' sel';
+}
+function ovApply(){
+  var a=ovItems(),el=a[ovSel];if(!el)return;
+  if(ovKind==='src'){closeOv();setSrc(ovSel===1?'tmdb':'douban');return;}
+  var key=['country','sort','genre'][parseInt(el.getAttribute('data-ov'),10)];
+  if(key){S[key]=el.getAttribute('data-val');S.pg=1;S.pagecount=1;closeOv();loadPage('next');}
+}
+/* ---------- 详情页 ---------- */
+function parseRoute(){
+  var p=location.pathname||'/';
+  var m=p.match(/\/hai\/poster\/d\/([^\/]+)/);
+  if(m&&m[1]){S.view='detail';S.vid=decodeURIComponent(m[1]);}
+  else S.view='wall';
+}
+function playHref(n){return 'haiplay://search?q='+enc(n);}
+function detailDouban(id,tryTv){
+  var kind=tryTv?'tv':'movie';
+  up('https://m.douban.com/rexxar/api/v2/'+kind+'/'+id,function(d){
+    if(!d||!d.title){
+      if(!tryTv)detailDouban(id,true);else detailEmpty(id);
+      return;
+    }
+    var cv=(d.cover||{}).url||d.pic&&(d.pic.large||d.pic.normal)||'';
+    var chips='';
+    if(((d.rating||{}).value))chips+='<span class="chip score">'+esc(d.rating.value)+' 分</span>';
+    if(d.year)chips+='<span class="chip">'+esc(d.year)+'</span>';
+    [].concat(d.genres||[]).slice(0,3).forEach(function(g){chips+='<span class="chip p">'+esc(g)+'</span>';});
+    [].concat(d.countries||[]).slice(0,2).forEach(function(g){chips+='<span class="chip">'+esc(g)+'</span>';});
+    var cast=[].concat(d.actors||[],d.directors||[]).slice(0,12);
+    var castH='';
+    for(var i=0;i<cast.length;i++){
+      var c=cast[i],nm=(c&&c.name)||c;
+      if(nm)castH+='<span>'+esc(String(nm))+'</span>';
+    }
+    renderDetail({name:d.title||'',pic:imgProxy(cv),chips:chips,
+      desc:d.intro||d.card_subtitle||'',cast:castH});
+  });
+}
+function detailTmdb(id,tv){
+  var p=(tv?'/tv/':'/movie/')+id;
+  up(TMDB+p+'?api_key='+KEY+'&language=zh-CN&append_to_response=credits,recommendations',
+    function(d){
+      if(!d||!(d.title||d.name)){
+        if(!tv)detailTmdb(id,true);else detailEmpty(id);
+        return;
+      }
+      var nm=d.title||d.name;
+      var chips='';
+      if(d.vote_average)chips+='<span class="chip score">'+esc(Math.round(d.vote_average*10)/10)+' 分</span>';
+      if(d.release_date||d.first_air_date)chips+='<span class="chip">'+esc((d.release_date||d.first_air_date).slice(0,4))+'</span>';
+      [].concat(d.genres||[]).slice(0,3).forEach(function(g){chips+='<span class="chip p">'+esc(g.name||'')+'</span>';});
+      var bg=d.backdrop_path?'https://images.tmdb.org/t/p/w780'+d.backdrop_path:'';
+      var castH='',cs=((d.credits||{}).cast||[]).slice(0,12);
+      for(var i=0;i<cs.length;i++)castH+='<span>'+esc(cs[i].name||'')+'</span>';
+      var rec=((d.recommendations||{}).results||[]).slice(0,12),recH='';
+      for(var j=0;j<rec.length;j++){
+        var it=rec[j],n2=it.title||it.name||'',pp=it.poster_path?TIMG+it.poster_path:'';
+        recH+='<a class="card" href="/hai/poster/d/'+(it.first_air_date?'t':'m')+it.id+
+          '" data-nav="card" style="max-width:180px;display:inline-block;margin:0 14px 14px 0">'+
+          '<div class="pic">'+(pp?'<img src="'+esc(imgProxy(pp))+'" loading="lazy" alt="">':'')+'</div>'+
+          '<h3>'+esc(n2)+'</h3></a>';
+      }
+      renderDetail({name:nm,pic:imgProxy(bg||(d.poster_path?TIMG+d.poster_path:'')),
+        chips:chips,desc:d.overview||'',cast:castH,rec:recH});
+    });
+}
+function detailEmpty(id){
+  renderDetail({name:id,pic:'',chips:'',
+    desc:'详情接口暂时不可用，可以直接播放（走 PG 原版站源）。',cast:'',rec:''});
+}
+function renderDetail(o){
+  var h='<div class="dhero">'+
+    (o.pic?'<img class="bg" src="'+esc(o.pic)+'" alt="">':'')+
+    '<div class="shade"></div><div class="info">'+
+    '<h1>'+esc(o.name)+'</h1><div class="chips">'+o.chips+'</div>'+
+    '<p class="desc">'+esc(o.desc||'')+'</p>'+
+    '<a class="dbtn" data-nav="dplay" href="'+esc(playHref(o.name))+'">▶ 播放（PG 站源）</a>'+
+    '<a class="dbtn ghost" data-nav="dback" href="/hai/poster/d/">← 返回海报墙</a>'+
+    '</div></div>';
+  if(o.cast)h+='<div class="sect"><h2>演职员</h2><div class="cast">'+o.cast+'</div></div>';
+  if(o.rec)h+='<div class="sect"><h2>相关推荐</h2>'+o.rec+'</div>';
+  $('detail').innerHTML=h;
+  $('detail').style.display='';
+  $('wall').style.display='none';
+  focusFirst();
+}
+/* ---------- 事件 ---------- */
+function onClick(e){
+  var a=e.target;
+  while(a&&a.nodeType===1&&a.tagName!=='A')a=a.parentNode;
+  if(!a||a.tagName!=='A')return;
+  if(a.getAttribute('data-ov')!==null){
+    var all=ovItems();
+    for(var z=0;z<all.length;z++)if(all[z]===a){ovSel=z;break;}
+    ovApply();e.preventDefault();return;
+  }
+  var k=a.getAttribute('data-nav');
+  if(k==='tab'){e.preventDefault();setTab(parseInt(a.getAttribute('data-id'),10));return;}
+  if(k==='src'){e.preventDefault();openOv('src');return;}
+  if(k==='filter'){e.preventDefault();openOv('flt');return;}
+  if(k==='pgprev'){e.preventDefault();goPage(-1);return;}
+  if(k==='pgnext'){e.preventDefault();goPage(1);return;}
+}
+var upCount=0,upTimer=null;
+function onKey(e){
+  var k=e.keyCode||e.which;
+  if(ovKind){
+    if(k===4||k===27||k===8||k===461){closeOv();e.preventDefault();return;}
+    if(k===21||k===19||k===37){ovSel--;paintOv();e.preventDefault();return;}
+    if(k===22||k===20||k===39){ovSel++;paintOv();e.preventDefault();return;}
+    if(k===38){ovSel=Math.max(0,ovSel-1);paintOv();e.preventDefault();return;}
+    if(k===40){ovSel++;paintOv();e.preventDefault();return;}
+    if(k===13||k===23||k===66){ovApply();e.preventDefault();return;}
+    return;
+  }
+  if(k===176||k===93){e.preventDefault();openOv('src');return;}
+  if(k===82){e.preventDefault();openOv('flt');return;}
+  if(k===21||k===37){move(-1,0);e.preventDefault();return;}
+  if(k===22||k===39){move(1,0);e.preventDefault();return;}
+  if(k===19||k===38){
+    var c=curEl();
+    if(c&&c.getAttribute('data-nav')==='tab'){
+      upCount++;clearTimeout(upTimer);
+      upTimer=setTimeout(function(){upCount=0;},1200);
+      if(upCount>=3){upCount=0;openOv('src');e.preventDefault();return;}
+    }else upCount=0;
+    move(0,-1);e.preventDefault();return;
+  }
+  if(k===20||k===40){move(0,1);e.preventDefault();return;}
+  if(k===13||k===23||k===66){
+    var el=curEl();
+    if(el){e.preventDefault();el.click();}
+    return;
+  }
+}
+/* ---------- 启动 ---------- */
+parseRoute();
+try{
+  var ss=localStorage.getItem('hai_src');if(ss==='tmdb'||ss==='douban')S.src=ss;
+  var tt=parseInt(localStorage.getItem('hai_tab'),10);
+  if(tt&&[1,2,3,4,5,10,11].indexOf(tt)>=0)S.tab=tt;
+}catch(e){}
+document.addEventListener('click',onClick,false);
+document.addEventListener('keydown',onKey,false);
+if(S.view==='detail'){
+  status('正在拉取详情…');
+  var vid=S.vid;
+  if(vid.indexOf('db')===0)detailDouban(vid.slice(2),false);
+  else if(vid.indexOf('t')===0)detailTmdb(vid.slice(1),true);
+  else detailTmdb(vid.replace(/^m/,''),false);
+}else{
+  paintTabs();loadPage(null);
+}
+})();
+</script></body></html>

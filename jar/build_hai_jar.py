@@ -22,6 +22,8 @@ Android 的 DexClassLoader 对同一个 jar 会依次加载
 from __future__ import annotations
 
 import argparse
+import base64
+import gzip
 import hashlib
 import io
 import os
@@ -140,7 +142,87 @@ def _java_sources():
     return sorted(out)
 
 
+# ---------------------------------------------------------------------------
+# UI 资源内联（2026-11-10）
+#
+# 墙页要「脱离服务器」，但 APK 已装机 130MB，重打包代价高；而 /live 换 PG 包
+# 时 pkgupdate.apply() 只会把 classes2.dex 重挂到新包，jar 里额外塞的普通文件
+# 会丢。所以把 SPA 页面 gzip+base64 编成 Java 字符串常量编进 dex：
+#   * UI 随 dex 一起热更新，换包自动免疫，零 APK 改动；
+#   * 页面 ~30KB → gzip ~8KB → base64 ~11KB，单个常量放得下；
+#   * gzip mtime 固定 0，产物可复现，git 不会每次构建都脏。
+# ---------------------------------------------------------------------------
+UI_DIR = os.path.join(HERE, "ui")
+UI_ASSETS = [("wall2.html", "WALL_HTML")]
+GEN_JAVA = os.path.join(SRC, "com", "hisen", "hai", "api", "HaiWallAssets.java")
+
+
+def gen_ui_assets():
+    print("[0/4] 内联 UI 资源 -> HaiWallAssets.java ...")
+    parts_java = []
+    accessors = []
+    for fname, const in UI_ASSETS:
+        path = os.path.join(UI_DIR, fname)
+        if not os.path.isfile(path):
+            raise RuntimeError("UI 资源缺失: " + path)
+        with open(path, "rb") as f:
+            raw = f.read()
+        # mtime=0 保证每次构建字节完全一致
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=9, mtime=0) as gz:
+            gz.write(raw)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        chunks = [b64[i:i + 30000] for i in range(0, len(b64), 30000)] or [""]
+        names = []
+        for i, ch in enumerate(chunks):
+            n = "%s_%d" % (const, i)
+            names.append(n)
+            parts_java.append('    private static final String %s = "%s";'
+                              % (n, ch))
+        body = " + ".join(names)
+        accessors.append(
+            '    /** %s (%d bytes 原始 HTML) */\n'
+            '    public static String %s() { return unpack(%s); }'
+            % (fname, len(raw), "html" if const == "WALL_HTML" else const.lower(),
+               body))
+        print("  %-14s %6d B -> gzip %5d B -> b64 %5d B (%d 段)"
+              % (fname, len(raw), len(buf.getvalue()), len(b64), len(chunks)))
+
+    src = (
+        "// -*- coding: utf-8 -*-\n"
+        "// 由 build_hai_jar.py gen_ui_assets() 自动生成，请勿手工编辑。\n"
+        "// 源文件：jar/ui/wall2.html\n"
+        "package com.hisen.hai.api;\n\n"
+        "import android.util.Base64;\n"
+        "import java.io.ByteArrayInputStream;\n"
+        "import java.io.ByteArrayOutputStream;\n"
+        "import java.util.zip.GZIPInputStream;\n\n"
+        "public final class HaiWallAssets {\n"
+        "    private HaiWallAssets() {}\n\n"
+        + "\n".join(parts_java) + "\n\n"
+        "    private static String unpack(String b64) {\n"
+        "        try {\n"
+        "            byte[] z = Base64.decode(b64, Base64.DEFAULT);\n"
+        "            GZIPInputStream gz = new GZIPInputStream(new ByteArrayInputStream(z));\n"
+        "            ByteArrayOutputStream out = new ByteArrayOutputStream();\n"
+        "            byte[] buf = new byte[8192];\n"
+        "            int n;\n"
+        "            while ((n = gz.read(buf)) >= 0) out.write(buf, 0, n);\n"
+        "            gz.close();\n"
+        "            return new String(out.toByteArray(), \"UTF-8\");\n"
+        "        } catch (Throwable t) {\n"
+        "            return \"\";\n"
+        "        }\n"
+        "    }\n\n"
+        + "\n\n".join(accessors) + "\n}\n")
+    os.makedirs(os.path.dirname(GEN_JAVA), exist_ok=True)
+    with open(GEN_JAVA, "w", encoding="utf-8", newline="\n") as f:
+        f.write(src)
+    return GEN_JAVA
+
+
 def compile_sources():
+    gen_ui_assets()
     print("[1/4] javac ...")
     for exe in (JAVAC, JAR, D8):
         if not os.path.isfile(exe):

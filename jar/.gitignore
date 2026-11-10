@@ -3,3 +3,6 @@ build/
 out/
 *.bak-haicore
 *.class
+# 由 build_hai_jar.py gen_ui_assets() 从 jar/ui/*.html 生成（gzip+base64），
+# 源码真相在 jar/ui/，不重复入库，避免每次改页面都产生一坨 base64 diff。
+src/com/hisen/hai/api/HaiWallAssets.java
